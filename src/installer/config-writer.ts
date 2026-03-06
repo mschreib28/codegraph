@@ -1,6 +1,8 @@
 /**
  * Config file writing for the CodeGraph installer
- * Writes to claude.json, settings.json, and CLAUDE.md
+ * Writes IDE-specific configuration files:
+ * - Claude Code: .claude.json, .claude/settings.json, .claude/CLAUDE.md
+ * - Cursor: .cursor/mcp.json, .cursor/rules/codegraph.md
  */
 
 import * as fs from 'fs';
@@ -8,10 +10,11 @@ import * as path from 'path';
 import * as os from 'os';
 import { InstallLocation } from './prompts';
 import {
-  CLAUDE_MD_TEMPLATE,
+  CLAUDE_CODE_TEMPLATE,
   CODEGRAPH_SECTION_START,
   CODEGRAPH_SECTION_END,
-} from './claude-md-template';
+} from './templates/claude-code';
+import { CURSOR_TEMPLATE } from './templates/cursor';
 
 /**
  * Get the path to the Claude config directory
@@ -21,6 +24,14 @@ function getClaudeConfigDir(location: InstallLocation): string {
     return path.join(os.homedir(), '.claude');
   }
   return path.join(process.cwd(), '.claude');
+}
+
+/**
+ * Get the path to the Cursor config directory
+ * Note: Cursor only supports local configuration
+ */
+function getCursorConfigDir(): string {
+  return path.join(process.cwd(), '.cursor');
 }
 
 /**
@@ -127,6 +138,26 @@ export function writeMcpConfig(location: InstallLocation): void {
 }
 
 /**
+ * Write the MCP server configuration to Cursor's mcp.json
+ * Cursor only supports local configuration
+ */
+export function writeCursorMcpConfig(): void {
+  const cursorConfigDir = getCursorConfigDir();
+  const mcpJsonPath = path.join(cursorConfigDir, 'mcp.json');
+  const config = readJsonFile(mcpJsonPath);
+
+  // Ensure mcpServers object exists
+  if (!config.mcpServers) {
+    config.mcpServers = {};
+  }
+
+  // Add or update codegraph server for Cursor
+  config.mcpServers.codegraph = getMcpServerConfig();
+
+  writeJsonFile(mcpJsonPath, config);
+}
+
+/**
  * Get the list of permissions for CodeGraph tools
  */
 function getCodeGraphPermissions(): string[] {
@@ -170,11 +201,21 @@ export function writePermissions(location: InstallLocation): void {
 }
 
 /**
- * Check if MCP config already exists for CodeGraph
+ * Check if Claude Code MCP config already exists for CodeGraph
  */
-export function hasMcpConfig(location: InstallLocation): boolean {
+export function hasClaudeMcpConfig(location: InstallLocation): boolean {
   const claudeJsonPath = getClaudeJsonPath(location);
   const config = readJsonFile(claudeJsonPath);
+  return !!config.mcpServers?.codegraph;
+}
+
+/**
+ * Check if Cursor MCP config already exists for CodeGraph
+ */
+export function hasCursorMcpConfig(): boolean {
+  const cursorConfigDir = getCursorConfigDir();
+  const mcpJsonPath = path.join(cursorConfigDir, 'mcp.json');
+  const config = readJsonFile(mcpJsonPath);
   return !!config.mcpServers?.codegraph;
 }
 
@@ -324,7 +365,7 @@ export function writeClaudeMd(location: InstallLocation): { created: boolean; up
   // Check if file exists
   if (!fs.existsSync(claudeMdPath)) {
     // Create new file with just the CodeGraph section
-    atomicWriteFileSync(claudeMdPath, CLAUDE_MD_TEMPLATE + '\n');
+    atomicWriteFileSync(claudeMdPath, CLAUDE_CODE_TEMPLATE + '\n');
     return { created: true, updated: false };
   }
 
@@ -341,7 +382,7 @@ export function writeClaudeMd(location: InstallLocation): { created: boolean; up
       // Replace existing marked section
       const before = content.substring(0, startIdx);
       const after = content.substring(endIdx + CODEGRAPH_SECTION_END.length);
-      content = before + CLAUDE_MD_TEMPLATE + after;
+      content = before + CLAUDE_CODE_TEMPLATE + after;
       atomicWriteFileSync(claudeMdPath, content);
       return { created: false, updated: true };
     }
@@ -368,13 +409,58 @@ export function writeClaudeMd(location: InstallLocation): { created: boolean; up
     // Replace the section
     const before = content.substring(0, sectionStart);
     const after = content.substring(sectionEnd);
-    content = before + '\n' + CLAUDE_MD_TEMPLATE + after;
+    content = before + '\n' + CLAUDE_CODE_TEMPLATE + after;
     atomicWriteFileSync(claudeMdPath, content);
     return { created: false, updated: true };
   }
 
   // No existing section, append to end
-  content = content.trimEnd() + '\n\n' + CLAUDE_MD_TEMPLATE + '\n';
+  content = content.trimEnd() + '\n\n' + CLAUDE_CODE_TEMPLATE + '\n';
   atomicWriteFileSync(claudeMdPath, content);
   return { created: false, updated: false };
+}
+
+/**
+ * Get the path to Cursor rules directory
+ * Note: Cursor only supports local configuration
+ */
+function getCursorRulesDir(): string {
+  return path.join(process.cwd(), '.cursor', 'rules');
+}
+
+/**
+ * Get the path to Cursor CodeGraph rules file
+ */
+function getCursorRulesPath(): string {
+  return path.join(getCursorRulesDir(), 'codegraph.md');
+}
+
+/**
+ * Check if Cursor rules has CodeGraph file
+ */
+export function hasCursorRulesSection(): boolean {
+  const cursorRulesPath = getCursorRulesPath();
+  return fs.existsSync(cursorRulesPath);
+}
+
+/**
+ * Write or update Cursor rules with CodeGraph instructions
+ *
+ * Creates .cursor/rules/codegraph.md file
+ */
+export function writeCursorRules(): { created: boolean; updated: boolean } {
+  const cursorRulesDir = getCursorRulesDir();
+  const cursorRulesPath = getCursorRulesPath();
+
+  // Ensure directory exists
+  if (!fs.existsSync(cursorRulesDir)) {
+    fs.mkdirSync(cursorRulesDir, { recursive: true });
+  }
+
+  const alreadyExists = fs.existsSync(cursorRulesPath);
+
+  // Write the CodeGraph rules file (always overwrite to ensure latest version)
+  atomicWriteFileSync(cursorRulesPath, CURSOR_TEMPLATE + '\n');
+
+  return { created: !alreadyExists, updated: alreadyExists };
 }

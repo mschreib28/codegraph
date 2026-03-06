@@ -1,15 +1,18 @@
 /**
- * CLAUDE.md template for CodeGraph instructions
+ * Template for Claude Code's CLAUDE.md file
  *
- * This template is injected into ~/.claude/CLAUDE.md (global) or ./.claude/CLAUDE.md (local)
- * Keep this in sync with the README.md "Recommended: Add Global Instructions" section
+ * This template is injected into ~/.claude/CLAUDE.md (global) or ./.claude/CLAUDE.md (local).
+ * It instructs Claude Code on when and how to use CodeGraph MCP tools.
+ *
+ * Since CLAUDE.md is a shared file that may contain other instructions, we use HTML comment
+ * markers to identify and update just the CodeGraph section.
  */
 
-// Markers to identify CodeGraph section for updates
+// Markers to identify CodeGraph section for updates in CLAUDE.md
 export const CODEGRAPH_SECTION_START = '<!-- CODEGRAPH_START -->';
 export const CODEGRAPH_SECTION_END = '<!-- CODEGRAPH_END -->';
 
-export const CLAUDE_MD_TEMPLATE = `${CODEGRAPH_SECTION_START}
+export const CLAUDE_CODE_TEMPLATE = `${CODEGRAPH_SECTION_START}
 ## CodeGraph
 
 CodeGraph builds a semantic knowledge graph of codebases for faster, smarter code exploration.

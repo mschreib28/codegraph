@@ -2,13 +2,24 @@
  * CodeGraph Interactive Installer
  *
  * Provides a beautiful interactive CLI experience for setting up CodeGraph
- * with Claude Code.
+ * with supported IDEs (Claude Code, Cursor, etc.).
  */
 
 import { execSync } from 'child_process';
 import { showBanner, showNextSteps, success, error, info, chalk } from './banner';
-import { promptInstallLocation, promptAutoAllow, InstallLocation } from './prompts';
-import { writeMcpConfig, writePermissions, writeClaudeMd, writeHooks, hasMcpConfig, hasPermissions, hasHooks } from './config-writer';
+import { promptIDE, promptInstallLocation, promptAutoAllow, InstallLocation, IDE } from './prompts';
+import {
+  writeMcpConfig,
+  writePermissions,
+  writeClaudeMd,
+  writeHooks,
+  hasClaudeMcpConfig,
+  hasPermissions,
+  hasHooks,
+  writeCursorMcpConfig,
+  writeCursorRules,
+  hasCursorMcpConfig,
+} from './config-writer';
 
 /**
  * Format a number with commas
@@ -38,64 +49,30 @@ export async function runInstaller(): Promise<void> {
     }
     console.log();
 
-    // Step 2: Ask for installation location
-    const location = await promptInstallLocation();
+    // Step 2: Ask which IDE(s) to configure
+    const ide = await promptIDE();
     console.log();
 
-    // Step 3: Write MCP configuration (always uses npx for reliability)
-    const alreadyHasMcp = hasMcpConfig(location);
-    writeMcpConfig(location);
-
-    if (alreadyHasMcp) {
-      success(`Updated MCP server in ${location === 'global' ? '~/.claude.json' : './.claude.json'}`);
-    } else {
-      success(`Added MCP server to ${location === 'global' ? '~/.claude.json' : './.claude.json'}`);
-    }
-
-    // Step 4: Ask about auto-allow permissions
-    const autoAllow = await promptAutoAllow();
+    // Step 3: Ask for installation location
+    const location = await promptInstallLocation(ide);
     console.log();
 
-    if (autoAllow) {
-      const alreadyHasPerms = hasPermissions(location);
-      writePermissions(location);
-
-      if (alreadyHasPerms) {
-        success(`Updated permissions in ${location === 'global' ? '~/.claude/settings.json' : './.claude/settings.json'}`);
-      } else {
-        success(`Added permissions to ${location === 'global' ? '~/.claude/settings.json' : './.claude/settings.json'}`);
+    // Step 4: Configure selected IDEs
+    for (const ideName of ide) {
+      if (ideName === 'claude') {
+        await installForClaude(location);
+      } else if (ideName === 'cursor') {
+        await installForCursor();
       }
     }
 
-    // Step 5: Write auto-sync hooks
-    const alreadyHasHooks = hasHooks(location);
-    writeHooks(location);
-
-    if (alreadyHasHooks) {
-      success(`Updated auto-sync hooks in ${location === 'global' ? '~/.claude/settings.json' : './.claude/settings.json'}`);
-    } else {
-      success(`Added auto-sync hooks to ${location === 'global' ? '~/.claude/settings.json' : './.claude/settings.json'}`);
-    }
-
-    // Step 6: Write CLAUDE.md instructions
-    const claudeMdResult = writeClaudeMd(location);
-    const claudeMdPath = location === 'global' ? '~/.claude/CLAUDE.md' : './.claude/CLAUDE.md';
-
-    if (claudeMdResult.created) {
-      success(`Created ${claudeMdPath} with CodeGraph instructions`);
-    } else if (claudeMdResult.updated) {
-      success(`Updated CodeGraph section in ${claudeMdPath}`);
-    } else {
-      success(`Added CodeGraph instructions to ${claudeMdPath}`);
-    }
-
-    // Step 7: For local install, initialize the project
+    // Step 6: For local install, initialize the project
     if (location === 'local') {
       await initializeLocalProject();
     }
 
     // Show next steps
-    showNextSteps(location);
+    showNextSteps(location, ide);
   } catch (err) {
     console.log();
     if (err instanceof Error && err.message.includes('readline was closed')) {
@@ -167,5 +144,85 @@ async function initializeLocalProject(): Promise<void> {
   cg.close();
 }
 
+/**
+ * Install and configure for Claude Code
+ */
+async function installForClaude(location: InstallLocation): Promise<void> {
+  // Write MCP configuration (always uses npx for reliability)
+  const alreadyHasMcp = hasClaudeMcpConfig(location);
+  writeMcpConfig(location);
+
+  if (alreadyHasMcp) {
+    success(`Updated MCP server in ${location === 'global' ? '~/.claude.json' : './.claude.json'}`);
+  } else {
+    success(`Added MCP server to ${location === 'global' ? '~/.claude.json' : './.claude.json'}`);
+  }
+
+  // Ask about auto-allow permissions
+  const autoAllow = await promptAutoAllow();
+  console.log();
+
+  if (autoAllow) {
+    const alreadyHasPerms = hasPermissions(location);
+    writePermissions(location);
+
+    if (alreadyHasPerms) {
+      success(`Updated permissions in ${location === 'global' ? '~/.claude/settings.json' : './.claude/settings.json'}`);
+    } else {
+      success(`Added permissions to ${location === 'global' ? '~/.claude/settings.json' : './.claude/settings.json'}`);
+    }
+  }
+
+  // Write auto-sync hooks
+  const alreadyHasHooks = hasHooks(location);
+  writeHooks(location);
+
+  if (alreadyHasHooks) {
+    success(`Updated auto-sync hooks in ${location === 'global' ? '~/.claude/settings.json' : './.claude/settings.json'}`);
+  } else {
+    success(`Added auto-sync hooks to ${location === 'global' ? '~/.claude/settings.json' : './.claude/settings.json'}`);
+  }
+
+  // Write CLAUDE.md instructions
+  const claudeMdResult = writeClaudeMd(location);
+  const claudeMdPath = location === 'global' ? '~/.claude/CLAUDE.md' : './.claude/CLAUDE.md';
+
+  if (claudeMdResult.created) {
+    success(`Created ${claudeMdPath} with CodeGraph instructions`);
+  } else if (claudeMdResult.updated) {
+    success(`Updated CodeGraph section in ${claudeMdPath}`);
+  } else {
+    success(`Added CodeGraph instructions to ${claudeMdPath}`);
+  }
+}
+
+/**
+ * Install and configure for Cursor
+ * Note: Cursor only supports local configuration
+ */
+async function installForCursor(): Promise<void> {
+  // Write MCP configuration
+  const alreadyHasMcp = hasCursorMcpConfig();
+  writeCursorMcpConfig();
+
+  if (alreadyHasMcp) {
+    success('Updated MCP server in ./.cursor/mcp.json');
+  } else {
+    success('Added MCP server to ./.cursor/mcp.json');
+  }
+
+  // Write Cursor rules file
+  const cursorRulesResult = writeCursorRules();
+
+  if (cursorRulesResult.created) {
+    success('Created .cursor/rules/codegraph.md with instructions');
+  } else if (cursorRulesResult.updated) {
+    success('Updated .cursor/rules/codegraph.md');
+  }
+
+  console.log();
+  info('Note: MCP tools in Cursor are only available in Agent mode, not Composer');
+}
+
 // Export for use in CLI
-export { InstallLocation };
+export { InstallLocation, IDE };

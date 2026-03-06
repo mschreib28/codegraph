@@ -7,6 +7,8 @@ import * as readline from 'readline';
 import { chalk } from './banner';
 
 export type InstallLocation = 'global' | 'local';
+export type IDEName = 'claude' | 'cursor';
+export type IDE = IDEName[];  // Array of selected IDEs
 
 /**
  * Create a readline interface for prompts
@@ -30,19 +32,78 @@ function prompt(rl: readline.Interface, question: string): Promise<string> {
 }
 
 /**
+ * Prompt for IDE selection with checkbox-style input
+ * Users can select multiple IDEs by entering comma-separated numbers (e.g., "1,2")
+ */
+export async function promptIDE(): Promise<IDE> {
+  const rl = createInterface();
+
+  console.log(chalk.bold('  Which IDE(s) would you like to configure?'));
+  console.log(chalk.dim('  (Enter comma-separated numbers, e.g., "1,2" for both)'));
+  console.log();
+  console.log('  1) Claude Code');
+  console.log('  2) Cursor');
+  console.log();
+
+  const answer = await prompt(rl, '  Selection [1]: ');
+  rl.close();
+
+  // Parse comma-separated selections
+  const selections = (answer === '' ? '1' : answer)
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s !== '');
+
+  const ides: IDEName[] = [];
+
+  for (const selection of selections) {
+    if (selection === '1') {
+      if (!ides.includes('claude')) ides.push('claude');
+    } else if (selection === '2') {
+      if (!ides.includes('cursor')) ides.push('cursor');
+    }
+  }
+
+  // If no valid selections, default to Claude Code
+  if (ides.length === 0) {
+    ides.push('claude');
+  }
+
+  return ides;
+}
+
+/**
  * Prompt for installation location (global or local)
  */
-export async function promptInstallLocation(): Promise<InstallLocation> {
+export async function promptInstallLocation(ides: IDE): Promise<InstallLocation> {
   const rl = createInterface();
+
+  const hasClaudeCode = ides.includes('claude');
+  const hasCursor = ides.includes('cursor');
+  const cursorOnly = hasCursor && !hasClaudeCode;
 
   console.log(chalk.bold('  Where would you like to install?'));
   console.log();
-  console.log('  1) Global (~/.claude) - available in all projects');
-  console.log('  2) Local (./.claude) - this project only');
+
+  if (cursorOnly) {
+    console.log('  1) Global (not supported for Cursor) - using Local');
+    console.log('  2) Local (./.cursor) - this project only');
+  } else {
+    console.log('  1) Global (~/.claude) - available in all projects');
+    console.log('  2) Local (./.claude) - this project only');
+    if (hasCursor) {
+      console.log(chalk.dim('     Note: Cursor will be configured locally regardless'));
+    }
+  }
   console.log();
 
-  const answer = await prompt(rl, '  Choice [1]: ');
+  const answer = await prompt(rl, '  Selection [1]: ');
   rl.close();
+
+  // Cursor only supports local installation
+  if (cursorOnly) {
+    return 'local';
+  }
 
   // Default to '1' if empty, parse the answer
   const choice = answer === '' ? '1' : answer;

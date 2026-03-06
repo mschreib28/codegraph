@@ -77,7 +77,7 @@ export function showBanner(): void {
   console.log(chalk.cyan(banner));
   console.log();
   console.log(`  ${chalk.bold('CodeGraph')} v${getVersion()}`);
-  console.log('  Semantic code intelligence for Claude Code');
+  console.log('  Semantic code intelligence for Claude Code & Cursor');
   console.log(chalk.dim('  Created by: Colby McHenry'));
   console.log();
 }
@@ -113,9 +113,20 @@ export function warn(message: string): void {
 /**
  * Show the "next steps" section after installation
  */
-export function showNextSteps(location: 'global' | 'local'): void {
+export function showNextSteps(location: 'global' | 'local', ides: string[] = ['claude']): void {
   console.log();
-  console.log(chalk.bold('  Done!') + ' Restart Claude Code to use CodeGraph.');
+
+  const hasClaudeCode = ides.includes('claude');
+  const hasCursor = ides.includes('cursor');
+
+  if (hasClaudeCode && hasCursor) {
+    console.log(chalk.bold('  Done!') + ' Restart Claude Code and/or Cursor to use CodeGraph.');
+  } else if (hasCursor) {
+    console.log(chalk.bold('  Done!') + ' Restart Cursor to use CodeGraph MCP tools.');
+  } else {
+    console.log(chalk.bold('  Done!') + ' Restart Claude Code to use CodeGraph.');
+  }
+
   console.log();
 
   if (location === 'global') {
@@ -127,6 +138,13 @@ export function showNextSteps(location: 'global' | 'local'): void {
     console.log(chalk.dim('    npm uninstall -g @colbymchenry/codegraph'));
   } else {
     console.log(chalk.dim('  CodeGraph is ready to use in this project!'));
+
+    if (hasCursor) {
+      console.log();
+      console.log(chalk.dim('  Cursor notes:'));
+      console.log(chalk.dim('    - MCP tools are available in Agent mode only (not Composer)'));
+      console.log(chalk.dim('    - Use @ to access codegraph tools in chat'));
+    }
   }
   console.log();
 }
