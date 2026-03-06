@@ -5,12 +5,14 @@
  * Command-line interface for CodeGraph code intelligence.
  *
  * Usage:
- *   codegraph                        Run interactive installer (when no args)
- *   codegraph install                Run interactive installer
- *   codegraph install --ide=claude   Install for Claude Code only (non-interactive)
- *   codegraph install --ide=cursor   Install for Cursor only (non-interactive)
- *   codegraph install --ide=all      Install for all IDEs (non-interactive)
- *   codegraph init [path]            Initialize CodeGraph in a project
+ *   codegraph                                    Run interactive installer (when no args)
+ *   codegraph install                            Run interactive installer
+ *   codegraph install --ide=claude               Install for Claude Code (prompts for location)
+ *   codegraph install --ide=claude --location=global   Install for Claude Code globally
+ *   codegraph install --ide=claude --location=local    Install for Claude Code locally
+ *   codegraph install --ide=cursor               Install for Cursor only (always local)
+ *   codegraph install --ide=all --location=local Install for all IDEs locally
+ *   codegraph init [path]                        Initialize CodeGraph in a project
  *   codegraph uninit [path]          Remove CodeGraph from a project
  *   codegraph index [path]           Index all files in the project
  *   codegraph sync [path]            Sync changes since last index
@@ -1046,9 +1048,13 @@ program
   .command('install')
   .description('Run interactive installer for IDE integration')
   .option('--ide <ides>', 'IDE(s) to configure (comma-separated: claude,cursor or "all")')
-  .action(async (options: { ide?: string }) => {
+  .option('--location <location>', 'Installation location for Claude Code (global or local)')
+  .action(async (options: { ide?: string; location?: string }) => {
     const { runInstaller } = await import('../installer');
-    await runInstaller(options.ide ? { ide: options.ide } : undefined);
+    const installerOptions = options.ide || options.location
+      ? { ide: options.ide, location: options.location as 'global' | 'local' | undefined }
+      : undefined;
+    await runInstaller(installerOptions);
   });
 
 // Parse and run

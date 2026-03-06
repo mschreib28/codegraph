@@ -629,4 +629,60 @@ describe('Installer Non-Interactive Mode', () => {
       helper.verifyCursorInstall();
     });
   });
+
+  describe('Location Argument Parsing', () => {
+    it('should install Claude Code globally with --location=global', () => {
+      const location: InstallLocation = 'global';
+
+      // Simulate --ide=claude --location=global
+      writeMcpConfig(location);
+      writePermissions(location);
+      writeHooks(location);
+      writeClaudeMd(location);
+
+      helper.verifyClaudeInstall(location);
+    });
+
+    it('should install Claude Code locally with --location=local', () => {
+      const location: InstallLocation = 'local';
+
+      // Simulate --ide=claude --location=local
+      writeMcpConfig(location);
+      writePermissions(location);
+      writeHooks(location);
+      writeClaudeMd(location);
+
+      helper.verifyClaudeInstall(location);
+    });
+
+    it('should install all IDEs locally with --ide=all --location=local', () => {
+      const location: InstallLocation = 'local';
+
+      // Simulate --ide=all --location=local
+      writeMcpConfig(location);
+      writePermissions(location);
+      writeHooks(location);
+      writeClaudeMd(location);
+      writeCursorMcpConfig();
+      writeCursorRules();
+
+      helper.verifyClaudeInstall(location);
+      helper.verifyCursorInstall();
+    });
+
+    it('should install all IDEs globally with --ide=all --location=global', () => {
+      const location: InstallLocation = 'global';
+
+      // Simulate --ide=all --location=global
+      writeMcpConfig(location);
+      writePermissions(location);
+      writeHooks(location);
+      writeClaudeMd(location);
+      writeCursorMcpConfig();
+      writeCursorRules();
+
+      helper.verifyClaudeInstall(location);
+      helper.verifyCursorInstall();
+    });
+  });
 });

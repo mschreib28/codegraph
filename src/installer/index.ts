@@ -57,6 +57,19 @@ function parseIDEArg(ideArg: string): IDE {
 }
 
 /**
+ * Validate location option
+ */
+function validateLocation(location?: string): InstallLocation | undefined {
+  if (!location) return undefined;
+
+  const normalized = location.toLowerCase();
+  if (normalized !== 'global' && normalized !== 'local') {
+    throw new Error(`Invalid location: ${location}. Use "global" or "local"`);
+  }
+  return normalized as InstallLocation;
+}
+
+/**
  * Run the interactive installer
  */
 export async function runInstaller(options?: InstallerOptions): Promise<void> {
@@ -82,7 +95,8 @@ export async function runInstaller(options?: InstallerOptions): Promise<void> {
     console.log();
 
     // Step 3: Ask for installation location (or use provided)
-    const location = options?.location || await promptInstallLocation(ide);
+    const providedLocation = validateLocation(options?.location);
+    const location = providedLocation || await promptInstallLocation(ide);
     console.log();
 
     // Step 4: Configure selected IDEs
