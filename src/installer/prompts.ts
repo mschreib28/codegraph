@@ -14,6 +14,12 @@ export type IDEName = 'claude' | 'cursor';
 export type IDE = IDEName[];  // Array of selected IDEs
 
 /**
+ * Default values for installer
+ */
+export const DEFAULT_IDE: IDEName = 'claude';
+export const DEFAULT_LOCATION: InstallLocation = 'local';
+
+/**
  * Create a readline interface for prompts
  */
 function createInterface(): readline.Interface {
@@ -69,12 +75,12 @@ export async function promptIDE(): Promise<IDE> {
   // Detect installed IDEs
   const detected = detectInstalledIDEs();
 
-  // Non-interactive: use detected IDEs or default to Claude Code
+  // Non-interactive: use detected IDEs or default
   if (!isInteractive()) {
     if (detected.length > 0) {
       return detected;
     }
-    return ['claude'];
+    return [DEFAULT_IDE];
   }
 
   const rl = createInterface();
@@ -123,9 +129,9 @@ export async function promptIDE(): Promise<IDE> {
     }
   }
 
-  // If no valid selections, default to Claude Code
+  // If no valid selections, use default
   if (ides.length === 0) {
-    ides.push('claude');
+    ides.push(DEFAULT_IDE);
   }
 
   return ides;
@@ -152,9 +158,9 @@ export async function promptInstallLocation(ides: IDE): Promise<InstallLocation>
     return 'local';
   }
 
-  // Non-interactive: default to local
+  // Non-interactive: use default location
   if (!isInteractive()) {
-    return 'local';
+    return DEFAULT_LOCATION;
   }
 
   const rl = createInterface();
