@@ -22,7 +22,7 @@
 npx @colbymchenry/codegraph
 ```
 
-<sub>Interactive installer configures Claude Code automatically</sub>
+<sub>Interactive installer configures Claude Code and Cursor automatically</sub>
 
 </div>
 
@@ -162,15 +162,16 @@ npx @colbymchenry/codegraph
 ```
 
 The interactive installer will:
-- Configure the MCP server in `~/.claude.json`
-- Set up auto-allow permissions for CodeGraph tools
-- Add global instructions to `~/.claude/CLAUDE.md` (teaches Claude how to use CodeGraph)
+- Ask which IDE(s) to configure (Claude Code, Cursor, or both)
+- Configure the MCP server (`.claude.json` and/or `.cursor/mcp.json`)
+- Set up auto-allow permissions for CodeGraph tools (Claude Code)
+- Add instructions to teach your IDE how to use CodeGraph
 - Install Claude Code hooks for automatic index syncing
 - Optionally initialize your current project
 
-### 2. Restart Claude Code
+### 2. Restart Your IDE
 
-Restart Claude Code for the MCP server to load.
+Restart Claude Code or Cursor for the MCP server to load.
 
 ### 3. Initialize Projects
 
@@ -181,7 +182,9 @@ cd your-project
 codegraph init -i
 ```
 
-That's it! Claude Code will now use CodeGraph tools automatically when a `.codegraph/` directory exists.
+That's it! Your IDE will now use CodeGraph tools automatically when a `.codegraph/` directory exists.
+
+> **Note for Cursor users:** CodeGraph MCP tools are only available in **Agent mode**, not in Composer.
 
 <details>
 <summary><strong>Manual Setup (Alternative)</strong></summary>
@@ -193,12 +196,11 @@ If you prefer manual configuration:
 npm install -g @colbymchenry/codegraph
 ```
 
-**Add to `~/.claude.json`:**
+**Add to `~/.claude.json` or `./.cursor/mcp.json`:**
 ```json
 {
   "mcpServers": {
     "codegraph": {
-      "type": "stdio",
       "command": "codegraph",
       "args": ["serve", "--mcp"]
     }
@@ -296,21 +298,34 @@ codegraph serve --mcp       # Start MCP server
 
 ### `codegraph` / `codegraph install`
 
-Run the interactive installer for Claude Code integration. Configures MCP server and permissions automatically.
+Run the interactive installer for IDE integration. Configures MCP server and permissions automatically.
 
 ```bash
-codegraph                         # Run installer (when no args)
-codegraph install                 # Run installer (explicit)
-npx @colbymchenry/codegraph       # Run via npx (no global install needed)
+# Interactive mode (prompts for IDE selection and location)
+codegraph                                    # Run installer (when no args)
+codegraph install                            # Run installer (explicit)
+npx @colbymchenry/codegraph                  # Run via npx (no global install needed)
+
+# Non-interactive mode (skip prompts)
+codegraph install --ide=claude --location=local    # Claude Code only (local)
+codegraph install --ide=cursor                     # Cursor only (always local)
+codegraph install --ide=all --location=local       # Both IDEs (local)
+codegraph install --ide=claude,cursor              # Both IDEs (prompts for location)
 ```
 
-The installer will:
-1. Ask for installation location (global `~/.claude` or local `./.claude`)
-2. Configure the MCP server in `claude.json`
-3. Optionally set up auto-allow permissions
-4. Add global instructions to `~/.claude/CLAUDE.md` (teaches Claude how to use CodeGraph)
-5. Install Claude Code hooks for automatic index syncing
-6. For local installs: initialize and index the current project
+**Interactive installer flow:**
+1. Asks which IDE(s) to configure (Claude Code, Cursor, or both)
+2. Asks for installation location (global or local) - defaults to local
+3. Configures the MCP server (`.claude.json` and/or `.cursor/mcp.json`)
+4. Sets up auto-allow permissions (Claude Code only)
+5. Adds instructions to teach your IDE how to use CodeGraph
+6. Installs Claude Code hooks for automatic index syncing
+7. For local installs: optionally initializes and indexes the current project
+
+**Non-interactive mode:**
+- Useful for CI/CD pipelines and scripts
+- Auto-detects non-TTY shells and uses defaults
+- Can specify IDE(s) and location via flags to skip all prompts
 
 ### `codegraph init [path]`
 
