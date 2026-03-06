@@ -60,12 +60,24 @@ function prompt(rl: readline.Interface, question: string): Promise<string> {
  * Prompt for IDE selection with checkbox-style input
  * Users can select multiple IDEs by entering comma-separated numbers (e.g., "1,2")
  * Auto-detects installed IDEs and uses them as defaults
+ *
+ * For non-interactive shells:
+ * - If IDEs are detected, uses detected IDEs
+ * - Otherwise defaults to Claude Code only
  */
 export async function promptIDE(): Promise<IDE> {
-  const rl = createInterface();
-
   // Detect installed IDEs
   const detected = detectInstalledIDEs();
+
+  // Non-interactive: use detected IDEs or default to Claude Code
+  if (!isInteractive()) {
+    if (detected.length > 0) {
+      return detected;
+    }
+    return ['claude'];
+  }
+
+  const rl = createInterface();
 
   // Build default selection string
   const defaultSelections: string[] = [];
@@ -120,45 +132,53 @@ export async function promptIDE(): Promise<IDE> {
 }
 
 /**
+ * Check if running in an interactive terminal
+ */
+export function isInteractive(): boolean {
+  return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
+/**
  * Prompt for installation location (global or local)
+ * Defaults to 'local' for non-interactive shells
  */
 export async function promptInstallLocation(ides: IDE): Promise<InstallLocation> {
-  const rl = createInterface();
-
   const hasClaudeCode = ides.includes('claude');
   const hasCursor = ides.includes('cursor');
   const cursorOnly = hasCursor && !hasClaudeCode;
-
-  console.log(chalk.bold('  Where would you like to install?'));
-  console.log();
-
-  if (cursorOnly) {
-    console.log('  1) Global (not supported for Cursor) - using Local');
-    console.log('  2) Local (./.cursor) - this project only');
-  } else {
-    console.log('  1) Global (~/.claude) - available in all projects');
-    console.log('  2) Local (./.claude) - this project only');
-    if (hasCursor) {
-      console.log(chalk.dim('     Note: Cursor will be configured locally regardless'));
-    }
-  }
-  console.log();
-
-  const answer = await prompt(rl, '  Selection [1]: ');
-  rl.close();
 
   // Cursor only supports local installation
   if (cursorOnly) {
     return 'local';
   }
 
-  // Default to '1' if empty, parse the answer
+  // Non-interactive: default to local
+  if (!isInteractive()) {
+    return 'local';
+  }
+
+  const rl = createInterface();
+
+  console.log(chalk.bold('  Where would you like to install?'));
+  console.log();
+
+  console.log('  1) Local (./.claude) - this project only');
+  console.log('  2) Global (~/.claude) - available in all projects');
+  if (hasCursor) {
+    console.log(chalk.dim('     Note: Cursor will be configured locally regardless'));
+  }
+  console.log();
+
+  const answer = await prompt(rl, '  Selection [1]: ');
+  rl.close();
+
+  // Default to '1' (local) if empty, parse the answer
   const choice = answer === '' ? '1' : answer;
 
   if (choice === '2') {
-    return 'local';
+    return 'global';
   }
-  return 'global';
+  return 'local';
 }
 
 /**
