@@ -5,23 +5,23 @@
  * Command-line interface for CodeGraph code intelligence.
  *
  * Usage:
- *   codegraph                                    Run interactive installer (when no args)
- *   codegraph install                            Run interactive installer
- *   codegraph install --ide=claude               Install for Claude Code (prompts for location)
+ *   codegraph                                          Run interactive installer (when no args)
+ *   codegraph install                                  Run interactive installer
+ *   codegraph install --ide=claude                     Install for Claude Code (prompts for location)
  *   codegraph install --ide=claude --location=global   Install for Claude Code globally
  *   codegraph install --ide=claude --location=local    Install for Claude Code locally
- *   codegraph install --ide=cursor               Install for Cursor only (always local)
- *   codegraph install --ide=all --location=local Install for all IDEs locally
- *   codegraph init [path]                        Initialize CodeGraph in a project
- *   codegraph uninit [path]          Remove CodeGraph from a project
- *   codegraph index [path]           Index all files in the project
- *   codegraph sync [path]            Sync changes since last index
- *   codegraph status [path]          Show index status
- *   codegraph query <search>         Search for symbols
- *   codegraph files [options]        Show project file structure
- *   codegraph context <task>         Build context for a task
- *   codegraph mark-dirty [path]      Mark project as needing sync (hooks)
- *   codegraph sync-if-dirty [path]   Sync if marked dirty (hooks)
+ *   codegraph install --ide=cursor                     Install for Cursor only (always local)
+ *   codegraph install --ide=all --location=local       Install for all IDEs locally
+ *   codegraph init [path]                              Initialize CodeGraph in a project
+ *   codegraph uninit [path]                            Remove CodeGraph from a project
+ *   codegraph index [path]                             Index all files in the project
+ *   codegraph sync [path]                              Sync changes since last index
+ *   codegraph status [path]                            Show index status
+ *   codegraph query <search>                           Search for symbols
+ *   codegraph files [options]                          Show project file structure
+ *   codegraph context <task>                           Build context for a task
+ *   codegraph mark-dirty [path]                        Mark project as needing sync (hooks)
+ *   codegraph sync-if-dirty [path]                     Sync if marked dirty (hooks)
  *
  * Note: Git hooks have been removed. CodeGraph sync is triggered automatically
  * through codegraph's Claude Code hooks integration.
