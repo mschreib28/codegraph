@@ -5,18 +5,21 @@
  * Command-line interface for CodeGraph code intelligence.
  *
  * Usage:
- *   codegraph                    Run interactive installer (when no args)
- *   codegraph install            Run interactive installer
- *   codegraph init [path]        Initialize CodeGraph in a project
- *   codegraph uninit [path]      Remove CodeGraph from a project
- *   codegraph index [path]       Index all files in the project
- *   codegraph sync [path]        Sync changes since last index
- *   codegraph status [path]      Show index status
- *   codegraph query <search>     Search for symbols
- *   codegraph files [options]    Show project file structure
- *   codegraph context <task>     Build context for a task
- *   codegraph mark-dirty [path]  Mark project as needing sync (hooks)
- *   codegraph sync-if-dirty [path] Sync if marked dirty (hooks)
+ *   codegraph                        Run interactive installer (when no args)
+ *   codegraph install                Run interactive installer
+ *   codegraph install --ide=claude   Install for Claude Code only (non-interactive)
+ *   codegraph install --ide=cursor   Install for Cursor only (non-interactive)
+ *   codegraph install --ide=all      Install for all IDEs (non-interactive)
+ *   codegraph init [path]            Initialize CodeGraph in a project
+ *   codegraph uninit [path]          Remove CodeGraph from a project
+ *   codegraph index [path]           Index all files in the project
+ *   codegraph sync [path]            Sync changes since last index
+ *   codegraph status [path]          Show index status
+ *   codegraph query <search>         Search for symbols
+ *   codegraph files [options]        Show project file structure
+ *   codegraph context <task>         Build context for a task
+ *   codegraph mark-dirty [path]      Mark project as needing sync (hooks)
+ *   codegraph sync-if-dirty [path]   Sync if marked dirty (hooks)
  *
  * Note: Git hooks have been removed. CodeGraph sync is triggered automatically
  * through codegraph's Claude Code hooks integration.
@@ -56,7 +59,7 @@ initSentry({ processName: 'codegraph-cli', version: pkgVersion });
 
 if (process.argv.length === 2) {
   import('../installer').then(({ runInstaller }) =>
-    runInstaller()
+    runInstaller(undefined)
   ).catch((err) => {
     captureException(err);
     console.error('Installation failed:', err instanceof Error ? err.message : String(err));
@@ -1041,10 +1044,11 @@ program
  */
 program
   .command('install')
-  .description('Run interactive installer for Claude Code integration')
-  .action(async () => {
+  .description('Run interactive installer for IDE integration')
+  .option('--ide <ides>', 'IDE(s) to configure (comma-separated: claude,cursor or "all")')
+  .action(async (options: { ide?: string }) => {
     const { runInstaller } = await import('../installer');
-    await runInstaller();
+    await runInstaller(options.ide ? { ide: options.ide } : undefined);
   });
 
 // Parse and run

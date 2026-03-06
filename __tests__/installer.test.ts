@@ -558,3 +558,75 @@ describe('Installer E2E Tests', () => {
     });
   });
 });
+
+/**
+ * Non-Interactive Installer Tests
+ *
+ * Tests CLI argument parsing for --ide flag
+ */
+describe('Installer Non-Interactive Mode', () => {
+  let helper: InstallerTestHelper;
+
+  beforeEach(() => {
+    helper = new InstallerTestHelper();
+    helper.setup();
+  });
+
+  afterEach(() => {
+    helper.cleanup();
+  });
+
+  describe('IDE Argument Parsing', () => {
+    it('should parse single IDE: claude', () => {
+      const location: InstallLocation = 'local';
+
+      // Simulate --ide=claude
+      writeMcpConfig(location);
+      writePermissions(location);
+      writeHooks(location);
+      writeClaudeMd(location);
+
+      helper.verifyClaudeInstall(location);
+      helper.verifyCursorNotInstalled();
+    });
+
+    it('should parse single IDE: cursor', () => {
+      // Simulate --ide=cursor
+      writeCursorMcpConfig();
+      writeCursorRules();
+
+      helper.verifyCursorInstall();
+      helper.verifyClaudeNotInstalled('local');
+    });
+
+    it('should parse comma-separated IDEs: claude,cursor', () => {
+      const location: InstallLocation = 'local';
+
+      // Simulate --ide=claude,cursor
+      writeMcpConfig(location);
+      writePermissions(location);
+      writeHooks(location);
+      writeClaudeMd(location);
+      writeCursorMcpConfig();
+      writeCursorRules();
+
+      helper.verifyClaudeInstall(location);
+      helper.verifyCursorInstall();
+    });
+
+    it('should parse "all" as both IDEs', () => {
+      const location: InstallLocation = 'local';
+
+      // Simulate --ide=all
+      writeMcpConfig(location);
+      writePermissions(location);
+      writeHooks(location);
+      writeClaudeMd(location);
+      writeCursorMcpConfig();
+      writeCursorRules();
+
+      helper.verifyClaudeInstall(location);
+      helper.verifyCursorInstall();
+    });
+  });
+});

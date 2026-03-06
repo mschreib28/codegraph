@@ -29,9 +29,37 @@ function formatNumber(n: number): string {
 }
 
 /**
+ * Installer options for non-interactive mode
+ */
+export interface InstallerOptions {
+  ide?: string; // Comma-separated list or "all"
+  location?: 'global' | 'local';
+}
+
+/**
+ * Parse IDE string from CLI argument
+ */
+function parseIDEArg(ideArg: string): IDE {
+  if (ideArg.toLowerCase() === 'all') {
+    return ['claude', 'cursor'];
+  }
+  const ides = ideArg.split(',').map(s => s.trim().toLowerCase());
+  const valid: IDE = [];
+  for (const ide of ides) {
+    if (ide === 'claude' || ide === 'cursor') {
+      valid.push(ide);
+    }
+  }
+  if (valid.length === 0) {
+    throw new Error(`Invalid IDE(s): ${ideArg}. Use "claude", "cursor", or "all"`);
+  }
+  return valid;
+}
+
+/**
  * Run the interactive installer
  */
-export async function runInstaller(): Promise<void> {
+export async function runInstaller(options?: InstallerOptions): Promise<void> {
   // Show the banner
   showBanner();
 
@@ -49,12 +77,12 @@ export async function runInstaller(): Promise<void> {
     }
     console.log();
 
-    // Step 2: Ask which IDE(s) to configure
-    const ide = await promptIDE();
+    // Step 2: Ask which IDE(s) to configure (or use provided)
+    const ide = options?.ide ? parseIDEArg(options.ide) : await promptIDE();
     console.log();
 
-    // Step 3: Ask for installation location
-    const location = await promptInstallLocation(ide);
+    // Step 3: Ask for installation location (or use provided)
+    const location = options?.location || await promptInstallLocation(ide);
     console.log();
 
     // Step 4: Configure selected IDEs
