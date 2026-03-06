@@ -24,6 +24,14 @@ import {
   writeCursorRules,
   hasCursorMcpConfig,
 } from '../src/installer/config-writer';
+import {
+  isInteractive,
+  promptIDE,
+  promptInstallLocation,
+  DEFAULT_IDE,
+  DEFAULT_LOCATION,
+} from '../src/installer/prompts';
+import { parseIDEArg, validateLocation } from '../src/installer/index';
 import type { InstallLocation } from '../src/installer/prompts';
 
 function createTempDir(): string {
@@ -684,5 +692,203 @@ describe('Installer Non-Interactive Mode', () => {
       helper.verifyClaudeInstall(location);
       helper.verifyCursorInstall();
     });
+  });
+});
+
+/**
+ * isInteractive() Tests
+ */
+describe('isInteractive', () => {
+  let origStdinTTY: true | undefined;
+  let origStdoutTTY: true | undefined;
+
+  beforeEach(() => {
+    origStdinTTY = process.stdin.isTTY;
+    origStdoutTTY = process.stdout.isTTY;
+  });
+
+  afterEach(() => {
+    // @ts-expect-error — restoring possibly-undefined TTY flag
+    process.stdin.isTTY = origStdinTTY;
+    // @ts-expect-error
+    process.stdout.isTTY = origStdoutTTY;
+  });
+
+  it('returns false when stdin is not a TTY (typical CI/test env)', () => {
+    // @ts-expect-error
+    process.stdin.isTTY = undefined;
+    // @ts-expect-error
+    process.stdout.isTTY = true;
+    expect(isInteractive()).toBe(false);
+  });
+
+  it('returns false when stdout is not a TTY', () => {
+    // @ts-expect-error
+    process.stdin.isTTY = true;
+    // @ts-expect-error
+    process.stdout.isTTY = undefined;
+    expect(isInteractive()).toBe(false);
+  });
+
+  it('returns false when both stdin and stdout are not TTYs', () => {
+    // @ts-expect-error
+    process.stdin.isTTY = undefined;
+    // @ts-expect-error
+    process.stdout.isTTY = undefined;
+    expect(isInteractive()).toBe(false);
+  });
+
+  it('returns true when both stdin and stdout are TTYs', () => {
+    // @ts-expect-error
+    process.stdin.isTTY = true;
+    // @ts-expect-error
+    process.stdout.isTTY = true;
+    expect(isInteractive()).toBe(true);
+  });
+});
+
+/**
+ * promptIDE() non-interactive behavior
+ *
+ * Tests run without a TTY so isInteractive() returns false,
+ * exercising the non-interactive code path in promptIDE().
+ */
+describe('promptIDE non-interactive', () => {
+  let origCwd: string;
+  let origHome: string | undefined;
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-prompt-test-'));
+    origCwd = process.cwd();
+    origHome = process.env.HOME;
+    process.chdir(tempDir);
+    process.env.HOME = tempDir;
+  });
+
+  afterEach(() => {
+    process.chdir(origCwd);
+    if (origHome !== undefined) process.env.HOME = origHome;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('returns [DEFAULT_IDE] when no IDEs are detected', async () => {
+    const result = await promptIDE();
+    expect(result).toEqual([DEFAULT_IDE]);
+  });
+
+  it('returns [claude] when Claude config directory exists', async () => {
+    // detectInstalledIDEs checks for .claude dir in cwd or homedir
+    fs.mkdirSync(path.join(tempDir, '.claude'), { recursive: true });
+    const result = await promptIDE();
+    expect(result).toContain('claude');
+  });
+
+  it('returns [cursor] when Cursor config directory exists', async () => {
+    fs.mkdirSync(path.join(tempDir, '.cursor'), { recursive: true });
+    const result = await promptIDE();
+    expect(result).toContain('cursor');
+  });
+
+  it('returns both IDEs when both config directories exist', async () => {
+    fs.mkdirSync(path.join(tempDir, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(tempDir, '.cursor'), { recursive: true });
+    const result = await promptIDE();
+    expect(result).toContain('claude');
+    expect(result).toContain('cursor');
+  });
+});
+
+/**
+ * promptInstallLocation() non-interactive behavior
+ *
+ * Tests run without a TTY so the non-interactive path is taken.
+ */
+describe('promptInstallLocation non-interactive', () => {
+  it('returns DEFAULT_LOCATION for claude-only', async () => {
+    const result = await promptInstallLocation(['claude']);
+    expect(result).toBe(DEFAULT_LOCATION);
+    expect(result).toBe('local');
+  });
+
+  it('returns local for cursor-only (always local)', async () => {
+    const result = await promptInstallLocation(['cursor']);
+    expect(result).toBe('local');
+  });
+
+  it('returns DEFAULT_LOCATION for both IDEs', async () => {
+    const result = await promptInstallLocation(['claude', 'cursor']);
+    expect(result).toBe(DEFAULT_LOCATION);
+  });
+});
+
+/**
+ * parseIDEArg() Tests
+ */
+describe('parseIDEArg', () => {
+  it('parses "claude" → ["claude"]', () => {
+    expect(parseIDEArg('claude')).toEqual(['claude']);
+  });
+
+  it('parses "cursor" → ["cursor"]', () => {
+    expect(parseIDEArg('cursor')).toEqual(['cursor']);
+  });
+
+  it('parses "all" → ["claude", "cursor"]', () => {
+    expect(parseIDEArg('all')).toEqual(['claude', 'cursor']);
+  });
+
+  it('parses "claude,cursor" → ["claude", "cursor"]', () => {
+    expect(parseIDEArg('claude,cursor')).toEqual(['claude', 'cursor']);
+  });
+
+  it('is case-insensitive', () => {
+    expect(parseIDEArg('Claude')).toEqual(['claude']);
+    expect(parseIDEArg('CURSOR')).toEqual(['cursor']);
+    expect(parseIDEArg('ALL')).toEqual(['claude', 'cursor']);
+  });
+
+  it('trims whitespace in comma-separated values', () => {
+    expect(parseIDEArg(' claude , cursor ')).toEqual(['claude', 'cursor']);
+  });
+
+  it('throws for an unrecognized IDE name', () => {
+    expect(() => parseIDEArg('vscode')).toThrow(/Invalid IDE/);
+  });
+
+  it('throws when all values are unrecognized', () => {
+    expect(() => parseIDEArg('vscode,vim')).toThrow(/Invalid IDE/);
+  });
+
+  it('includes only valid IDEs from a mixed list', () => {
+    // "claude" is valid, "vscode" is not — valid ones are kept, but if zero valid → throws
+    expect(parseIDEArg('claude,vscode')).toEqual(['claude']);
+  });
+});
+
+/**
+ * validateLocation() Tests
+ */
+describe('validateLocation', () => {
+  it('returns "global" for "global"', () => {
+    expect(validateLocation('global')).toBe('global');
+  });
+
+  it('returns "local" for "local"', () => {
+    expect(validateLocation('local')).toBe('local');
+  });
+
+  it('is case-insensitive', () => {
+    expect(validateLocation('Global')).toBe('global');
+    expect(validateLocation('LOCAL')).toBe('local');
+  });
+
+  it('returns undefined for undefined', () => {
+    expect(validateLocation(undefined)).toBeUndefined();
+  });
+
+  it('throws for an invalid location', () => {
+    expect(() => validateLocation('project')).toThrow(/Invalid location/);
+    expect(() => validateLocation('home')).toThrow(/Invalid location/);
   });
 });

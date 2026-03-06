@@ -38,8 +38,9 @@ export interface InstallerOptions {
 
 /**
  * Parse IDE string from CLI argument
+ * Exported for testing.
  */
-function parseIDEArg(ideArg: string): IDE {
+export function parseIDEArg(ideArg: string): IDE {
   if (ideArg.toLowerCase() === 'all') {
     return ['claude', 'cursor'];
   }
@@ -58,8 +59,9 @@ function parseIDEArg(ideArg: string): IDE {
 
 /**
  * Validate location option
+ * Exported for testing.
  */
-function validateLocation(location?: string): InstallLocation | undefined {
+export function validateLocation(location?: string): InstallLocation | undefined {
   if (!location) return undefined;
 
   const normalized = location.toLowerCase();
