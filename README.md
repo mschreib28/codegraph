@@ -133,7 +133,7 @@ Know exactly what breaks before you change it. Trace callers, callees, and the f
 <td width="33%" valign="top">
 
 ### 🌍 19+ Languages
-TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Kotlin, Dart, Svelte, Liquid, Pascal/Delphi—all with the same API.
+TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Kotlin, Dart, Svelte, Liquid, Pascal/Delphi, ReScript—all with the same API.
 
 </td>
 <td width="33%" valign="top">
@@ -639,6 +639,7 @@ The `.codegraph/config.json` file controls indexing behavior:
 | Svelte | `.svelte` | Full support (script extraction, Svelte 5 runes, SvelteKit routes) |
 | Liquid | `.liquid` | Full support |
 | Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr` | Full support (classes, records, interfaces, enums, DFM/FMX form files) |
+| ReScript | `.res`, `.resi` | Full support (modules, functors, functions, records, variants, pattern matching, JSX components) |
 
 ## 🔧 Troubleshooting
 
