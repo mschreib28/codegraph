@@ -135,7 +135,7 @@ gcc -shared -fPIC -O2 -I /tmp/tree-sitter-rescript/src \
 ### 1. Clone and build
 
 ```bash
-git clone -b feat/rescript-support https://github.com/malo/codegraph.git
+git clone https://github.com/colbymchenry/codegraph.git
 cd codegraph
 npm install
 npm run build
