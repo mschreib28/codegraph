@@ -814,63 +814,64 @@ const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
     },
   },
   mql5: {
-    functionTypes: ['declProc'],
-    classTypes: ['declClass'],
-    methodTypes: ['declProc'],
-    interfaceTypes: ['declIntf'],
-    structTypes: [],
-    enumTypes: ['declEnum'],
-    typeAliasTypes: ['declType'],
-    importTypes: ['declUses'],
-    callTypes: ['exprCall'],
-    variableTypes: ['declField', 'declConst'],
+    functionTypes: ['function_definition'],
+    classTypes: ['class_definition'],
+    methodTypes: ['function_definition'],
+    interfaceTypes: [],
+    structTypes: ['struct_definition'],
+    enumTypes: ['enum_definition'],
+    typeAliasTypes: ['type'],
+    importTypes: ['preproc_include'],
+    callTypes: ['function_call'],
+    variableTypes: ['variable_declaration'],
     nameField: 'name',
-    bodyField: 'body',
-    paramsField: 'args',
+    bodyField: 'block',
+    paramsField: 'parameter',
     returnField: 'type',
+
     getSignature: (node, source) => {
-      const args = getChildByField(node, 'args');
-      const returnType = node.namedChildren.find(
-        (c: SyntaxNode) => c.type === 'typeref'
-      );
-      if (!args && !returnType) return undefined;
+      const params = getChildByField(node, 'parameter');
+      const returnType = getChildByField(node, 'type');
+
       let sig = '';
-      if (args) sig = getNodeText(args, source);
-      if (returnType) {
-        sig += ': ' + getNodeText(returnType, source);
+
+      if (params) {
+        sig += getNodeText(params, source);
       }
+
+      if (returnType) {
+        sig = `${getNodeText(returnType, source)} ${sig}`;
+      }
+
       return sig || undefined;
     },
-    getVisibility: (node) => {
-      let current = node.parent;
-      while (current) {
-        if (current.type === 'declSection') {
-          for (let i = 0; i < current.childCount; i++) {
-            const child = current.child(i);
-            if (child?.type === 'kPublic' || child?.type === 'kPublished')
-              return 'public';
-            if (child?.type === 'kPrivate') return 'private';
-            if (child?.type === 'kProtected') return 'protected';
-          }
-        }
-        current = current.parent;
-      }
-      return undefined;
+
+    getVisibility: (_node) => {
+      // MQL5 n'a pas de visibilité explicite
+      return 'public';
     },
+
     isExported: (_node, _source) => {
-      // In Pascal, symbols declared in the interface section are exported
-      return false;
+      // Tout est visible dans MQL5
+      return true;
     },
+
     isStatic: (node) => {
       for (let i = 0; i < node.childCount; i++) {
-        if (node.child(i)?.type === 'kClass') return true;
+        const child = node.child(i);
+        if (child?.type === 'static') return true;
       }
       return false;
     },
+
     isConst: (node) => {
-      return node.type === 'declConst';
-    },
-  },
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (child?.type === 'const') return true;
+      }
+      return false;
+    }
+  }
 };
 
 // TSX and JSX use the same extractors as their base languages
