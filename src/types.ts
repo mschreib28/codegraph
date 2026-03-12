@@ -75,6 +75,7 @@ export type Language =
   | 'svelte'
   | 'liquid'
   | 'pascal'
+  | 'rescript'
   | 'unknown';
 
 // =============================================================================
@@ -527,6 +528,9 @@ export const DEFAULT_CONFIG: CodeGraphConfig = {
     '**/*.lpr',
     '**/*.dfm',
     '**/*.fmx',
+    // ReScript
+    '**/*.res',
+    '**/*.resi',
   ],
   exclude: [
     // Version control
@@ -636,6 +640,11 @@ export const DEFAULT_CONFIG: CodeGraphConfig = {
     '**/__history/**',
     '**/__recovery/**',
     '**/*.dcu',
+
+    // ReScript
+    '**/.rescript/**',
+    '**/lib/bs/**',
+    '**/lib/ocaml/**',
 
     // PHP
     '**/.composer/**',

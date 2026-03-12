@@ -813,6 +813,61 @@ const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
       return node.type === 'declConst';
     },
   },
+  rescript: {
+    // ReScript uses wrapper nodes (let_declaration → let_binding, etc.)
+    // Most extraction is handled by visitReScriptNode() which unwraps these.
+    // The extractor arrays here catch nodes that visitNode dispatches directly.
+    functionTypes: [], // Handled by visitReScriptNode (let_declaration with function body)
+    classTypes: [],    // ReScript has no classes
+    methodTypes: [],   // ReScript has no methods
+    interfaceTypes: [], // Handled by visitReScriptNode (module_declaration with signature only)
+    structTypes: [],   // Handled by visitReScriptNode (type_declaration with record_type body)
+    enumTypes: [],     // Handled by visitReScriptNode (type_declaration with variant_declaration body)
+    typeAliasTypes: [], // Handled by visitReScriptNode (type_declaration)
+    importTypes: ['open_statement', 'include_statement'],
+    callTypes: ['call_expression', 'pipe_expression'],
+    variableTypes: [], // Handled by visitReScriptNode (let_declaration with non-function body)
+    nameField: 'name',
+    bodyField: 'body',
+    paramsField: 'parameters',
+    returnField: 'return_type',
+    getSignature: (node, source) => {
+      // For let_binding with function body, extract parameter list
+      if (node.type === 'let_binding') {
+        const body = getChildByField(node, 'body');
+        if (body?.type === 'function') {
+          const params = getChildByField(body, 'parameters');
+          const returnType = getChildByField(body, 'return_type');
+          if (params) {
+            let sig = getNodeText(params, source);
+            if (returnType) sig += ' => ' + getNodeText(returnType, source);
+            return sig;
+          }
+        }
+      }
+      // For external_declaration, show the type annotation
+      if (node.type === 'external_declaration') {
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const child = node.namedChild(i);
+          if (child?.type === 'type_annotation') {
+            return getNodeText(child, source);
+          }
+        }
+      }
+      return undefined;
+    },
+    isAsync: (node) => {
+      // Check if the function body starts with async
+      if (node.type === 'let_binding') {
+        const body = getChildByField(node, 'body');
+        if (body?.type === 'function') {
+          const funcBody = getChildByField(body, 'body');
+          if (funcBody?.type === 'await_expression') return true;
+        }
+      }
+      return false;
+    },
+  },
 };
 
 // TSX and JSX use the same extractors as their base languages
@@ -989,6 +1044,12 @@ export class TreeSitterExtractor {
     // Pascal-specific AST handling
     if (this.language === 'pascal') {
       skipChildren = this.visitPascalNode(node);
+      if (skipChildren) return;
+    }
+
+    // ReScript-specific AST handling
+    if (this.language === 'rescript') {
+      skipChildren = this.visitReScriptNode(node);
       if (skipChildren) return;
     }
 
@@ -1915,6 +1976,27 @@ export class TreeSitterExtractor {
         });
       }
       return; // C/C++ handled completely above
+    } else if (this.language === 'rescript') {
+      // ReScript: open ModuleName, include ModuleName
+      // The child is a module_expression containing the module path
+      const moduleExpr = node.namedChildren.find(c => c.type === 'module_expression');
+      if (moduleExpr) {
+        moduleName = getNodeText(moduleExpr, this.source);
+      } else {
+        // Fallback: first module_identifier or module_identifier_path
+        const moduleId = node.namedChildren.find(c =>
+          c.type === 'module_identifier' || c.type === 'module_identifier_path'
+        );
+        if (moduleId) {
+          moduleName = getNodeText(moduleId, this.source);
+        }
+      }
+      if (moduleName) {
+        this.createNode('import', moduleName, node, {
+          signature: importText,
+        });
+      }
+      return; // ReScript handled completely above
     } else {
       // Generic extraction for other languages
       moduleName = importText;
@@ -2451,6 +2533,400 @@ export class TreeSitterExtractor {
         this.visitPascalBlock(child);
       }
     }
+  }
+
+  // ==========================================================================
+  // ReScript-specific extraction
+  // ==========================================================================
+
+  /**
+   * Handle ReScript-specific AST nodes.
+   * Returns true if the node was handled (skip default visitNode processing).
+   *
+   * ReScript uses wrapper nodes:
+   * - let_declaration → let_binding → pattern (name) + body
+   * - module_declaration → module_binding → name + definition/signature
+   * - type_declaration → type_binding → name + body
+   * - external_declaration → value_identifier + type_annotation + string
+   */
+  private visitReScriptNode(node: SyntaxNode): boolean {
+    const nodeType = node.type;
+
+    // ERROR nodes in tree-sitter-rescript often contain valid structures
+    // (type_binding, let_binding, etc.) — walk their children to extract.
+    if (nodeType === 'ERROR') {
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (child) this.visitReScriptNode(child);
+      }
+      return true;
+    }
+
+    // let_declaration: unwrap to let_binding, then decide function vs variable
+    if (nodeType === 'let_declaration') {
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const binding = node.namedChild(i);
+        if (binding?.type === 'let_binding') {
+          this.extractReScriptLetBinding(binding);
+        }
+      }
+      return true;
+    }
+
+    // Bare let_binding (inside ERROR nodes)
+    if (nodeType === 'let_binding') {
+      this.extractReScriptLetBinding(node);
+      return true;
+    }
+
+    // module_declaration: unwrap to module_binding
+    if (nodeType === 'module_declaration') {
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const binding = node.namedChild(i);
+        if (binding?.type === 'module_binding') {
+          this.extractReScriptModule(binding, node);
+        }
+      }
+      return true;
+    }
+
+    // type_declaration: unwrap to type_binding
+    if (nodeType === 'type_declaration') {
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const binding = node.namedChild(i);
+        if (binding?.type === 'type_binding') {
+          this.extractReScriptType(binding, node);
+        }
+      }
+      return true;
+    }
+
+    // Bare type_binding (inside ERROR nodes)
+    if (nodeType === 'type_binding') {
+      this.extractReScriptType(node, node);
+      return true;
+    }
+
+    // external_declaration: FFI binding → function node
+    if (nodeType === 'external_declaration') {
+      this.extractReScriptExternal(node);
+      return true;
+    }
+
+    // exception_declaration
+    if (nodeType === 'exception_declaration') {
+      const name = this.findReScriptChildText(node, 'variant_identifier');
+      if (name) {
+        this.createNode('type_alias', name, node, {
+          docstring: getPrecedingDocstring(node, this.source),
+        });
+      }
+      return true;
+    }
+
+    // pipe_expression: extract call edge to the piped function
+    if (nodeType === 'pipe_expression') {
+      this.extractReScriptPipeCall(node);
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Extract a ReScript let binding — function or variable depending on body type
+   */
+  private extractReScriptLetBinding(binding: SyntaxNode): void {
+    const patternNode = getChildByField(binding, 'pattern');
+    if (!patternNode) return;
+    const name = getNodeText(patternNode, this.source);
+    if (!name || name === '_') return;
+
+    const body = getChildByField(binding, 'body');
+    const docstring = getPrecedingDocstring(binding.parent || binding, this.source);
+    const decorators = this.extractReScriptDecorators(binding.parent || binding);
+
+    if (body?.type === 'function') {
+      // Function binding: let foo = (x, y) => body
+      const signature = this.extractor?.getSignature?.(binding, this.source);
+      const funcNode = this.createNode('function', name, binding.parent || binding, {
+        docstring,
+        signature,
+        decorators,
+      });
+
+      // Visit function body for calls
+      this.nodeStack.push(funcNode.id);
+      const funcBody = getChildByField(body, 'body');
+      if (funcBody) {
+        this.visitReScriptBody(funcBody);
+      }
+      this.nodeStack.pop();
+    } else {
+      // Variable binding: let x = expr
+      const initValue = body ? getNodeText(body, this.source).slice(0, 100) : undefined;
+      const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
+
+      this.createNode('variable', name, binding.parent || binding, {
+        docstring,
+        signature: initSignature,
+        decorators,
+      });
+
+      // Visit body for call expressions (e.g., let x = Foo.bar(arg))
+      if (body) {
+        this.visitReScriptBody(body);
+      }
+    }
+  }
+
+  /**
+   * Extract a ReScript module declaration
+   */
+  private extractReScriptModule(binding: SyntaxNode, declNode: SyntaxNode): void {
+    const nameNode = getChildByField(binding, 'name');
+    if (!nameNode) return;
+    const name = getNodeText(nameNode, this.source);
+    const docstring = getPrecedingDocstring(declNode, this.source);
+    const definition = getChildByField(binding, 'definition');
+    const signature = getChildByField(binding, 'signature');
+
+    // Check if this is a `module type` declaration (has non-named 'type' child)
+    let isModuleType = false;
+    for (let i = 0; i < declNode.childCount; i++) {
+      const child = declNode.child(i);
+      if (child?.type === 'type' && !child.isNamed) {
+        isModuleType = true;
+        break;
+      }
+    }
+
+    // Module type → interface, regular module → namespace
+    const kind: NodeKind = isModuleType ? 'interface' : 'namespace';
+    const moduleNode = this.createNode(kind, name, declNode, {
+      docstring,
+    });
+
+    // Visit module body for nested declarations
+    const body = definition || signature;
+    if (body) {
+      this.nodeStack.push(moduleNode.id);
+      if (body.type === 'block') {
+        // Module body block — visit each child
+        for (let i = 0; i < body.namedChildCount; i++) {
+          const child = body.namedChild(i);
+          if (child) this.visitNode(child);
+        }
+      } else if (body.type === 'functor') {
+        // Functor: module Make = (Config: T) => { ... }
+        const functorBody = getChildByField(body, 'body');
+        if (functorBody?.type === 'block') {
+          for (let i = 0; i < functorBody.namedChildCount; i++) {
+            const child = functorBody.namedChild(i);
+            if (child) this.visitNode(child);
+          }
+        }
+      } else if (body.type === 'module_expression') {
+        // Module alias: module X = OtherModule
+        const aliasName = getNodeText(body, this.source);
+        this.unresolvedReferences.push({
+          fromNodeId: moduleNode.id,
+          referenceName: aliasName,
+          referenceKind: 'references',
+          line: body.startPosition.row + 1,
+          column: body.startPosition.column,
+        });
+      }
+      this.nodeStack.pop();
+    }
+  }
+
+  /**
+   * Extract a ReScript type declaration
+   */
+  private extractReScriptType(binding: SyntaxNode, declNode: SyntaxNode): void {
+    const nameNode = getChildByField(binding, 'name');
+    if (!nameNode) return;
+    const name = getNodeText(nameNode, this.source);
+    const docstring = getPrecedingDocstring(declNode, this.source);
+
+    // Determine the kind based on the body type
+    let kind: NodeKind = 'type_alias';
+
+    // Check children of the type_binding for the actual type form
+    for (let i = 0; i < binding.namedChildCount; i++) {
+      const child = binding.namedChild(i);
+      if (child?.type === 'variant_type' || child?.type === 'variant_declaration') {
+        kind = 'enum';
+        break;
+      }
+      if (child?.type === 'record_type') {
+        kind = 'struct';
+        break;
+      }
+    }
+
+    const typeNode = this.createNode(kind, name, declNode, {
+      docstring,
+    });
+
+    // For enums, extract variant members
+    if (kind === 'enum') {
+      this.nodeStack.push(typeNode.id);
+      const extractVariants = (container: SyntaxNode) => {
+        for (let i = 0; i < container.namedChildCount; i++) {
+          const child = container.namedChild(i);
+          if (child?.type === 'variant_type') {
+            extractVariants(child);
+          } else if (child?.type === 'variant_declaration') {
+            const variantId = this.findReScriptChildText(child, 'variant_identifier');
+            if (variantId) {
+              this.createNode('enum_member', variantId, child);
+            }
+          }
+        }
+      };
+      extractVariants(binding);
+      this.nodeStack.pop();
+    }
+
+    // For structs (records), extract field names
+    if (kind === 'struct') {
+      this.nodeStack.push(typeNode.id);
+      for (let i = 0; i < binding.namedChildCount; i++) {
+        const child = binding.namedChild(i);
+        if (child?.type === 'record_type') {
+          for (let j = 0; j < child.namedChildCount; j++) {
+            const field = child.namedChild(j);
+            if (field?.type === 'record_type_field') {
+              const fieldName = this.findReScriptChildText(field, 'property_identifier');
+              if (fieldName) {
+                this.createNode('field', fieldName, field);
+              }
+            }
+          }
+        }
+      }
+      this.nodeStack.pop();
+    }
+  }
+
+  /**
+   * Extract a ReScript external declaration (FFI binding)
+   */
+  private extractReScriptExternal(node: SyntaxNode): void {
+    const name = this.findReScriptChildText(node, 'value_identifier');
+    if (!name) return;
+
+    const docstring = getPrecedingDocstring(node, this.source);
+    const signature = this.extractor?.getSignature?.(node, this.source);
+    const decorators = this.extractReScriptDecorators(node);
+
+    this.createNode('function', name, node, {
+      docstring,
+      signature,
+      decorators,
+    });
+  }
+
+  /**
+   * Extract call from a ReScript pipe expression (x->f(y))
+   * The second child of pipe_expression is the function being called.
+   */
+  private extractReScriptPipeCall(node: SyntaxNode): void {
+    if (this.nodeStack.length === 0) return;
+    const callerId = this.nodeStack[this.nodeStack.length - 1];
+    if (!callerId) return;
+
+    // pipe_expression children: [expr, function_call_or_identifier]
+    // The second primary_expression child is the piped function
+    const children = node.namedChildren;
+    if (children.length >= 2) {
+      const pipedTo = children[1];
+      if (!pipedTo) return;
+
+      let calleeName = '';
+      if (pipedTo.type === 'call_expression') {
+        const func = getChildByField(pipedTo, 'function');
+        calleeName = func ? getNodeText(func, this.source) : getNodeText(pipedTo, this.source);
+      } else {
+        calleeName = getNodeText(pipedTo, this.source);
+      }
+
+      if (calleeName) {
+        this.unresolvedReferences.push({
+          fromNodeId: callerId,
+          referenceName: calleeName,
+          referenceKind: 'calls',
+          line: node.startPosition.row + 1,
+          column: node.startPosition.column,
+        });
+      }
+    }
+
+    // Visit children for nested calls
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child) this.visitNode(child);
+    }
+  }
+
+  /**
+   * Visit a ReScript expression body, extracting calls and nested nodes
+   */
+  private visitReScriptBody(node: SyntaxNode): void {
+    if (!this.extractor) return;
+
+    const visit = (n: SyntaxNode): void => {
+      // Handle ReScript-specific nodes first
+      if (this.visitReScriptNode(n)) return;
+
+      // Extract calls
+      if (this.extractor!.callTypes.includes(n.type)) {
+        this.extractCall(n);
+      }
+
+      // Recurse into children
+      for (let i = 0; i < n.namedChildCount; i++) {
+        const child = n.namedChild(i);
+        if (child) visit(child);
+      }
+    };
+
+    visit(node);
+  }
+
+  /**
+   * Extract decorator attributes from a ReScript node
+   */
+  private extractReScriptDecorators(node: SyntaxNode): string[] | undefined {
+    const decorators: string[] = [];
+    let sibling = node.previousNamedSibling;
+    while (sibling?.type === 'decorator') {
+      decorators.unshift(getNodeText(sibling, this.source));
+      sibling = sibling.previousNamedSibling;
+    }
+    // Also check direct decorator children
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child?.type === 'decorator') {
+        decorators.push(getNodeText(child, this.source));
+      }
+    }
+    return decorators.length > 0 ? decorators : undefined;
+  }
+
+  /**
+   * Find the text of the first child with a specific type
+   */
+  private findReScriptChildText(node: SyntaxNode, childType: string): string | undefined {
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child?.type === childType) {
+        return getNodeText(child, this.source);
+      }
+    }
+    return undefined;
   }
 }
 

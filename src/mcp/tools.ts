@@ -137,6 +137,10 @@ export const tools: ToolDefinition[] = [
           type: 'string',
           description: 'Name of the function, method, or class to find callers for',
         },
+        file: {
+          type: 'string',
+          description: 'File path to disambiguate when multiple symbols share the same name (e.g., "src/components/EventLog.res")',
+        },
         limit: {
           type: 'number',
           description: 'Maximum number of callers to return (default: 20)',
@@ -156,6 +160,10 @@ export const tools: ToolDefinition[] = [
         symbol: {
           type: 'string',
           description: 'Name of the function, method, or class to find callees for',
+        },
+        file: {
+          type: 'string',
+          description: 'File path to disambiguate when multiple symbols share the same name (e.g., "src/components/EventLog.res")',
         },
         limit: {
           type: 'number',
@@ -177,6 +185,10 @@ export const tools: ToolDefinition[] = [
           type: 'string',
           description: 'Name of the symbol to analyze impact for',
         },
+        file: {
+          type: 'string',
+          description: 'File path to disambiguate when multiple symbols share the same name (e.g., "src/components/EventLog.res")',
+        },
         depth: {
           type: 'number',
           description: 'How many levels of dependencies to traverse (default: 2)',
@@ -196,6 +208,10 @@ export const tools: ToolDefinition[] = [
         symbol: {
           type: 'string',
           description: 'Name of the symbol to get details for',
+        },
+        file: {
+          type: 'string',
+          description: 'File path to disambiguate when multiple symbols share the same name (e.g., "src/components/EventLog.res")',
         },
         includeCode: {
           type: 'boolean',
@@ -476,9 +492,12 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
 
-    const match = this.findSymbol(cg, symbol);
+    const file = args.file as string | undefined;
+    const match = this.findSymbol(cg, symbol, file);
     if (!match) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+      return this.textResult(file
+        ? `Symbol "${symbol}" not found in file "${file}"`
+        : `Symbol "${symbol}" not found in the codebase`);
     }
 
     const callers = cg.getCallers(match.node.id);
@@ -502,9 +521,12 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
 
-    const match = this.findSymbol(cg, symbol);
+    const file = args.file as string | undefined;
+    const match = this.findSymbol(cg, symbol, file);
     if (!match) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+      return this.textResult(file
+        ? `Symbol "${symbol}" not found in file "${file}"`
+        : `Symbol "${symbol}" not found in the codebase`);
     }
 
     const callees = cg.getCallees(match.node.id);
@@ -528,9 +550,12 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const depth = clamp((args.depth as number) || 2, 1, 10);
 
-    const match = this.findSymbol(cg, symbol);
+    const file = args.file as string | undefined;
+    const match = this.findSymbol(cg, symbol, file);
     if (!match) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+      return this.textResult(file
+        ? `Symbol "${symbol}" not found in file "${file}"`
+        : `Symbol "${symbol}" not found in the codebase`);
     }
 
     const impact = cg.getImpactRadius(match.node.id, depth);
@@ -550,9 +575,12 @@ export class ToolHandler {
     // Default to false to minimize context usage
     const includeCode = args.includeCode === true;
 
-    const match = this.findSymbol(cg, symbol);
+    const file = args.file as string | undefined;
+    const match = this.findSymbol(cg, symbol, file);
     if (!match) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+      return this.textResult(file
+        ? `Symbol "${symbol}" not found in file "${file}"`
+        : `Symbol "${symbol}" not found in the codebase`);
     }
 
     let code: string | null = null;
@@ -795,7 +823,7 @@ export class ToolHandler {
    * Find a symbol by name, handling disambiguation when multiple matches exist.
    * Returns the best match and a note about alternatives if any.
    */
-  private findSymbol(cg: CodeGraph, symbol: string): { node: Node; note: string } | null {
+  private findSymbol(cg: CodeGraph, symbol: string, file?: string): { node: Node; note: string } | null {
     const results = cg.searchNodes(symbol, { limit: 10 });
 
     if (results.length === 0 || !results[0]) {
@@ -804,6 +832,18 @@ export class ToolHandler {
 
     // If only one result, or first is an exact name match, use it directly
     const exactMatches = results.filter(r => r.node.name === symbol);
+
+    // When file is provided, filter to symbols in that file
+    if (file) {
+      const fileMatches = (exactMatches.length > 0 ? exactMatches : results)
+        .filter(r => r.node.filePath.includes(file) || file.includes(r.node.filePath));
+
+      if (fileMatches.length === 0) {
+        return null;
+      }
+
+      return { node: fileMatches[0]!.node, note: '' };
+    }
 
     if (exactMatches.length === 1) {
       return { node: exactMatches[0]!.node, note: '' };

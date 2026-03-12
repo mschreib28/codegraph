@@ -34,6 +34,7 @@ const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
   kotlin: 'tree-sitter-kotlin.wasm',
   dart: 'tree-sitter-dart.wasm',
   pascal: 'tree-sitter-pascal.wasm',
+  rescript: 'tree-sitter-rescript.wasm',
 };
 
 /**
@@ -74,6 +75,8 @@ export const EXTENSION_MAP: Record<string, Language> = {
   '.lpr': 'pascal',
   '.dfm': 'pascal',
   '.fmx': 'pascal',
+  '.res': 'rescript',
+  '.resi': 'rescript',
 };
 
 /**
@@ -99,8 +102,8 @@ export async function initGrammars(): Promise<void> {
   const entries = Object.entries(WASM_GRAMMAR_FILES) as [GrammarLanguage, string][];
   for (const [lang, wasmFile] of entries) {
     try {
-        // Pascal ships its own WASM (not in tree-sitter-wasms)
-        const wasmPath = lang === 'pascal'
+        // Pascal and ReScript ship their own WASM (not in tree-sitter-wasms)
+        const wasmPath = (lang === 'pascal' || lang === 'rescript')
           ? path.join(__dirname, 'wasm', wasmFile)
           : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
         const language = await WasmLanguage.load(wasmPath);
@@ -214,6 +217,7 @@ export function getLanguageDisplayName(language: Language): string {
     svelte: 'Svelte',
     liquid: 'Liquid',
     pascal: 'Pascal / Delphi',
+    rescript: 'ReScript',
     unknown: 'Unknown',
   };
   return names[language] || language;
