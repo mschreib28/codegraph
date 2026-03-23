@@ -120,13 +120,18 @@ export class MCPServer {
       this.cg = await CodeGraph.open(resolvedRoot);
       this.toolHandler.setDefaultCodeGraph(this.cg);
     } catch (err) {
+      // Log the error so transient failures are diagnosable (see issue #47)
       captureException(err);
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[CodeGraph MCP] Failed to open project at ${resolvedRoot}: ${msg}\n`);
     }
   }
 
   /**
    * Retry initialization of the default project if it previously failed.
    * Called lazily on tool calls that need the default project.
+   * Re-walks parent directories each time so it picks up projects
+   * initialized after the MCP server started.
    */
   private retryInitIfNeeded(): void {
     // Already initialized successfully
@@ -138,6 +143,11 @@ export class MCPServer {
     if (!resolvedRoot) return;
 
     try {
+      // Close any previously failed instance to avoid leaking resources
+      if (this.cg) {
+        try { this.cg.close(); } catch { /* ignore */ }
+        this.cg = null;
+      }
       this.cg = CodeGraph.openSync(resolvedRoot);
       this.projectPath = resolvedRoot;
       this.toolHandler.setDefaultCodeGraph(this.cg);

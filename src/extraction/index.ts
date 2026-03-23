@@ -18,7 +18,7 @@ import {
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
-import { detectLanguage, isLanguageSupported, initGrammars } from './grammars';
+import { detectLanguage, isLanguageSupported, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { logDebug, logWarn } from '../errors';
 import { captureException } from '../sentry';
 import { validatePathWithinRoot, normalizePath } from '../utils';
@@ -378,6 +378,12 @@ export class ExtractionOrchestrator {
       };
     }
 
+    // Load only the grammars needed for languages actually present in the project.
+    // This avoids compiling all 16+ WASM grammar modules upfront, which can cause
+    // V8 WASM Zone OOM on large codebases (see issue #54).
+    const neededLanguages = [...new Set(files.map((f) => detectLanguage(f)))];
+    await loadGrammarsForLanguages(neededLanguages);
+
     // Phase 2: Parse files (read in parallel batches, parse/store sequentially)
     const total = files.length;
     let processed = 0;
@@ -644,24 +650,40 @@ export class ExtractionOrchestrator {
       this.queries.deleteFile(filePath);
     }
 
+    // Filter out nodes with missing required fields before insertion.
+    // This prevents FK violations when edges reference nodes that would
+    // be silently skipped by insertNode() (see issue #42).
+    const validNodes = result.nodes.filter((n) => n.id && n.kind && n.name && n.filePath && n.language);
+
     // Insert nodes
-    if (result.nodes.length > 0) {
-      this.queries.insertNodes(result.nodes);
+    if (validNodes.length > 0) {
+      this.queries.insertNodes(validNodes);
     }
 
-    // Insert edges
+    // Filter edges to only reference nodes that were actually inserted
     if (result.edges.length > 0) {
-      this.queries.insertEdges(result.edges);
+      const insertedIds = new Set(validNodes.map((n) => n.id));
+      const validEdges = result.edges.filter(
+        (e) => insertedIds.has(e.source) && insertedIds.has(e.target)
+      );
+      if (validEdges.length > 0) {
+        this.queries.insertEdges(validEdges);
+      }
     }
 
     // Insert unresolved references in batch with denormalized filePath/language
     if (result.unresolvedReferences.length > 0) {
-      const refsWithContext = result.unresolvedReferences.map((ref) => ({
-        ...ref,
-        filePath: ref.filePath ?? filePath,
-        language: ref.language ?? language,
-      }));
-      this.queries.insertUnresolvedRefsBatch(refsWithContext);
+      const insertedIds = new Set(validNodes.map((n) => n.id));
+      const refsWithContext = result.unresolvedReferences
+        .filter((ref) => insertedIds.has(ref.fromNodeId))
+        .map((ref) => ({
+          ...ref,
+          filePath: ref.filePath ?? filePath,
+          language: ref.language ?? language,
+        }));
+      if (refsWithContext.length > 0) {
+        this.queries.insertUnresolvedRefsBatch(refsWithContext);
+      }
     }
 
     // Insert file record
@@ -683,7 +705,7 @@ export class ExtractionOrchestrator {
    * Uses git status as a fast path when available, falling back to full scan.
    */
   async sync(onProgress?: (progress: IndexProgress) => void): Promise<SyncResult> {
-    await initGrammars();
+    await initGrammars(); // Initialize WASM runtime (grammars loaded lazily below)
     const startTime = Date.now();
     let filesChecked = 0;
     let filesAdded = 0;
@@ -792,6 +814,12 @@ export class ExtractionOrchestrator {
           filesModified++;
         }
       }
+    }
+
+    // Load only grammars needed for changed files
+    if (filesToIndex.length > 0) {
+      const neededLanguages = [...new Set(filesToIndex.map((f) => detectLanguage(f)))];
+      await loadGrammarsForLanguages(neededLanguages);
     }
 
     // Index changed files
@@ -920,4 +948,4 @@ export class ExtractionOrchestrator {
 
 // Re-export useful types and functions
 export { extractFromSource } from './tree-sitter';
-export { detectLanguage, isLanguageSupported, getSupportedLanguages, initGrammars } from './grammars';
+export { detectLanguage, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './grammars';
