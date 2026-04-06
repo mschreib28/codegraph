@@ -46,7 +46,7 @@ import {
   ResolutionResult,
 } from './resolution';
 import { GraphTraverser, GraphQueryManager } from './graph';
-import { VectorManager, createVectorManager, EmbeddingProgress } from './vectors';
+import { VectorManager, createVectorManager, EmbeddingProgress, SqliteVectorStore, createVectorStore, VectorStoreConfig } from './vectors';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 
@@ -160,9 +160,13 @@ export class CodeGraph {
     this.resolver = createResolver(projectRoot, queries);
     this.graphManager = new GraphQueryManager(queries);
     this.traverser = new GraphTraverser(queries);
-    // Vector manager — always created, embeddings generated lazily on first use
-    this.vectorManager = createVectorManager(db.getDb(), queries, {});
-    // Context builder (uses vector manager for semantic search)
+    // Vector manager — created lazily via initializeEmbeddings() when pgvector is configured.
+    // For SQLite (default), create eagerly so context builder can use it immediately.
+    if (!config.vectorStore || config.vectorStore.backend === 'sqlite') {
+      const sqliteStore = new SqliteVectorStore(db.getDb());
+      this.vectorManager = createVectorManager(sqliteStore, queries, {});
+    }
+    // Context builder (uses vector manager for semantic search if available)
     this.contextBuilder = createContextBuilder(
       projectRoot,
       queries,
@@ -328,9 +332,10 @@ export class CodeGraph {
   close(): void {
     // Release file lock if held
     this.fileLock.release();
-    // Dispose vector manager first to release ONNX workers
+    // Dispose vector manager to release ONNX workers and close pg pool
+    // Fire-and-forget: SQLite dispose is a no-op, pg pool cleanup is best-effort
     if (this.vectorManager) {
-      this.vectorManager.dispose();
+      this.vectorManager.dispose().catch(() => {});
       this.vectorManager = null;
     }
     this.db.close();
@@ -850,7 +855,18 @@ export class CodeGraph {
    */
   async initializeEmbeddings(): Promise<void> {
     if (!this.vectorManager) {
-      this.vectorManager = createVectorManager(this.db.getDb(), this.queries, {
+      const storeConfig: VectorStoreConfig = this.config.vectorStore
+        ? {
+            backend: this.config.vectorStore.backend,
+            connectionString: this.config.vectorStore.connectionString,
+            indexType: this.config.vectorStore.indexType,
+            distanceMetric: this.config.vectorStore.distanceMetric,
+            poolSize: this.config.vectorStore.poolSize,
+            tablePrefix: this.config.vectorStore.tablePrefix,
+          }
+        : { backend: 'sqlite' };
+      const store = await createVectorStore(storeConfig, this.db.getDb());
+      this.vectorManager = createVectorManager(store, this.queries, {
         embedder: {
           showProgress: true,
         },
@@ -922,12 +938,14 @@ export class CodeGraph {
   /**
    * Get vector embedding statistics
    */
-  getEmbeddingStats(): {
+  async getEmbeddingStats(): Promise<{
     totalVectors: number;
     vssEnabled: boolean;
+    annEnabled: boolean;
+    backend: 'sqlite' | 'pgvector';
     modelId: string;
     dimension: number;
-  } | null {
+  } | null> {
     if (!this.vectorManager) {
       return null;
     }

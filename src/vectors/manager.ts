@@ -4,10 +4,9 @@
  * High-level manager that coordinates embedding generation and vector search.
  */
 
-import { SqliteDatabase } from '../db/sqlite-adapter';
 import { Node, SearchResult, SearchOptions } from '../types';
-import { TextEmbedder, createEmbedder, EmbedderOptions, EMBEDDING_DIMENSION } from './embedder';
-import { VectorSearchManager, createVectorSearch } from './search';
+import { TextEmbedder, createEmbedder, EmbedderOptions } from './embedder';
+import { VectorStore } from './store';
 import { QueryBuilder } from '../db/queries';
 
 /**
@@ -56,24 +55,24 @@ const DEFAULT_NODE_KINDS: Node['kind'][] = [
  *
  * Provides high-level interface for semantic search:
  * - Generates embeddings for code nodes
- * - Stores embeddings in the database
+ * - Stores embeddings in the configured backend
  * - Performs semantic similarity search
  */
 export class VectorManager {
   private embedder: TextEmbedder;
-  private searchManager: VectorSearchManager;
+  private store: VectorStore;
   private queries: QueryBuilder;
   private nodeKinds: Node['kind'][];
   private batchSize: number;
   private initialized = false;
 
   constructor(
-    db: SqliteDatabase,
+    store: VectorStore,
     queries: QueryBuilder,
     options: VectorManagerOptions = {}
   ) {
     this.embedder = createEmbedder(options.embedder);
-    this.searchManager = createVectorSearch(db, EMBEDDING_DIMENSION);
+    this.store = store;
     this.queries = queries;
     this.nodeKinds = options.nodeKinds || DEFAULT_NODE_KINDS;
     this.batchSize = options.batchSize || 32;
@@ -82,7 +81,7 @@ export class VectorManager {
   /**
    * Initialize the vector manager
    *
-   * Loads the embedding model and initializes vector search.
+   * Loads the embedding model and initializes the vector store.
    */
   async initialize(): Promise<void> {
     if (this.initialized) {
@@ -92,8 +91,8 @@ export class VectorManager {
     // Initialize embedder (downloads model if needed)
     await this.embedder.initialize();
 
-    // Initialize vector search (loads sqlite-vss if available)
-    await this.searchManager.initialize();
+    // Initialize vector store
+    await this.store.initialize();
 
     this.initialized = true;
   }
@@ -124,7 +123,7 @@ export class VectorManager {
     }
 
     // Filter out nodes that already have embeddings
-    const existingIds = new Set(this.searchManager.getIndexedNodeIds());
+    const existingIds = new Set(await this.store.getIndexedNodeIds());
     const newNodes = nodesToEmbed.filter((n) => !existingIds.has(n.id));
 
     if (newNodes.length === 0) {
@@ -153,7 +152,7 @@ export class VectorManager {
           entries.push({ nodeId: node.id, embedding });
         }
       }
-      this.searchManager.storeVectorBatch(entries, model);
+      await this.store.storeVectorBatch(entries, model);
 
       processed += batch.length;
 
@@ -182,7 +181,7 @@ export class VectorManager {
 
     const text = TextEmbedder.createNodeText(node);
     const result = await this.embedder.embed(text);
-    this.searchManager.storeVector(node.id, result.embedding, result.model);
+    await this.store.storeVector(node.id, result.embedding, result.model);
   }
 
   /**
@@ -203,7 +202,7 @@ export class VectorManager {
     const queryResult = await this.embedder.embedQuery(query);
 
     // Search for similar vectors
-    const vectorResults = this.searchManager.search(queryResult.embedding, {
+    const vectorResults = await this.store.search(queryResult.embedding, {
       limit: limit * 2, // Get more results to filter
       minScore: 0.3, // Minimum similarity threshold
     });
@@ -249,7 +248,7 @@ export class VectorManager {
     const { limit = 10, kinds } = options;
 
     // Get the node's embedding
-    let embedding = this.searchManager.getVector(nodeId);
+    let embedding = await this.store.getVector(nodeId);
 
     // If no embedding exists, generate one
     if (!embedding) {
@@ -259,7 +258,7 @@ export class VectorManager {
       }
 
       await this.embedNode(node);
-      embedding = this.searchManager.getVector(nodeId);
+      embedding = await this.store.getVector(nodeId);
 
       if (!embedding) {
         throw new Error(`Failed to generate embedding for node: ${nodeId}`);
@@ -267,7 +266,7 @@ export class VectorManager {
     }
 
     // Search for similar vectors (excluding the source node)
-    const vectorResults = this.searchManager.search(embedding, {
+    const vectorResults = await this.store.search(embedding, {
       limit: limit + 1, // Get one extra to exclude the source
       minScore: 0.3,
     });
@@ -308,22 +307,27 @@ export class VectorManager {
    *
    * @param nodeId - ID of the node
    */
-  deleteNodeEmbedding(nodeId: string): void {
-    this.searchManager.deleteVector(nodeId);
+  async deleteNodeEmbedding(nodeId: string): Promise<void> {
+    await this.store.deleteVector(nodeId);
   }
 
   /**
    * Get statistics about vector storage
    */
-  getStats(): {
+  async getStats(): Promise<{
     totalVectors: number;
     vssEnabled: boolean;
+    annEnabled: boolean;
+    backend: 'sqlite' | 'pgvector';
     modelId: string;
     dimension: number;
-  } {
+  }> {
+    const annEnabled = this.store.isAnnEnabled();
     return {
-      totalVectors: this.searchManager.getVectorCount(),
-      vssEnabled: this.searchManager.isVssEnabled(),
+      totalVectors: await this.store.getVectorCount(),
+      vssEnabled: annEnabled, // backward compat
+      annEnabled,
+      backend: this.store.backendType,
       modelId: this.embedder.getModelId(),
       dimension: this.embedder.getDimension(),
     };
@@ -332,22 +336,23 @@ export class VectorManager {
   /**
    * Clear all vectors
    */
-  clear(): void {
-    this.searchManager.clear();
+  async clear(): Promise<void> {
+    await this.store.clear();
   }
 
   /**
-   * Rebuild the VSS index
+   * Rebuild the vector index
    */
-  rebuildIndex(): void {
-    this.searchManager.rebuildVssIndex();
+  async rebuildIndex(): Promise<void> {
+    await this.store.rebuildIndex();
   }
 
   /**
    * Release resources
    */
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.embedder.dispose();
+    await this.store.dispose();
   }
 }
 
@@ -355,9 +360,9 @@ export class VectorManager {
  * Create a vector manager
  */
 export function createVectorManager(
-  db: SqliteDatabase,
+  store: VectorStore,
   queries: QueryBuilder,
   options?: VectorManagerOptions
 ): VectorManager {
-  return new VectorManager(db, queries, options);
+  return new VectorManager(store, queries, options);
 }

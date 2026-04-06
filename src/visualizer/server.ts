@@ -236,7 +236,7 @@ ${symbolIndex}`;
 
       // GET /api/embeddings/status
       if (pathname === '/api/embeddings/status') {
-        const embeddingStats = this.cg.getEmbeddingStats();
+        const embeddingStats = await this.cg.getEmbeddingStats();
         const isInitialized = this.cg.isEmbeddingsInitialized();
         const totalVectors = embeddingStats?.totalVectors ?? 0;
         const stats = this.cg.getStats();

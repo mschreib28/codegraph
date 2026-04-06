@@ -155,7 +155,7 @@ TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Ko
 <td width="33%" valign="top">
 
 ### 🔒 100% Local
-No data leaves your machine. No API keys. No external services. Everything runs on your local SQLite database.
+No data leaves your machine. No API keys. No external services. Everything runs locally — SQLite by default, with optional PostgreSQL for faster vector search.
 
 </td>
 <td width="33%" valign="top">
@@ -289,6 +289,7 @@ At the start of a session, ask the user if they'd like to initialize CodeGraph:
 ## 📋 Requirements
 
 - Node.js >= 18.0.0
+- PostgreSQL with [pgvector](https://github.com/pgvector/pgvector) *(optional — for faster semantic search)*
 
 ---
 
@@ -603,7 +604,7 @@ All data is stored in a local SQLite database (`.codegraph/codegraph.db`):
 - **edges** table: Relationships between nodes
 - **files** table: File tracking for incremental updates
 - **unresolved_refs** table: References pending resolution
-- **vectors** table: Embeddings stored as BLOBs for semantic search
+- **vectors** table: Embeddings stored as BLOBs for semantic search (or in PostgreSQL with pgvector — see [configuration](#-vector-store-postgresql--pgvector))
 - **nodes_fts**: FTS5 virtual table for full-text search
 - **schema_versions** table: Schema version tracking
 - **project_metadata** table: Project-level key-value metadata
@@ -621,9 +622,11 @@ After extraction, CodeGraph resolves references:
 
 CodeGraph uses local embeddings (via [@xenova/transformers](https://github.com/xenova/transformers.js)) to enable semantic search:
 
-1. Code symbols are embedded using a transformer model
+1. Code symbols are embedded using a transformer model (nomic-embed-text-v1.5, 768 dimensions)
 2. Queries are embedded and compared using cosine similarity
 3. Results are ranked by relevance
+
+By default, embeddings are stored in SQLite as BLOBs with brute-force cosine similarity search. For larger codebases, you can use **PostgreSQL with pgvector** for production-grade HNSW indexes and significantly faster approximate nearest neighbor search. See [Vector Store Configuration](#-vector-store-postgresql--pgvector) below.
 
 ### 5. Graph Queries
 
@@ -674,6 +677,75 @@ The `.codegraph/config.json` file controls indexing behavior:
 | `maxFileSize` | Skip files larger than this (bytes) | `1048576` (1MB) |
 | `extractDocstrings` | Whether to extract docstrings from code | `true` |
 | `trackCallSites` | Whether to track call site locations | `true` |
+
+### 🐘 Vector Store (PostgreSQL + pgvector)
+
+By default, CodeGraph stores embeddings in SQLite. For faster semantic search on large codebases, you can use PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension, which provides HNSW indexes for approximate nearest neighbor search.
+
+**Prerequisites:**
+1. PostgreSQL installed with the pgvector extension
+2. A database created for CodeGraph (e.g., `createdb codegraph`)
+3. Install the `pg` driver: `npm install pg`
+
+#### Per-Project Configuration
+
+Add `vectorStore` to your `.codegraph/config.json`:
+
+```json
+{
+  "version": 1,
+  "languages": ["typescript", "javascript"],
+  "vectorStore": {
+    "backend": "pgvector",
+    "connectionString": "postgresql://localhost:5432/codegraph"
+  }
+}
+```
+
+#### Global Configuration (Environment Variable)
+
+Set the `CODEGRAPH_PG_URL` environment variable to use pgvector for all projects without per-project config:
+
+```bash
+# In your shell profile (~/.bashrc, ~/.zshrc, etc.)
+export CODEGRAPH_PG_URL="postgresql://localhost:5432/codegraph"
+```
+
+When `CODEGRAPH_PG_URL` is set and a project's config has `"backend": "pgvector"` without a `connectionString`, the environment variable is used as the connection string.
+
+#### Full Options
+
+```json
+{
+  "vectorStore": {
+    "backend": "pgvector",
+    "connectionString": "postgresql://user:pass@host:5432/dbname",
+    "indexType": "hnsw",
+    "distanceMetric": "cosine",
+    "poolSize": 5,
+    "tablePrefix": "codegraph_"
+  }
+}
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `backend` | `"sqlite"` or `"pgvector"` | `"sqlite"` |
+| `connectionString` | PostgreSQL connection URL (or use `CODEGRAPH_PG_URL` env var) | — |
+| `indexType` | `"hnsw"` (recommended), `"ivfflat"`, or `"none"` | `"hnsw"` |
+| `distanceMetric` | `"cosine"`, `"l2"`, or `"inner_product"` | `"cosine"` |
+| `poolSize` | Connection pool size | `5` |
+| `tablePrefix` | Table name prefix (letters, digits, underscores) | `"codegraph_"` |
+
+#### After Switching Backends
+
+When switching from SQLite to pgvector (or vice versa), regenerate embeddings:
+
+```bash
+codegraph index --force   # Re-index the project
+```
+
+The graph data (nodes, edges, files) always stays in SQLite — only the vector embeddings use the configured backend.
 
 ## 🌐 Supported Languages
 

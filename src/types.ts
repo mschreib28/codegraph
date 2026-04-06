@@ -474,6 +474,27 @@ export interface CodeGraphConfig {
     /** Node kind to assign */
     kind: NodeKind;
   }[];
+
+  /** Vector store backend configuration (optional, default: sqlite) */
+  vectorStore?: {
+    /** Backend type: 'sqlite' (default) or 'pgvector' */
+    backend: 'sqlite' | 'pgvector';
+
+    /** PostgreSQL connection string (pgvector only). Can also use CODEGRAPH_PG_URL env var. */
+    connectionString?: string;
+
+    /** Index type for pgvector: 'hnsw' (default), 'ivfflat', or 'none' */
+    indexType?: 'hnsw' | 'ivfflat' | 'none';
+
+    /** Distance metric for pgvector: 'cosine' (default), 'l2', or 'inner_product' */
+    distanceMetric?: 'cosine' | 'l2' | 'inner_product';
+
+    /** Connection pool size for pgvector (default: 5) */
+    poolSize?: number;
+
+    /** Table name prefix for pgvector (default: 'codegraph_') */
+    tablePrefix?: string;
+  };
 }
 
 /**

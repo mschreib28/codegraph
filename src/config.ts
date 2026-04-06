@@ -107,6 +107,18 @@ export function validateConfig(config: unknown): config is CodeGraphConfig {
     }
   }
 
+  // Validate vectorStore if present
+  if (c.vectorStore !== undefined) {
+    if (typeof c.vectorStore !== 'object' || c.vectorStore === null) return false;
+    const vs = c.vectorStore as Record<string, unknown>;
+    if (vs.backend !== undefined && vs.backend !== 'sqlite' && vs.backend !== 'pgvector') return false;
+    if (vs.connectionString !== undefined && typeof vs.connectionString !== 'string') return false;
+    if (vs.indexType !== undefined && vs.indexType !== 'hnsw' && vs.indexType !== 'ivfflat' && vs.indexType !== 'none') return false;
+    if (vs.distanceMetric !== undefined && vs.distanceMetric !== 'cosine' && vs.distanceMetric !== 'l2' && vs.distanceMetric !== 'inner_product') return false;
+    if (vs.poolSize !== undefined && (typeof vs.poolSize !== 'number' || vs.poolSize < 1)) return false;
+    if (vs.tablePrefix !== undefined && (typeof vs.tablePrefix !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_]{0,50}$/.test(vs.tablePrefix))) return false;
+  }
+
   return true;
 }
 
@@ -128,6 +140,7 @@ function mergeConfig(
     extractDocstrings: overrides.extractDocstrings ?? defaults.extractDocstrings,
     trackCallSites: overrides.trackCallSites ?? defaults.trackCallSites,
     customPatterns: overrides.customPatterns ?? defaults.customPatterns,
+    vectorStore: overrides.vectorStore ?? defaults.vectorStore,
   };
 }
 

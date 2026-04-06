@@ -120,9 +120,9 @@ describe('Vector Embeddings', () => {
       await searchManager.initialize();
 
       const embedding = new Float32Array([0.1, 0.2, 0.3]);
-      searchManager.storeVector('node1', embedding, 'test-model');
+      await searchManager.storeVector('node1', embedding, 'test-model');
 
-      const retrieved = searchManager.getVector('node1');
+      const retrieved = await searchManager.getVector('node1');
 
       expect(retrieved).not.toBeNull();
       expect(retrieved?.length).toBe(3);
@@ -132,7 +132,7 @@ describe('Vector Embeddings', () => {
     it('should return null for non-existent vectors', async () => {
       await searchManager.initialize();
 
-      const retrieved = searchManager.getVector('non-existent');
+      const retrieved = await searchManager.getVector('non-existent');
 
       expect(retrieved).toBeNull();
     });
@@ -141,60 +141,60 @@ describe('Vector Embeddings', () => {
       await searchManager.initialize();
 
       const embedding = new Float32Array([0.1, 0.2, 0.3]);
-      searchManager.storeVector('node1', embedding, 'test-model');
+      await searchManager.storeVector('node1', embedding, 'test-model');
 
-      expect(searchManager.hasVector('node1')).toBe(true);
-      expect(searchManager.hasVector('node2')).toBe(false);
+      expect(await searchManager.hasVector('node1')).toBe(true);
+      expect(await searchManager.hasVector('node2')).toBe(false);
     });
 
     it('should delete vectors', async () => {
       await searchManager.initialize();
 
       const embedding = new Float32Array([0.1, 0.2, 0.3]);
-      searchManager.storeVector('node1', embedding, 'test-model');
+      await searchManager.storeVector('node1', embedding, 'test-model');
 
-      expect(searchManager.hasVector('node1')).toBe(true);
+      expect(await searchManager.hasVector('node1')).toBe(true);
 
-      searchManager.deleteVector('node1');
+      await searchManager.deleteVector('node1');
 
-      expect(searchManager.hasVector('node1')).toBe(false);
+      expect(await searchManager.hasVector('node1')).toBe(false);
     });
 
     it('should count vectors', async () => {
       await searchManager.initialize();
 
-      expect(searchManager.getVectorCount()).toBe(0);
+      expect(await searchManager.getVectorCount()).toBe(0);
 
-      searchManager.storeVector('node1', new Float32Array([0.1, 0.2, 0.3]), 'test');
-      searchManager.storeVector('node2', new Float32Array([0.4, 0.5, 0.6]), 'test');
+      await searchManager.storeVector('node1', new Float32Array([0.1, 0.2, 0.3]), 'test');
+      await searchManager.storeVector('node2', new Float32Array([0.4, 0.5, 0.6]), 'test');
 
-      expect(searchManager.getVectorCount()).toBe(2);
+      expect(await searchManager.getVectorCount()).toBe(2);
     });
 
     it('should clear all vectors', async () => {
       await searchManager.initialize();
 
-      searchManager.storeVector('node1', new Float32Array([0.1, 0.2, 0.3]), 'test');
-      searchManager.storeVector('node2', new Float32Array([0.4, 0.5, 0.6]), 'test');
+      await searchManager.storeVector('node1', new Float32Array([0.1, 0.2, 0.3]), 'test');
+      await searchManager.storeVector('node2', new Float32Array([0.4, 0.5, 0.6]), 'test');
 
-      expect(searchManager.getVectorCount()).toBe(2);
+      expect(await searchManager.getVectorCount()).toBe(2);
 
-      searchManager.clear();
+      await searchManager.clear();
 
-      expect(searchManager.getVectorCount()).toBe(0);
+      expect(await searchManager.getVectorCount()).toBe(0);
     });
 
     it('should perform brute-force similarity search', async () => {
       await searchManager.initialize();
 
       // Store some test vectors
-      searchManager.storeVector('node1', new Float32Array([1, 0, 0]), 'test');
-      searchManager.storeVector('node2', new Float32Array([0.9, 0.1, 0]), 'test');
-      searchManager.storeVector('node3', new Float32Array([0, 1, 0]), 'test');
+      await searchManager.storeVector('node1', new Float32Array([1, 0, 0]), 'test');
+      await searchManager.storeVector('node2', new Float32Array([0.9, 0.1, 0]), 'test');
+      await searchManager.storeVector('node3', new Float32Array([0, 1, 0]), 'test');
 
       // Search for similar to [1, 0, 0]
       const query = new Float32Array([1, 0, 0]);
-      const results = searchManager.search(query, { limit: 3 });
+      const results = await searchManager.search(query, { limit: 3 });
 
       expect(results.length).toBe(3);
       expect(results[0].nodeId).toBe('node1'); // Most similar
@@ -205,11 +205,11 @@ describe('Vector Embeddings', () => {
     it('should respect minScore in search', async () => {
       await searchManager.initialize();
 
-      searchManager.storeVector('node1', new Float32Array([1, 0, 0]), 'test');
-      searchManager.storeVector('node2', new Float32Array([0, 1, 0]), 'test');
+      await searchManager.storeVector('node1', new Float32Array([1, 0, 0]), 'test');
+      await searchManager.storeVector('node2', new Float32Array([0, 1, 0]), 'test');
 
       const query = new Float32Array([1, 0, 0]);
-      const results = searchManager.search(query, { limit: 10, minScore: 0.5 });
+      const results = await searchManager.search(query, { limit: 10, minScore: 0.5 });
 
       // Only node1 should match with score >= 0.5
       expect(results.length).toBe(1);
@@ -226,21 +226,21 @@ describe('Vector Embeddings', () => {
         { nodeId: 'node3', embedding: new Float32Array([0.0, 0.0, 1.0]) },
       ];
 
-      searchManager.storeVectorBatch(entries, 'test-model');
+      await searchManager.storeVectorBatch(entries, 'test-model');
 
-      expect(searchManager.getVectorCount()).toBe(3);
-      expect(searchManager.hasVector('node1')).toBe(true);
-      expect(searchManager.hasVector('node2')).toBe(true);
-      expect(searchManager.hasVector('node3')).toBe(true);
+      expect(await searchManager.getVectorCount()).toBe(3);
+      expect(await searchManager.hasVector('node1')).toBe(true);
+      expect(await searchManager.hasVector('node2')).toBe(true);
+      expect(await searchManager.hasVector('node3')).toBe(true);
     });
 
     it('should get indexed node IDs', async () => {
       await searchManager.initialize();
 
-      searchManager.storeVector('node1', new Float32Array([0.1, 0.2, 0.3]), 'test');
-      searchManager.storeVector('node2', new Float32Array([0.4, 0.5, 0.6]), 'test');
+      await searchManager.storeVector('node1', new Float32Array([0.1, 0.2, 0.3]), 'test');
+      await searchManager.storeVector('node2', new Float32Array([0.4, 0.5, 0.6]), 'test');
 
-      const ids = searchManager.getIndexedNodeIds();
+      const ids = await searchManager.getIndexedNodeIds();
 
       expect(ids).toContain('node1');
       expect(ids).toContain('node2');
@@ -286,8 +286,8 @@ export function processData(input: string): string {
       expect(cg.isEmbeddingsInitialized()).toBe(false);
     });
 
-    it('should return embedding stats even before initialization', () => {
-      const stats = cg.getEmbeddingStats();
+    it('should return embedding stats even before initialization', async () => {
+      const stats = await cg.getEmbeddingStats();
       expect(stats).not.toBeNull();
       expect(stats!.totalVectors).toBe(0);
     });
