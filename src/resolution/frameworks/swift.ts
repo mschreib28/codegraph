@@ -10,9 +10,9 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 export const swiftUIResolver: FrameworkResolver = {
   name: 'swiftui',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for SwiftUI imports in Swift files
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.endsWith('.swift')) {
         const content = context.readFile(file);
@@ -32,10 +32,10 @@ export const swiftUIResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: View references (SwiftUI views are PascalCase ending in View)
     if (ref.referenceName.endsWith('View') && /^[A-Z]/.test(ref.referenceName)) {
-      const result = resolveView(ref.referenceName, context);
+      const result = await resolveView(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -48,7 +48,7 @@ export const swiftUIResolver: FrameworkResolver = {
 
     // Pattern 2: ViewModel/ObservableObject references
     if (ref.referenceName.endsWith('ViewModel') || ref.referenceName.endsWith('Store') || ref.referenceName.endsWith('Manager')) {
-      const result = resolveViewModel(ref.referenceName, context);
+      const result = await resolveViewModel(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -61,7 +61,7 @@ export const swiftUIResolver: FrameworkResolver = {
 
     // Pattern 3: Model references
     if (/^[A-Z][a-zA-Z]+$/.test(ref.referenceName)) {
-      const result = resolveModel(ref.referenceName, context);
+      const result = await resolveModel(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -132,8 +132,8 @@ export const swiftUIResolver: FrameworkResolver = {
 export const uikitResolver: FrameworkResolver = {
   name: 'uikit',
 
-  detect(context: ResolutionContext): boolean {
-    const allFiles = context.getAllFiles();
+  async detect(context: ResolutionContext): Promise<boolean> {
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.endsWith('.swift')) {
         const content = context.readFile(file);
@@ -150,10 +150,10 @@ export const uikitResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: ViewController references
     if (ref.referenceName.endsWith('ViewController')) {
-      const result = resolveViewController(ref.referenceName, context);
+      const result = await resolveViewController(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -166,7 +166,7 @@ export const uikitResolver: FrameworkResolver = {
 
     // Pattern 2: UIView subclass references
     if (ref.referenceName.endsWith('View') && !ref.referenceName.endsWith('ViewController')) {
-      const result = resolveUIView(ref.referenceName, context);
+      const result = await resolveUIView(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -179,7 +179,7 @@ export const uikitResolver: FrameworkResolver = {
 
     // Pattern 3: Cell references
     if (ref.referenceName.endsWith('Cell')) {
-      const result = resolveCell(ref.referenceName, context);
+      const result = await resolveCell(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -192,7 +192,7 @@ export const uikitResolver: FrameworkResolver = {
 
     // Pattern 4: Delegate/DataSource references
     if (ref.referenceName.endsWith('Delegate') || ref.referenceName.endsWith('DataSource')) {
-      const result = resolveProtocol(ref.referenceName, context);
+      const result = await resolveProtocol(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -262,7 +262,7 @@ export const uikitResolver: FrameworkResolver = {
 export const vaporResolver: FrameworkResolver = {
   name: 'vapor',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for Package.swift with Vapor dependency
     const packageSwift = context.readFile('Package.swift');
     if (packageSwift && packageSwift.includes('vapor')) {
@@ -270,7 +270,7 @@ export const vaporResolver: FrameworkResolver = {
     }
 
     // Check for Vapor imports
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.endsWith('.swift')) {
         const content = context.readFile(file);
@@ -283,10 +283,10 @@ export const vaporResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Controller references
     if (ref.referenceName.endsWith('Controller')) {
-      const result = resolveVaporController(ref.referenceName, context);
+      const result = await resolveVaporController(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -299,7 +299,7 @@ export const vaporResolver: FrameworkResolver = {
 
     // Pattern 2: Model references (Fluent)
     if (/^[A-Z][a-zA-Z]+$/.test(ref.referenceName)) {
-      const result = resolveFluentModel(ref.referenceName, context);
+      const result = await resolveFluentModel(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -312,7 +312,7 @@ export const vaporResolver: FrameworkResolver = {
 
     // Pattern 3: Middleware references
     if (ref.referenceName.endsWith('Middleware')) {
-      const result = resolveVaporMiddleware(ref.referenceName, context);
+      const result = await resolveVaporMiddleware(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -384,13 +384,13 @@ export const vaporResolver: FrameworkResolver = {
 
 // Helper functions for SwiftUI
 
-function resolveView(name: string, context: ResolutionContext): string | null {
+async function resolveView(name: string, context: ResolutionContext): Promise<string | null> {
   const viewDirs = ['Views', 'View', 'Screens', 'Components', 'UI'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && viewDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const viewNode = nodes.find(
         (n) => (n.kind === 'struct' || n.kind === 'component') && n.name === name
       );
@@ -403,7 +403,7 @@ function resolveView(name: string, context: ResolutionContext): string | null {
   // Search all Swift files
   for (const file of allFiles) {
     if (file.endsWith('.swift')) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const viewNode = nodes.find(
         (n) => (n.kind === 'struct' || n.kind === 'component') && n.name === name
       );
@@ -416,13 +416,13 @@ function resolveView(name: string, context: ResolutionContext): string | null {
   return null;
 }
 
-function resolveViewModel(name: string, context: ResolutionContext): string | null {
+async function resolveViewModel(name: string, context: ResolutionContext): Promise<string | null> {
   const vmDirs = ['ViewModels', 'ViewModel', 'Stores', 'Managers', 'Services'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && vmDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const vmNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -435,13 +435,13 @@ function resolveViewModel(name: string, context: ResolutionContext): string | nu
   return null;
 }
 
-function resolveModel(name: string, context: ResolutionContext): string | null {
+async function resolveModel(name: string, context: ResolutionContext): Promise<string | null> {
   const modelDirs = ['Models', 'Model', 'Entities', 'Domain'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && modelDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const modelNode = nodes.find(
         (n) => (n.kind === 'struct' || n.kind === 'class') && n.name === name
       );
@@ -456,13 +456,13 @@ function resolveModel(name: string, context: ResolutionContext): string | null {
 
 // Helper functions for UIKit
 
-function resolveViewController(name: string, context: ResolutionContext): string | null {
+async function resolveViewController(name: string, context: ResolutionContext): Promise<string | null> {
   const vcDirs = ['ViewControllers', 'ViewController', 'Controllers', 'Screens'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && (vcDirs.some((d) => file.includes(`/${d}/`)) || file.includes(name))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const vcNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -475,13 +475,13 @@ function resolveViewController(name: string, context: ResolutionContext): string
   return null;
 }
 
-function resolveUIView(name: string, context: ResolutionContext): string | null {
+async function resolveUIView(name: string, context: ResolutionContext): Promise<string | null> {
   const viewDirs = ['Views', 'View', 'UI', 'Components'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && viewDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const viewNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -494,13 +494,13 @@ function resolveUIView(name: string, context: ResolutionContext): string | null 
   return null;
 }
 
-function resolveCell(name: string, context: ResolutionContext): string | null {
+async function resolveCell(name: string, context: ResolutionContext): Promise<string | null> {
   const cellDirs = ['Cells', 'Cell', 'Views', 'TableViewCells', 'CollectionViewCells'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && cellDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const cellNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -513,12 +513,12 @@ function resolveCell(name: string, context: ResolutionContext): string | null {
   return null;
 }
 
-function resolveProtocol(name: string, context: ResolutionContext): string | null {
-  const allFiles = context.getAllFiles();
+async function resolveProtocol(name: string, context: ResolutionContext): Promise<string | null> {
+  const allFiles = await context.getAllFiles();
 
   for (const file of allFiles) {
     if (file.endsWith('.swift')) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const protocolNode = nodes.find(
         (n) => n.kind === 'protocol' && n.name === name
       );
@@ -533,13 +533,13 @@ function resolveProtocol(name: string, context: ResolutionContext): string | nul
 
 // Helper functions for Vapor
 
-function resolveVaporController(name: string, context: ResolutionContext): string | null {
+async function resolveVaporController(name: string, context: ResolutionContext): Promise<string | null> {
   const controllerDirs = ['Controllers', 'Controller', 'Routes'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && controllerDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const controllerNode = nodes.find(
         (n) => (n.kind === 'class' || n.kind === 'struct') && n.name === name
       );
@@ -552,13 +552,13 @@ function resolveVaporController(name: string, context: ResolutionContext): strin
   return null;
 }
 
-function resolveFluentModel(name: string, context: ResolutionContext): string | null {
+async function resolveFluentModel(name: string, context: ResolutionContext): Promise<string | null> {
   const modelDirs = ['Models', 'Model', 'Entities', 'Database'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && modelDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const modelNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -571,13 +571,13 @@ function resolveFluentModel(name: string, context: ResolutionContext): string | 
   return null;
 }
 
-function resolveVaporMiddleware(name: string, context: ResolutionContext): string | null {
+async function resolveVaporMiddleware(name: string, context: ResolutionContext): Promise<string | null> {
   const middlewareDirs = ['Middleware', 'Middlewares'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.swift') && middlewareDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const mwNode = nodes.find(
         (n) => (n.kind === 'class' || n.kind === 'struct') && n.name === name
       );

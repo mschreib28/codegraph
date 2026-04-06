@@ -9,7 +9,7 @@ import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
 
 /**
- * Svelte 5 runes — compiler-provided, not user code
+ * Svelte 5 runes -- compiler-provided, not user code
  */
 const SVELTE_RUNES = new Set([
   '$state',
@@ -45,7 +45,7 @@ const SVELTEKIT_MODULE_PREFIXES = [
 export const svelteResolver: FrameworkResolver = {
   name: 'svelte',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for svelte or @sveltejs/kit in package.json
     const packageJson = context.readFile('package.json');
     if (packageJson) {
@@ -61,14 +61,14 @@ export const svelteResolver: FrameworkResolver = {
     }
 
     // Check for .svelte files in project
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     return allFiles.some((f) => f.endsWith('.svelte'));
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Svelte runes ($state, $derived, $effect, etc.)
     if (isRuneReference(ref.referenceName)) {
-      // Runes are compiler-provided — return a high-confidence "framework" resolution
+      // Runes are compiler-provided -- return a high-confidence "framework" resolution
       // so CodeGraph doesn't waste time searching for user-defined symbols.
       // We use the fromNodeId as targetNodeId since runes don't have real targets.
       return {
@@ -82,7 +82,8 @@ export const svelteResolver: FrameworkResolver = {
     // Pattern 2: Store auto-subscriptions ($storeName)
     if (ref.referenceName.startsWith('$') && !ref.referenceName.startsWith('$$')) {
       const storeName = ref.referenceName.substring(1);
-      const storeNode = context.getNodesByName(storeName).find(
+      const storeNodes = await context.getNodesByName(storeName);
+      const storeNode = storeNodes.find(
         (n) => n.kind === 'variable' || n.kind === 'constant'
       );
       if (storeNode) {
@@ -97,14 +98,14 @@ export const svelteResolver: FrameworkResolver = {
 
     // Pattern 3: SvelteKit module imports ($app/*, $env/*, $lib/*)
     if (ref.referenceKind === 'imports' && ref.referenceName.startsWith('$')) {
-      // $lib/* resolves to src/lib/* — try to find the target file
+      // $lib/* resolves to src/lib/* -- try to find the target file
       if (ref.referenceName.startsWith('$lib/')) {
         const libPath = ref.referenceName.replace('$lib/', 'src/lib/');
         // Try common extensions
         for (const ext of ['', '.ts', '.js', '.svelte', '/index.ts', '/index.js']) {
           const fullPath = libPath + ext;
           if (context.fileExists(fullPath)) {
-            const nodes = context.getNodesInFile(fullPath);
+            const nodes = await context.getNodesInFile(fullPath);
             if (nodes.length > 0) {
               return {
                 original: ref,
@@ -128,9 +129,9 @@ export const svelteResolver: FrameworkResolver = {
       }
     }
 
-    // Pattern 4: Component references (PascalCase) — resolve to .svelte files
+    // Pattern 4: Component references (PascalCase) -- resolve to .svelte files
     if (isPascalCase(ref.referenceName) && ref.referenceKind === 'calls') {
-      const result = resolveComponent(ref.referenceName, ref.filePath, context);
+      const result = await resolveComponent(ref.referenceName, ref.filePath, context);
       if (result) {
         return {
           original: ref,
@@ -203,13 +204,13 @@ function isPascalCase(str: string): boolean {
 /**
  * Resolve a Svelte component reference to its .svelte file
  */
-function resolveComponent(
+async function resolveComponent(
   name: string,
   fromFile: string,
   context: ResolutionContext
-): string | null {
+): Promise<string | null> {
   // Look for matching .svelte files
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   const svelteFiles = allFiles.filter((f) => f.endsWith('.svelte'));
 
   // Check for exact name match (Button -> Button.svelte)
@@ -217,7 +218,7 @@ function resolveComponent(
     const fileName = file.split(/[/\\]/).pop() || '';
     const componentName = fileName.replace(/\.svelte$/, '');
     if (componentName === name) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const component = nodes.find((n) => n.kind === 'component' && n.name === name);
       if (component) {
         return component.id;
@@ -232,7 +233,7 @@ function resolveComponent(
       const fileName = file.split(/[/\\]/).pop() || '';
       const componentName = fileName.replace(/\.svelte$/, '');
       if (componentName === name) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const component = nodes.find((n) => n.kind === 'component');
         if (component) {
           return component.id;

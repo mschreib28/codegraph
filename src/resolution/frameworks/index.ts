@@ -64,14 +64,18 @@ export function getFrameworkResolver(name: string): FrameworkResolver | undefine
 /**
  * Detect which frameworks are used in a project
  */
-export function detectFrameworks(context: ResolutionContext): FrameworkResolver[] {
-  return FRAMEWORK_RESOLVERS.filter((resolver) => {
-    try {
-      return resolver.detect(context);
-    } catch {
-      return false;
-    }
-  });
+export async function detectFrameworks(context: ResolutionContext): Promise<FrameworkResolver[]> {
+  const results = await Promise.all(
+    FRAMEWORK_RESOLVERS.map(async (resolver) => {
+      try {
+        const detected = await resolver.detect(context);
+        return detected ? resolver : null;
+      } catch {
+        return null;
+      }
+    })
+  );
+  return results.filter((r): r is FrameworkResolver => r !== null);
 }
 
 /**

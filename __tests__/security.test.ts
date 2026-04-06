@@ -164,7 +164,7 @@ describe('Path Traversal Prevention', () => {
   });
 
   it('should read code for valid nodes within project', async () => {
-    const nodes = cg.getNodesByKind('function');
+    const nodes = await cg.getNodesByKind('function');
     const hello = nodes.find((n) => n.name === 'hello');
     expect(hello).toBeDefined();
 
@@ -364,10 +364,11 @@ describe('JSON.parse Error Boundaries in DB', () => {
     cleanupTempDir(tempDir);
   });
 
-  it('should not crash when node has malformed JSON in decorators column', () => {
+  it('should not crash when node has malformed JSON in decorators column', async () => {
     const dbPath = path.join(tempDir, 'test.db');
     const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const { SqliteDbAdapter } = await import('../src/db/sqlite-db-adapter');
+    const queries = new QueryBuilder(new SqliteDbAdapter(db.getDb()));
 
     // Insert a node with malformed JSON in the decorators column
     db.getDb().prepare(`
@@ -381,7 +382,7 @@ describe('JSON.parse Error Boundaries in DB', () => {
     );
 
     // Should not throw - should return node with undefined decorators
-    const node = queries.getNodeById('test-node-1');
+    const node = await queries.getNodeById('test-node-1');
     expect(node).not.toBeNull();
     expect(node!.name).toBe('myFunc');
     expect(node!.decorators).toBeUndefined();
@@ -389,10 +390,11 @@ describe('JSON.parse Error Boundaries in DB', () => {
     db.close();
   });
 
-  it('should not crash when edge has malformed JSON in metadata column', () => {
+  it('should not crash when edge has malformed JSON in metadata column', async () => {
     const dbPath = path.join(tempDir, 'test.db');
     const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const { SqliteDbAdapter } = await import('../src/db/sqlite-db-adapter');
+    const queries = new QueryBuilder(new SqliteDbAdapter(db.getDb()));
 
     // Insert two nodes first
     const insertNode = db.getDb().prepare(`
@@ -409,7 +411,7 @@ describe('JSON.parse Error Boundaries in DB', () => {
     `).run('node-a', 'node-b', 'calls', 'broken json {{{');
 
     // Should not throw - should return edge with undefined metadata
-    const edges = queries.getOutgoingEdges('node-a');
+    const edges = await queries.getOutgoingEdges('node-a');
     expect(edges.length).toBe(1);
     expect(edges[0].source).toBe('node-a');
     expect(edges[0].target).toBe('node-b');
@@ -418,10 +420,11 @@ describe('JSON.parse Error Boundaries in DB', () => {
     db.close();
   });
 
-  it('should not crash when file record has malformed JSON in errors column', () => {
+  it('should not crash when file record has malformed JSON in errors column', async () => {
     const dbPath = path.join(tempDir, 'test.db');
     const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const { SqliteDbAdapter } = await import('../src/db/sqlite-db-adapter');
+    const queries = new QueryBuilder(new SqliteDbAdapter(db.getDb()));
 
     // Insert a file with malformed errors JSON
     db.getDb().prepare(`
@@ -430,7 +433,7 @@ describe('JSON.parse Error Boundaries in DB', () => {
     `).run('test.ts', 'abc123', 'typescript', 100, Date.now(), Date.now(), 5, 'not-an-array');
 
     // Should not throw - should return file with undefined errors
-    const file = queries.getFileByPath('test.ts');
+    const file = await queries.getFileByPath('test.ts');
     expect(file).not.toBeNull();
     expect(file!.path).toBe('test.ts');
     expect(file!.errors).toBeUndefined();

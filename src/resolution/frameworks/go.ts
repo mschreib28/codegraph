@@ -10,7 +10,7 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 export const goResolver: FrameworkResolver = {
   name: 'go',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for go.mod file (Go modules)
     const goMod = context.readFile('go.mod');
     if (goMod) {
@@ -18,14 +18,14 @@ export const goResolver: FrameworkResolver = {
     }
 
     // Check for .go files
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     return allFiles.some((f) => f.endsWith('.go'));
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Handler references
     if (ref.referenceName.endsWith('Handler') || ref.referenceName.startsWith('Handle')) {
-      const result = resolveHandler(ref.referenceName, context);
+      const result = await resolveHandler(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -38,7 +38,7 @@ export const goResolver: FrameworkResolver = {
 
     // Pattern 2: Service/Repository references
     if (ref.referenceName.endsWith('Service') || ref.referenceName.endsWith('Repository') || ref.referenceName.endsWith('Store')) {
-      const result = resolveService(ref.referenceName, context);
+      const result = await resolveService(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -51,7 +51,7 @@ export const goResolver: FrameworkResolver = {
 
     // Pattern 3: Middleware references
     if (ref.referenceName.endsWith('Middleware') || ref.referenceName.startsWith('Auth') || ref.referenceName.startsWith('Log')) {
-      const result = resolveMiddleware(ref.referenceName, context);
+      const result = await resolveMiddleware(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -64,7 +64,7 @@ export const goResolver: FrameworkResolver = {
 
     // Pattern 4: Model/Entity references (typically PascalCase structs)
     if (/^[A-Z][a-zA-Z]+$/.test(ref.referenceName)) {
-      const result = resolveModel(ref.referenceName, context);
+      const result = await resolveModel(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -180,13 +180,13 @@ export const goResolver: FrameworkResolver = {
 
 // Helper functions
 
-function resolveHandler(name: string, context: ResolutionContext): string | null {
+async function resolveHandler(name: string, context: ResolutionContext): Promise<string | null> {
   const handlerDirs = ['handler', 'handlers', 'api', 'routes', 'controller', 'controllers'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.go') && handlerDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const handlerNode = nodes.find(
         (n) => n.kind === 'function' && n.name === name
       );
@@ -199,7 +199,7 @@ function resolveHandler(name: string, context: ResolutionContext): string | null
   // Search all go files
   for (const file of allFiles) {
     if (file.endsWith('.go')) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const handlerNode = nodes.find(
         (n) => n.kind === 'function' && n.name === name
       );
@@ -212,13 +212,13 @@ function resolveHandler(name: string, context: ResolutionContext): string | null
   return null;
 }
 
-function resolveService(name: string, context: ResolutionContext): string | null {
+async function resolveService(name: string, context: ResolutionContext): Promise<string | null> {
   const serviceDirs = ['service', 'services', 'repository', 'store', 'pkg'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.go') && serviceDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const serviceNode = nodes.find(
         (n) => (n.kind === 'struct' || n.kind === 'interface') && n.name === name
       );
@@ -231,13 +231,13 @@ function resolveService(name: string, context: ResolutionContext): string | null
   return null;
 }
 
-function resolveMiddleware(name: string, context: ResolutionContext): string | null {
+async function resolveMiddleware(name: string, context: ResolutionContext): Promise<string | null> {
   const middlewareDirs = ['middleware', 'middlewares'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.go') && middlewareDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const mwNode = nodes.find(
         (n) => n.kind === 'function' && n.name === name
       );
@@ -250,13 +250,13 @@ function resolveMiddleware(name: string, context: ResolutionContext): string | n
   return null;
 }
 
-function resolveModel(name: string, context: ResolutionContext): string | null {
+async function resolveModel(name: string, context: ResolutionContext): Promise<string | null> {
   const modelDirs = ['model', 'models', 'entity', 'entities', 'domain', 'pkg'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.go') && modelDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const modelNode = nodes.find(
         (n) => n.kind === 'struct' && n.name === name
       );

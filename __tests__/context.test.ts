@@ -159,7 +159,7 @@ export function validateEmail(email: string): boolean {
   describe('getCode()', () => {
     it('should extract code for a node', async () => {
       // Find the PaymentService class
-      const nodes = cg.getNodesByKind('class');
+      const nodes = await cg.getNodesByKind('class');
       const paymentService = nodes.find((n) => n.name === 'PaymentService');
 
       expect(paymentService).toBeDefined();

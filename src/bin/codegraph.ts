@@ -448,7 +448,7 @@ program
       }
 
       const { default: CodeGraph } = await loadCodeGraph();
-      const cg = CodeGraph.openSync(projectPath);
+      const cg = await CodeGraph.open(projectPath);
       cg.uninitialize();
 
       success(`Removed CodeGraph from ${projectPath}`);
@@ -482,7 +482,7 @@ program
 
       if (options.quiet) {
         // Quiet mode: no UI, just run
-        if (options.force) cg.clear();
+        if (options.force) await cg.clear();
         const result = await cg.indexAll();
         if (!result.success) process.exit(1);
         cg.destroy();
@@ -493,7 +493,7 @@ program
       clack.intro('Indexing project');
 
       if (options.force) {
-        cg.clear();
+        await cg.clear();
         clack.log.info('Cleared existing index');
       }
 
@@ -614,8 +614,8 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
-      const stats = cg.getStats();
-      const changes = cg.getChangedFiles();
+      const stats = await cg.getStats();
+      const changes = await cg.getChangedFiles();
 
       // JSON output mode
       if (options.json) {
@@ -721,7 +721,7 @@ program
       const cg = await CodeGraph.open(projectPath);
 
       const limit = parseInt(options.limit || '10', 10);
-      const results = cg.searchNodes(search, {
+      const results = await cg.searchNodes(search, {
         limit,
         kinds: options.kind ? [options.kind as any] : undefined,
       });
@@ -792,7 +792,7 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
-      let files = cg.getFiles();
+      let files = await cg.getFiles();
 
       if (files.length === 0) {
         info('No files indexed. Run "codegraph index" first.');
@@ -1082,7 +1082,7 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
-      const stats = cg.getStats();
+      const stats = await cg.getStats();
 
       console.log(chalk.bold('\n  CodeGraph Explorer\n'));
       info(`Project: ${projectPath}`);
@@ -1330,7 +1330,7 @@ program
           const current = queue.shift()!;
           if (current.depth >= maxDepth) continue;
 
-          const dependents = cg.getFileDependents(current.file);
+          const dependents = await cg.getFileDependents(current.file);
           for (const dep of dependents) {
             if (visited.has(dep)) continue;
             visited.add(dep);

@@ -64,13 +64,13 @@ export interface ResolutionResult {
  */
 export interface ResolutionContext {
   /** Get all nodes in a file */
-  getNodesInFile(filePath: string): Node[];
+  getNodesInFile(filePath: string): Promise<Node[]>;
   /** Get all nodes by name */
-  getNodesByName(name: string): Node[];
+  getNodesByName(name: string): Promise<Node[]>;
   /** Get all nodes by qualified name */
-  getNodesByQualifiedName(qualifiedName: string): Node[];
+  getNodesByQualifiedName(qualifiedName: string): Promise<Node[]>;
   /** Get all nodes of a kind */
-  getNodesByKind(kind: Node['kind']): Node[];
+  getNodesByKind(kind: Node['kind']): Promise<Node[]>;
   /** Check if a file exists */
   fileExists(filePath: string): boolean;
   /** Read file content */
@@ -78,11 +78,11 @@ export interface ResolutionContext {
   /** Get project root */
   getProjectRoot(): string;
   /** Get all files */
-  getAllFiles(): string[];
+  getAllFiles(): Promise<string[]>;
   /** Get nodes by lowercase name (O(1) lookup for fuzzy matching) */
-  getNodesByLowerName(lowerName: string): Node[];
+  getNodesByLowerName(lowerName: string): Promise<Node[]>;
   /** Get cached import mappings for a file */
-  getImportMappings(filePath: string, language: Language): ImportMapping[];
+  getImportMappings(filePath: string, language: Language): Promise<ImportMapping[]>;
 }
 
 /**
@@ -92,9 +92,9 @@ export interface FrameworkResolver {
   /** Framework name */
   name: string;
   /** Detect if project uses this framework */
-  detect(context: ResolutionContext): boolean;
+  detect(context: ResolutionContext): Promise<boolean>;
   /** Resolve a reference using framework-specific patterns */
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null;
+  resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null>;
   /** Extract additional nodes specific to this framework */
   extractNodes?(filePath: string, content: string): Node[];
 }

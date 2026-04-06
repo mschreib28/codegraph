@@ -10,7 +10,7 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 export const djangoResolver: FrameworkResolver = {
   name: 'django',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for Django in requirements.txt or setup.py
     const requirements = context.readFile('requirements.txt');
     if (requirements && requirements.includes('django')) {
@@ -31,10 +31,10 @@ export const djangoResolver: FrameworkResolver = {
     return context.fileExists('manage.py');
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Model references
     if (ref.referenceName.endsWith('Model') || /^[A-Z][a-z]+$/.test(ref.referenceName)) {
-      const result = resolveModel(ref.referenceName, context);
+      const result = await resolveModel(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -47,7 +47,7 @@ export const djangoResolver: FrameworkResolver = {
 
     // Pattern 2: View references
     if (ref.referenceName.endsWith('View') || ref.referenceName.endsWith('ViewSet')) {
-      const result = resolveView(ref.referenceName, context);
+      const result = await resolveView(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -60,7 +60,7 @@ export const djangoResolver: FrameworkResolver = {
 
     // Pattern 3: Form references
     if (ref.referenceName.endsWith('Form')) {
-      const result = resolveForm(ref.referenceName, context);
+      const result = await resolveForm(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -114,7 +114,7 @@ export const djangoResolver: FrameworkResolver = {
 export const flaskResolver: FrameworkResolver = {
   name: 'flask',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     const requirements = context.readFile('requirements.txt');
     if (requirements && (requirements.includes('flask') || requirements.includes('Flask'))) {
       return true;
@@ -137,10 +137,10 @@ export const flaskResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Blueprint references
     if (ref.referenceName.endsWith('_bp') || ref.referenceName.endsWith('_blueprint')) {
-      const result = resolveBlueprint(ref.referenceName, context);
+      const result = await resolveBlueprint(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -189,7 +189,7 @@ export const flaskResolver: FrameworkResolver = {
 export const fastapiResolver: FrameworkResolver = {
   name: 'fastapi',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     const requirements = context.readFile('requirements.txt');
     if (requirements && requirements.includes('fastapi')) {
       return true;
@@ -212,10 +212,10 @@ export const fastapiResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Router references
     if (ref.referenceName.endsWith('_router') || ref.referenceName === 'router') {
-      const result = resolveRouter(ref.referenceName, context);
+      const result = await resolveRouter(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -228,7 +228,7 @@ export const fastapiResolver: FrameworkResolver = {
 
     // Pattern 2: Dependency references
     if (ref.referenceName.startsWith('get_') || ref.referenceName.startsWith('Depends')) {
-      const result = resolveDependency(ref.referenceName, context);
+      const result = await resolveDependency(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -276,14 +276,14 @@ export const fastapiResolver: FrameworkResolver = {
 
 // Helper functions
 
-function resolveModel(name: string, context: ResolutionContext): string | null {
+async function resolveModel(name: string, context: ResolutionContext): Promise<string | null> {
   const modelDirs = ['models', 'app/models', 'src/models'];
 
   for (const dir of modelDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.startsWith(dir) && file.endsWith('.py')) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const modelNode = nodes.find(
           (n) => n.kind === 'class' && n.name === name
         );
@@ -297,14 +297,14 @@ function resolveModel(name: string, context: ResolutionContext): string | null {
   return null;
 }
 
-function resolveView(name: string, context: ResolutionContext): string | null {
+async function resolveView(name: string, context: ResolutionContext): Promise<string | null> {
   const viewDirs = ['views', 'app/views', 'src/views', 'api/views'];
 
   for (const dir of viewDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.startsWith(dir) && file.endsWith('.py')) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const viewNode = nodes.find(
           (n) => (n.kind === 'class' || n.kind === 'function') && n.name === name
         );
@@ -318,14 +318,14 @@ function resolveView(name: string, context: ResolutionContext): string | null {
   return null;
 }
 
-function resolveForm(name: string, context: ResolutionContext): string | null {
+async function resolveForm(name: string, context: ResolutionContext): Promise<string | null> {
   const formDirs = ['forms', 'app/forms', 'src/forms'];
 
   for (const dir of formDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.startsWith(dir) && file.endsWith('.py')) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const formNode = nodes.find(
           (n) => n.kind === 'class' && n.name === name
         );
@@ -339,11 +339,11 @@ function resolveForm(name: string, context: ResolutionContext): string | null {
   return null;
 }
 
-function resolveBlueprint(name: string, context: ResolutionContext): string | null {
-  const allFiles = context.getAllFiles();
+async function resolveBlueprint(name: string, context: ResolutionContext): Promise<string | null> {
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.py')) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const bpNode = nodes.find(
         (n) => n.kind === 'variable' && n.name === name
       );
@@ -356,14 +356,14 @@ function resolveBlueprint(name: string, context: ResolutionContext): string | nu
   return null;
 }
 
-function resolveRouter(name: string, context: ResolutionContext): string | null {
+async function resolveRouter(name: string, context: ResolutionContext): Promise<string | null> {
   const routerDirs = ['routers', 'api', 'routes', 'endpoints'];
 
   for (const dir of routerDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if ((file.startsWith(dir) || file.includes('/routers/')) && file.endsWith('.py')) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const routerNode = nodes.find(
           (n) => n.kind === 'variable' && n.name === name
         );
@@ -377,14 +377,14 @@ function resolveRouter(name: string, context: ResolutionContext): string | null 
   return null;
 }
 
-function resolveDependency(name: string, context: ResolutionContext): string | null {
+async function resolveDependency(name: string, context: ResolutionContext): Promise<string | null> {
   const depDirs = ['dependencies', 'deps', 'core'];
 
   for (const dir of depDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if ((file.startsWith(dir) || file.includes('/dependencies/')) && file.endsWith('.py')) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const depNode = nodes.find(
           (n) => n.kind === 'function' && n.name === name
         );

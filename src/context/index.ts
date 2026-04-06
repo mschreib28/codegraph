@@ -291,7 +291,7 @@ export class ContextBuilder {
     let exactMatches: SearchResult[] = [];
     if (symbolsFromQuery.length > 0) {
       try {
-        exactMatches = this.queries.findNodesByExactName(symbolsFromQuery, {
+        exactMatches = await this.queries.findNodesByExactName(symbolsFromQuery, {
           limit: Math.ceil(opts.searchLimit * 2), // Get more since we'll merge
           kinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
         });
@@ -327,7 +327,7 @@ export class ContextBuilder {
         // then boost results that match multiple terms
         const termResultsMap = new Map<string, { result: SearchResult; termHits: number }>();
         for (const term of searchTerms) {
-          const termResults = this.queries.searchNodes(term, {
+          const termResults = await this.queries.searchNodes(term, {
             limit: opts.searchLimit * 2,
             kinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
           });
@@ -403,7 +403,7 @@ export class ContextBuilder {
     // Resolve imports/exports to their actual definitions
     // If someone searches "terminal" and finds `import { TerminalPanel }`,
     // they want the TerminalPanel class, not the import statement
-    filteredResults = this.resolveImportsToDefinitions(filteredResults);
+    filteredResults = await this.resolveImportsToDefinitions(filteredResults);
 
     // Add entry points to subgraph
     for (const result of filteredResults) {
@@ -413,7 +413,7 @@ export class ContextBuilder {
 
     // Traverse from each entry point
     for (const result of filteredResults) {
-      const traversalResult = this.traverser.traverseBFS(result.node.id, {
+      const traversalResult = await this.traverser.traverseBFS(result.node.id, {
         maxDepth: opts.traversalDepth,
         edgeKinds: opts.edgeKinds && opts.edgeKinds.length > 0 ? opts.edgeKinds : undefined,
         nodeKinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
@@ -489,7 +489,7 @@ export class ContextBuilder {
    * @returns Code string or null if not found
    */
   async getCode(nodeId: string): Promise<string | null> {
-    const node = this.queries.getNodeById(nodeId);
+    const node = await this.queries.getNodeById(nodeId);
     if (!node) {
       return null;
     }
@@ -636,7 +636,7 @@ export class ContextBuilder {
    * @param results - Search results that may include import/export nodes
    * @returns Results with imports resolved to definitions where possible
    */
-  private resolveImportsToDefinitions(results: SearchResult[]): SearchResult[] {
+  private async resolveImportsToDefinitions(results: SearchResult[]): Promise<SearchResult[]> {
     const resolved: SearchResult[] = [];
     const seenIds = new Set<string>();
 
@@ -656,11 +656,11 @@ export class ContextBuilder {
       // Imports have outgoing 'imports' edges to the definition
       // Exports have outgoing 'exports' edges to the definition
       const edgeKind = node.kind === 'import' ? 'imports' : 'exports';
-      const outgoingEdges = this.queries.getOutgoingEdges(node.id, [edgeKind as EdgeKind]);
+      const outgoingEdges = await this.queries.getOutgoingEdges(node.id, [edgeKind as EdgeKind]);
 
       let foundDefinition = false;
       for (const edge of outgoingEdges) {
-        const targetNode = this.queries.getNodeById(edge.target);
+        const targetNode = await this.queries.getNodeById(edge.target);
         if (targetNode && !seenIds.has(targetNode.id)) {
           // Found the definition - use it instead of the import
           seenIds.add(targetNode.id);

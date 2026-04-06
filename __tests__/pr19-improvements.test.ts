@@ -257,9 +257,9 @@ export function funcC(): void { console.log('c'); }
     });
 
     await cg.indexAll();
-    cg.resolveReferences();
+    await cg.resolveReferences();
 
-    const functions = cg.getNodesByKind('function');
+    const functions = await cg.getNodesByKind('function');
     const funcB = functions.find((n) => n.name === 'funcB');
 
     if (!funcB) {
@@ -268,7 +268,7 @@ export function funcC(): void { console.log('c'); }
     }
 
     // Traverse 'both' from B - should find A (incoming caller) and C (outgoing callee)
-    const subgraph = cg.traverse(funcB.id, {
+    const subgraph = await cg.traverse(funcB.id, {
       maxDepth: 1,
       direction: 'both',
     });
@@ -329,10 +329,11 @@ describe('Database Layer Improvements', () => {
 
     const dbPath = path.join(testDir, 'codegraph.db');
     const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const { SqliteDbAdapter } = await import('../src/db/sqlite-db-adapter');
+    const queries = new QueryBuilder(new SqliteDbAdapter(db.getDb()));
 
     // Insert a node first (needed as foreign key)
-    queries.insertNode({
+    await queries.insertNode({
       id: 'func:test:1',
       kind: 'function',
       name: 'testFunc',
@@ -347,7 +348,7 @@ describe('Database Layer Improvements', () => {
     });
 
     // Batch insert unresolved refs with filePath and language
-    queries.insertUnresolvedRefsBatch([
+    await queries.insertUnresolvedRefsBatch([
       {
         fromNodeId: 'func:test:1',
         referenceName: 'helperA',
@@ -368,7 +369,7 @@ describe('Database Layer Improvements', () => {
       },
     ]);
 
-    const refs = queries.getUnresolvedReferences();
+    const refs = await queries.getUnresolvedReferences();
     expect(refs).toHaveLength(2);
     expect(refs.map((r) => r.referenceName).sort()).toEqual(['helperA', 'helperB']);
 
@@ -385,11 +386,12 @@ describe('Database Layer Improvements', () => {
 
     const dbPath = path.join(testDir, 'codegraph.db');
     const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const { SqliteDbAdapter } = await import('../src/db/sqlite-db-adapter');
+    const queries = new QueryBuilder(new SqliteDbAdapter(db.getDb()));
 
     // Insert some nodes
     for (let i = 0; i < 3; i++) {
-      queries.insertNode({
+      await queries.insertNode({
         id: `func:test:${i}`,
         kind: 'function',
         name: `func${i}`,
@@ -404,7 +406,7 @@ describe('Database Layer Improvements', () => {
       });
     }
 
-    const allNodes = queries.getAllNodes();
+    const allNodes = await queries.getAllNodes();
     expect(allNodes).toHaveLength(3);
     expect(allNodes.map((n) => n.name).sort()).toEqual(['func0', 'func1', 'func2']);
 
@@ -440,10 +442,11 @@ describe('Database Layer Improvements', () => {
 
     const dbPath = path.join(testDir, 'codegraph.db');
     const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const { SqliteDbAdapter } = await import('../src/db/sqlite-db-adapter');
+    const queries = new QueryBuilder(new SqliteDbAdapter(db.getDb()));
 
     // Should not throw on empty array
-    expect(() => queries.insertUnresolvedRefsBatch([])).not.toThrow();
+    await expect(queries.insertUnresolvedRefsBatch([])).resolves.not.toThrow();
 
     db.close();
   });
@@ -482,7 +485,7 @@ export function otherFunc(): void { myFunc(); }
     await cg.indexAll();
 
     // resolveReferences internally calls warmCaches
-    const result = cg.resolveReferences();
+    const result = await cg.resolveReferences();
 
     // Should complete without error
     expect(result.stats.total).toBeGreaterThanOrEqual(0);
@@ -569,7 +572,7 @@ export function getValueFromCache(): number { return 2; }
       const handler = new ToolHandler(cg);
       const findSymbol = (handler as any).findSymbol.bind(handler);
 
-      const match = findSymbol(cg, 'getValue');
+      const match = await findSymbol(cg, 'getValue');
       expect(match).not.toBeNull();
       expect(match.node.name).toBe('getValue');
       // Should not have a disambiguation note for single exact match
@@ -604,7 +607,7 @@ export function handle(): void {}
       const handler = new ToolHandler(cg);
       const findSymbol = (handler as any).findSymbol.bind(handler);
 
-      const match = findSymbol(cg, 'handle');
+      const match = await findSymbol(cg, 'handle');
       expect(match).not.toBeNull();
       expect(match.node.name).toBe('handle');
       // Should have a disambiguation note
@@ -632,7 +635,7 @@ export function handle(): void {}
       const handler = new ToolHandler(cg);
       const findSymbol = (handler as any).findSymbol.bind(handler);
 
-      const match = findSymbol(cg, 'nonExistentSymbol');
+      const match = await findSymbol(cg, 'nonExistentSymbol');
       expect(match).toBeNull();
 
       handler.closeAll();

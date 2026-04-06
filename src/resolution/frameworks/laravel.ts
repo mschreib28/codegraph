@@ -37,17 +37,17 @@ export const FACADE_MAPPINGS: Record<string, string> = {
 export const laravelResolver: FrameworkResolver = {
   name: 'laravel',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for artisan file (Laravel signature)
     return context.fileExists('artisan') || context.fileExists('app/Http/Kernel.php');
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Model::method() - Eloquent static calls
     const modelMatch = ref.referenceName.match(/^([A-Z][a-zA-Z]+)::(\w+)$/);
     if (modelMatch) {
       const [, className, methodName] = modelMatch;
-      const result = resolveModelCall(className!, methodName!, context);
+      const result = await resolveModelCall(className!, methodName!, context);
       if (result) {
         return {
           original: ref,
@@ -76,7 +76,7 @@ export const laravelResolver: FrameworkResolver = {
     const controllerMatch = ref.referenceName.match(/^([A-Z][a-zA-Z]+Controller)@(\w+)$/);
     if (controllerMatch) {
       const [, controller, method] = controllerMatch;
-      const result = resolveControllerMethod(controller!, method!, context);
+      const result = await resolveControllerMethod(controller!, method!, context);
       if (result) {
         return {
           original: ref,
@@ -150,15 +150,15 @@ export const laravelResolver: FrameworkResolver = {
 /**
  * Resolve a Model::method() call
  */
-function resolveModelCall(
+async function resolveModelCall(
   className: string,
   methodName: string,
   context: ResolutionContext
-): string | null {
+): Promise<string | null> {
   // Try app/Models/ first (Laravel 8+)
   let modelPath = `app/Models/${className}.php`;
   if (context.fileExists(modelPath)) {
-    const nodes = context.getNodesInFile(modelPath);
+    const nodes = await context.getNodesInFile(modelPath);
     // Look for the method in this class
     const methodNode = nodes.find(
       (n) => n.kind === 'method' && n.name === methodName
@@ -178,7 +178,7 @@ function resolveModelCall(
   // Try app/ (Laravel 7 and below)
   modelPath = `app/${className}.php`;
   if (context.fileExists(modelPath)) {
-    const nodes = context.getNodesInFile(modelPath);
+    const nodes = await context.getNodesInFile(modelPath);
     const methodNode = nodes.find(
       (n) => n.kind === 'method' && n.name === methodName
     );
@@ -199,15 +199,15 @@ function resolveModelCall(
 /**
  * Resolve a Controller@method reference
  */
-function resolveControllerMethod(
+async function resolveControllerMethod(
   controller: string,
   method: string,
   context: ResolutionContext
-): string | null {
+): Promise<string | null> {
   // Try app/Http/Controllers/
   const controllerPath = `app/Http/Controllers/${controller}.php`;
   if (context.fileExists(controllerPath)) {
-    const nodes = context.getNodesInFile(controllerPath);
+    const nodes = await context.getNodesInFile(controllerPath);
     const methodNode = nodes.find(
       (n) => n.kind === 'method' && n.name === method
     );
@@ -217,10 +217,10 @@ function resolveControllerMethod(
   }
 
   // Try subdirectories (namespaced controllers)
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith(`${controller}.php`) && file.includes('Controllers')) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const methodNode = nodes.find(
         (n) => n.kind === 'method' && n.name === method
       );

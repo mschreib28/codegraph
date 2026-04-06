@@ -122,7 +122,7 @@ export { main };
     });
 
     await cg.indexAll();
-    cg.resolveReferences();
+    await cg.resolveReferences();
   });
 
   afterEach(() => {
@@ -135,8 +135,8 @@ export { main };
   });
 
   describe('traverse()', () => {
-    it('should traverse graph from a starting node', () => {
-      const nodes = cg.getNodesByKind('function');
+    it('should traverse graph from a starting node', async () => {
+      const nodes = await cg.getNodesByKind('function');
       const mainFunc = nodes.find((n) => n.name === 'main');
 
       if (!mainFunc) {
@@ -144,7 +144,7 @@ export { main };
         return;
       }
 
-      const subgraph = cg.traverse(mainFunc.id, {
+      const subgraph = await cg.traverse(mainFunc.id, {
         maxDepth: 2,
         direction: 'outgoing',
       });
@@ -153,29 +153,29 @@ export { main };
       expect(subgraph.roots).toContain(mainFunc.id);
     });
 
-    it('should respect maxDepth option', () => {
-      const nodes = cg.getNodesByKind('function');
+    it('should respect maxDepth option', async () => {
+      const nodes = await cg.getNodesByKind('function');
       const mainFunc = nodes.find((n) => n.name === 'main');
 
       if (!mainFunc) {
         return;
       }
 
-      const shallow = cg.traverse(mainFunc.id, { maxDepth: 1 });
-      const deep = cg.traverse(mainFunc.id, { maxDepth: 3 });
+      const shallow = await cg.traverse(mainFunc.id, { maxDepth: 1 });
+      const deep = await cg.traverse(mainFunc.id, { maxDepth: 3 });
 
       expect(deep.nodes.size).toBeGreaterThanOrEqual(shallow.nodes.size);
     });
 
-    it('should support incoming direction', () => {
-      const nodes = cg.getNodesByKind('function');
+    it('should support incoming direction', async () => {
+      const nodes = await cg.getNodesByKind('function');
       const formatValue = nodes.find((n) => n.name === 'formatValue');
 
       if (!formatValue) {
         return;
       }
 
-      const subgraph = cg.traverse(formatValue.id, {
+      const subgraph = await cg.traverse(formatValue.id, {
         maxDepth: 2,
         direction: 'incoming',
       });
@@ -185,8 +185,8 @@ export { main };
   });
 
   describe('getContext()', () => {
-    it('should return context for a node', () => {
-      const nodes = cg.getNodesByKind('class');
+    it('should return context for a node', async () => {
+      const nodes = await cg.getNodesByKind('class');
       const derivedClass = nodes.find((n) => n.name === 'DerivedClass');
 
       if (!derivedClass) {
@@ -194,7 +194,7 @@ export { main };
         return;
       }
 
-      const context = cg.getContext(derivedClass.id);
+      const context = await cg.getContext(derivedClass.id);
 
       expect(context.focal).toBeDefined();
       expect(context.focal.id).toBe(derivedClass.id);
@@ -204,14 +204,14 @@ export { main };
       expect(context.outgoingRefs).toBeDefined();
     });
 
-    it('should throw for non-existent node', () => {
-      expect(() => cg.getContext('non-existent-id')).toThrow('Node not found');
+    it('should throw for non-existent node', async () => {
+      await expect(cg.getContext('non-existent-id')).rejects.toThrow('Node not found');
     });
   });
 
   describe('getCallGraph()', () => {
-    it('should return call graph for a function', () => {
-      const nodes = cg.getNodesByKind('function');
+    it('should return call graph for a function', async () => {
+      const nodes = await cg.getNodesByKind('function');
       const processValue = nodes.find((n) => n.name === 'processValue');
 
       if (!processValue) {
@@ -219,7 +219,7 @@ export { main };
         return;
       }
 
-      const callGraph = cg.getCallGraph(processValue.id, 2);
+      const callGraph = await cg.getCallGraph(processValue.id, 2);
 
       expect(callGraph.nodes.size).toBeGreaterThan(0);
       expect(callGraph.nodes.has(processValue.id)).toBe(true);
@@ -227,22 +227,22 @@ export { main };
   });
 
   describe('getTypeHierarchy()', () => {
-    it('should return type hierarchy for a class', () => {
-      const nodes = cg.getNodesByKind('class');
+    it('should return type hierarchy for a class', async () => {
+      const nodes = await cg.getNodesByKind('class');
       const derivedClass = nodes.find((n) => n.name === 'DerivedClass');
 
       if (!derivedClass) {
         return;
       }
 
-      const hierarchy = cg.getTypeHierarchy(derivedClass.id);
+      const hierarchy = await cg.getTypeHierarchy(derivedClass.id);
 
       expect(hierarchy.nodes.size).toBeGreaterThan(0);
       expect(hierarchy.nodes.has(derivedClass.id)).toBe(true);
     });
 
-    it('should return empty subgraph for non-existent node', () => {
-      const hierarchy = cg.getTypeHierarchy('non-existent-id');
+    it('should return empty subgraph for non-existent node', async () => {
+      const hierarchy = await cg.getTypeHierarchy('non-existent-id');
 
       expect(hierarchy.nodes.size).toBe(0);
       expect(hierarchy.edges.length).toBe(0);
@@ -250,15 +250,15 @@ export { main };
   });
 
   describe('findUsages()', () => {
-    it('should find usages of a symbol', () => {
-      const nodes = cg.getNodesByKind('class');
+    it('should find usages of a symbol', async () => {
+      const nodes = await cg.getNodesByKind('class');
       const baseClass = nodes.find((n) => n.name === 'BaseClass');
 
       if (!baseClass) {
         return;
       }
 
-      const usages = cg.findUsages(baseClass.id);
+      const usages = await cg.findUsages(baseClass.id);
 
       // Should find at least the extends relationship
       expect(usages).toBeDefined();
@@ -267,44 +267,44 @@ export { main };
   });
 
   describe('getCallers() and getCallees()', () => {
-    it('should get callers of a function', () => {
-      const nodes = cg.getNodesByKind('function');
+    it('should get callers of a function', async () => {
+      const nodes = await cg.getNodesByKind('function');
       const formatValue = nodes.find((n) => n.name === 'formatValue');
 
       if (!formatValue) {
         return;
       }
 
-      const callers = cg.getCallers(formatValue.id);
+      const callers = await cg.getCallers(formatValue.id);
 
       // processValue calls formatValue
       expect(Array.isArray(callers)).toBe(true);
     });
 
-    it('should get callees of a function', () => {
-      const nodes = cg.getNodesByKind('function');
+    it('should get callees of a function', async () => {
+      const nodes = await cg.getNodesByKind('function');
       const processValue = nodes.find((n) => n.name === 'processValue');
 
       if (!processValue) {
         return;
       }
 
-      const callees = cg.getCallees(processValue.id);
+      const callees = await cg.getCallees(processValue.id);
 
       expect(Array.isArray(callees)).toBe(true);
     });
   });
 
   describe('getImpactRadius()', () => {
-    it('should calculate impact radius', () => {
-      const nodes = cg.getNodesByKind('function');
+    it('should calculate impact radius', async () => {
+      const nodes = await cg.getNodesByKind('function');
       const formatValue = nodes.find((n) => n.name === 'formatValue');
 
       if (!formatValue) {
         return;
       }
 
-      const impact = cg.getImpactRadius(formatValue.id, 3);
+      const impact = await cg.getImpactRadius(formatValue.id, 3);
 
       expect(impact.nodes.size).toBeGreaterThan(0);
       expect(impact.nodes.has(formatValue.id)).toBe(true);
@@ -312,14 +312,14 @@ export { main };
   });
 
   describe('findPath()', () => {
-    it('should find path between connected nodes', () => {
-      const stats = cg.getStats();
+    it('should find path between connected nodes', async () => {
+      const stats = await cg.getStats();
 
       if (stats.nodeCount < 2) {
         return;
       }
 
-      const functions = cg.getNodesByKind('function');
+      const functions = await cg.getNodesByKind('function');
       if (functions.length < 2) {
         return;
       }
@@ -329,45 +329,45 @@ export { main };
       const formatValue = functions.find((n) => n.name === 'formatValue');
 
       if (processValue && formatValue) {
-        const path = cg.findPath(processValue.id, formatValue.id);
+        const foundPath = await cg.findPath(processValue.id, formatValue.id);
 
         // Path might exist or might not depending on edge direction
-        expect(path === null || Array.isArray(path)).toBe(true);
+        expect(foundPath === null || Array.isArray(foundPath)).toBe(true);
       }
     });
 
-    it('should return null for disconnected nodes', () => {
+    it('should return null for disconnected nodes', async () => {
       // Create two nodes that definitely don't have a path
-      const path = cg.findPath('non-existent-1', 'non-existent-2');
+      const foundPath = await cg.findPath('non-existent-1', 'non-existent-2');
 
-      expect(path).toBeNull();
+      expect(foundPath).toBeNull();
     });
   });
 
   describe('getAncestors() and getChildren()', () => {
-    it('should get ancestors of a node', () => {
-      const methods = cg.getNodesByKind('method');
+    it('should get ancestors of a node', async () => {
+      const methods = await cg.getNodesByKind('method');
       const printMethod = methods.find((n) => n.name === 'print');
 
       if (!printMethod) {
         return;
       }
 
-      const ancestors = cg.getAncestors(printMethod.id);
+      const ancestors = await cg.getAncestors(printMethod.id);
 
       // Should have class and file as ancestors
       expect(Array.isArray(ancestors)).toBe(true);
     });
 
-    it('should get children of a node', () => {
-      const classes = cg.getNodesByKind('class');
+    it('should get children of a node', async () => {
+      const classes = await cg.getNodesByKind('class');
       const derivedClass = classes.find((n) => n.name === 'DerivedClass');
 
       if (!derivedClass) {
         return;
       }
 
-      const children = cg.getChildren(derivedClass.id);
+      const children = await cg.getChildren(derivedClass.id);
 
       // Should have methods as children
       expect(Array.isArray(children)).toBe(true);
@@ -375,22 +375,22 @@ export { main };
   });
 
   describe('File dependency analysis', () => {
-    it('should get file dependencies', () => {
-      const deps = cg.getFileDependencies('src/main.ts');
+    it('should get file dependencies', async () => {
+      const deps = await cg.getFileDependencies('src/main.ts');
 
       expect(Array.isArray(deps)).toBe(true);
     });
 
-    it('should get file dependents', () => {
-      const dependents = cg.getFileDependents('src/utils.ts');
+    it('should get file dependents', async () => {
+      const dependents = await cg.getFileDependents('src/utils.ts');
 
       expect(Array.isArray(dependents)).toBe(true);
     });
   });
 
   describe('findCircularDependencies()', () => {
-    it('should detect circular dependencies', () => {
-      const cycles = cg.findCircularDependencies();
+    it('should detect circular dependencies', async () => {
+      const cycles = await cg.findCircularDependencies();
 
       // Our test files don't have circular deps
       expect(Array.isArray(cycles)).toBe(true);
@@ -398,8 +398,8 @@ export { main };
   });
 
   describe('findDeadCode()', () => {
-    it('should find dead code', () => {
-      const deadCode = cg.findDeadCode(['function']);
+    it('should find dead code', async () => {
+      const deadCode = await cg.findDeadCode(['function']);
 
       expect(Array.isArray(deadCode)).toBe(true);
 
@@ -411,15 +411,15 @@ export { main };
   });
 
   describe('getNodeMetrics()', () => {
-    it('should return metrics for a node', () => {
-      const functions = cg.getNodesByKind('function');
+    it('should return metrics for a node', async () => {
+      const functions = await cg.getNodesByKind('function');
       const func = functions[0];
 
       if (!func) {
         return;
       }
 
-      const metrics = cg.getNodeMetrics(func.id);
+      const metrics = await cg.getNodeMetrics(func.id);
 
       expect(metrics).toHaveProperty('incomingEdgeCount');
       expect(metrics).toHaveProperty('outgoingEdgeCount');

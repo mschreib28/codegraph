@@ -25,6 +25,9 @@ import {
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
+import { SqliteDbAdapter } from './db/sqlite-db-adapter';
+import { DbAdapter } from './db/adapter';
+import { createDbAdapter } from './db/db-factory';
 import { loadConfig, saveConfig, createDefaultConfig } from './config';
 import {
   isInitialized,
@@ -126,7 +129,8 @@ export interface IndexOptions {
  * Provides the primary interface for interacting with the code knowledge graph.
  */
 export class CodeGraph {
-  private db: DatabaseConnection;
+  private db: DatabaseConnection | null;
+  private dbAdapter: DbAdapter;
   private queries: QueryBuilder;
   private config: CodeGraphConfig;
   private projectRoot: string;
@@ -144,12 +148,14 @@ export class CodeGraph {
   private fileLock: FileLock;
 
   private constructor(
-    db: DatabaseConnection,
+    db: DatabaseConnection | null,
+    dbAdapter: DbAdapter,
     queries: QueryBuilder,
     config: CodeGraphConfig,
     projectRoot: string
   ) {
     this.db = db;
+    this.dbAdapter = dbAdapter;
     this.queries = queries;
     this.config = config;
     this.projectRoot = projectRoot;
@@ -157,12 +163,13 @@ export class CodeGraph {
       path.join(projectRoot, '.codegraph', 'codegraph.lock')
     );
     this.orchestrator = new ExtractionOrchestrator(projectRoot, config, queries);
-    this.resolver = createResolver(projectRoot, queries);
+    // Create resolver without async initialize() -- deferred to first use or explicit reinitializeResolver()
+    this.resolver = new ReferenceResolver(projectRoot, queries);
     this.graphManager = new GraphQueryManager(queries);
     this.traverser = new GraphTraverser(queries);
-    // Vector manager — created lazily via initializeEmbeddings() when pgvector is configured.
+    // Vector manager -- created lazily via initializeEmbeddings() when pgvector is configured.
     // For SQLite (default), create eagerly so context builder can use it immediately.
-    if (!config.vectorStore || config.vectorStore.backend === 'sqlite') {
+    if (db && (!config.vectorStore || config.vectorStore.backend === 'sqlite')) {
       const sqliteStore = new SqliteVectorStore(db.getDb());
       this.vectorManager = createVectorManager(sqliteStore, queries, {});
     }
@@ -208,11 +215,18 @@ export class CodeGraph {
     saveConfig(resolvedRoot, config);
 
     // Initialize database
-    const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    let db: DatabaseConnection | null = null;
+    let adapter: DbAdapter;
+    if (config.database?.backend === 'postgres') {
+      adapter = await createDbAdapter({ backend: 'postgres', connectionString: config.database.connectionString, poolSize: config.database.poolSize, tablePrefix: config.database.tablePrefix });
+    } else {
+      const dbPath = getDatabasePath(resolvedRoot);
+      db = DatabaseConnection.initialize(dbPath);
+      adapter = new SqliteDbAdapter(db.getDb());
+    }
+    const queries = new QueryBuilder(adapter);
 
-    const instance = new CodeGraph(db, queries, config, resolvedRoot);
+    const instance = new CodeGraph(db, adapter, queries, config, resolvedRoot);
 
     // Run initial indexing if requested
     if (options.index) {
@@ -243,12 +257,13 @@ export class CodeGraph {
     }
     saveConfig(resolvedRoot, config);
 
-    // Initialize database
+    // Initialize database (initSync only supports SQLite)
     const dbPath = getDatabasePath(resolvedRoot);
     const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const adapter = new SqliteDbAdapter(db.getDb());
+    const queries = new QueryBuilder(adapter);
 
-    return new CodeGraph(db, queries, config, resolvedRoot);
+    return new CodeGraph(db, adapter, queries, config, resolvedRoot);
   }
 
   /**
@@ -277,11 +292,18 @@ export class CodeGraph {
     const config = loadConfig(resolvedRoot);
 
     // Open database
-    const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    let db: DatabaseConnection | null = null;
+    let adapter: DbAdapter;
+    if (config.database?.backend === 'postgres') {
+      adapter = await createDbAdapter({ backend: 'postgres', connectionString: config.database.connectionString, poolSize: config.database.poolSize, tablePrefix: config.database.tablePrefix });
+    } else {
+      const dbPath = getDatabasePath(resolvedRoot);
+      db = DatabaseConnection.open(dbPath);
+      adapter = new SqliteDbAdapter(db.getDb());
+    }
+    const queries = new QueryBuilder(adapter);
 
-    const instance = new CodeGraph(db, queries, config, resolvedRoot);
+    const instance = new CodeGraph(db, adapter, queries, config, resolvedRoot);
 
     // Sync if requested
     if (options.sync) {
@@ -311,12 +333,13 @@ export class CodeGraph {
     // Load configuration
     const config = loadConfig(resolvedRoot);
 
-    // Open database
+    // Open database (openSync only supports SQLite)
     const dbPath = getDatabasePath(resolvedRoot);
     const db = DatabaseConnection.open(dbPath);
-    const queries = new QueryBuilder(db.getDb());
+    const adapter = new SqliteDbAdapter(db.getDb());
+    const queries = new QueryBuilder(adapter);
 
-    return new CodeGraph(db, queries, config, resolvedRoot);
+    return new CodeGraph(db, adapter, queries, config, resolvedRoot);
   }
 
   /**
@@ -338,7 +361,11 @@ export class CodeGraph {
       this.vectorManager.dispose().catch(() => {});
       this.vectorManager = null;
     }
-    this.db.close();
+    if (this.db) {
+      this.db.close();
+    } else {
+      this.dbAdapter.close().catch(() => {});
+    }
   }
 
   // ===========================================================================
@@ -355,7 +382,7 @@ export class CodeGraph {
   /**
    * Update configuration
    */
-  updateConfig(updates: Partial<CodeGraphConfig>): void {
+  async updateConfig(updates: Partial<CodeGraphConfig>): Promise<void> {
     Object.assign(this.config, updates);
     saveConfig(this.projectRoot, this.config);
     // Recreate orchestrator and resolver with new config
@@ -364,7 +391,7 @@ export class CodeGraph {
       this.config,
       this.queries
     );
-    this.resolver = createResolver(this.projectRoot, this.queries);
+    this.resolver = await createResolver(this.projectRoot, this.queries);
   }
 
   /**
@@ -396,7 +423,7 @@ export class CodeGraph {
         // Resolve references to create call/import/extends edges
         if (result.success && result.filesIndexed > 0) {
           // Get count without loading all refs into memory
-          const unresolvedCount = this.queries.getUnresolvedReferencesCount();
+          const unresolvedCount = await this.queries.getUnresolvedReferencesCount();
 
           options.onProgress?.({
             phase: 'resolving',
@@ -404,7 +431,7 @@ export class CodeGraph {
             total: unresolvedCount,
           });
 
-          this.resolveReferencesBatched((current, total) => {
+          await this.resolveReferencesBatched((current, total) => {
             options.onProgress?.({
               phase: 'resolving',
               current,
@@ -459,7 +486,7 @@ export class CodeGraph {
         if (result.filesAdded > 0 || result.filesModified > 0) {
           if (result.changedFilePaths) {
             // Scope resolution to changed files (git fast path — bounded set)
-            const unresolvedRefs = this.queries.getUnresolvedReferencesByFiles(result.changedFilePaths);
+            const unresolvedRefs = await this.queries.getUnresolvedReferencesByFiles(result.changedFilePaths);
 
             options.onProgress?.({
               phase: 'resolving',
@@ -467,7 +494,7 @@ export class CodeGraph {
               total: unresolvedRefs.length,
             });
 
-            this.resolver.resolveAndPersist(unresolvedRefs, (current, total) => {
+            await this.resolver.resolveAndPersist(unresolvedRefs, (current, total) => {
               options.onProgress?.({
                 phase: 'resolving',
                 current,
@@ -476,7 +503,7 @@ export class CodeGraph {
             });
           } else {
             // No git info — use batched resolution to avoid OOM
-            const unresolvedCount = this.queries.getUnresolvedReferencesCount();
+            const unresolvedCount = await this.queries.getUnresolvedReferencesCount();
 
             options.onProgress?.({
               phase: 'resolving',
@@ -484,7 +511,7 @@ export class CodeGraph {
               total: unresolvedCount,
             });
 
-            this.resolveReferencesBatched((current, total) => {
+            await this.resolveReferencesBatched((current, total) => {
               options.onProgress?.({
                 phase: 'resolving',
                 current,
@@ -511,7 +538,7 @@ export class CodeGraph {
   /**
    * Get files that have changed since last index
    */
-  getChangedFiles(): { added: string[]; modified: string[]; removed: string[] } {
+  async getChangedFiles(): Promise<{ added: string[]; modified: string[]; removed: string[] }> {
     return this.orchestrator.getChangedFiles();
   }
 
@@ -535,9 +562,9 @@ export class CodeGraph {
    * - Import-based resolution
    * - Name-based symbol matching
    */
-  resolveReferences(onProgress?: (current: number, total: number) => void): ResolutionResult {
+  async resolveReferences(onProgress?: (current: number, total: number) => void): Promise<ResolutionResult> {
     // Get all unresolved references from the database
-    const unresolvedRefs = this.queries.getUnresolvedReferences();
+    const unresolvedRefs = await this.queries.getUnresolvedReferences();
     return this.resolver.resolveAndPersist(unresolvedRefs, onProgress);
   }
 
@@ -545,7 +572,7 @@ export class CodeGraph {
    * Resolve references in batches to keep memory bounded on large codebases.
    * Processes chunks of unresolved refs, persisting results after each batch.
    */
-  resolveReferencesBatched(onProgress?: (current: number, total: number) => void): ResolutionResult {
+  async resolveReferencesBatched(onProgress?: (current: number, total: number) => void): Promise<ResolutionResult> {
     return this.resolver.resolveAndPersistBatched(onProgress);
   }
 
@@ -559,8 +586,8 @@ export class CodeGraph {
   /**
    * Re-initialize the resolver (useful after adding new files)
    */
-  reinitializeResolver(): void {
-    this.resolver.initialize();
+  async reinitializeResolver(): Promise<void> {
+    await this.resolver.initialize();
   }
 
   // ===========================================================================
@@ -570,9 +597,9 @@ export class CodeGraph {
   /**
    * Get statistics about the knowledge graph
    */
-  getStats(): GraphStats {
-    const stats = this.queries.getStats();
-    stats.dbSizeBytes = this.db.getSize();
+  async getStats(): Promise<GraphStats> {
+    const stats = await this.queries.getStats();
+    stats.dbSizeBytes = this.db ? this.db.getSize() : 0;
     return stats;
   }
 
@@ -583,28 +610,28 @@ export class CodeGraph {
   /**
    * Get a node by ID
    */
-  getNode(id: string): Node | null {
+  async getNode(id: string): Promise<Node | null> {
     return this.queries.getNodeById(id);
   }
 
   /**
    * Get all nodes in a file
    */
-  getNodesInFile(filePath: string): Node[] {
+  async getNodesInFile(filePath: string): Promise<Node[]> {
     return this.queries.getNodesByFile(filePath);
   }
 
   /**
    * Get all nodes of a specific kind
    */
-  getNodesByKind(kind: Node['kind']): Node[] {
+  async getNodesByKind(kind: Node['kind']): Promise<Node[]> {
     return this.queries.getNodesByKind(kind);
   }
 
   /**
    * Search nodes by text
    */
-  searchNodes(query: string, options?: SearchOptions): SearchResult[] {
+  async searchNodes(query: string, options?: SearchOptions): Promise<SearchResult[]> {
     return this.queries.searchNodes(query, options);
   }
 
@@ -615,14 +642,14 @@ export class CodeGraph {
   /**
    * Get outgoing edges from a node
    */
-  getOutgoingEdges(nodeId: string): Edge[] {
+  async getOutgoingEdges(nodeId: string): Promise<Edge[]> {
     return this.queries.getOutgoingEdges(nodeId);
   }
 
   /**
    * Get incoming edges to a node
    */
-  getIncomingEdges(nodeId: string): Edge[] {
+  async getIncomingEdges(nodeId: string): Promise<Edge[]> {
     return this.queries.getIncomingEdges(nodeId);
   }
 
@@ -633,14 +660,14 @@ export class CodeGraph {
   /**
    * Get a file record by path
    */
-  getFile(filePath: string): FileRecord | null {
+  async getFile(filePath: string): Promise<FileRecord | null> {
     return this.queries.getFileByPath(filePath);
   }
 
   /**
    * Get all tracked files
    */
-  getFiles(): FileRecord[] {
+  async getFiles(): Promise<FileRecord[]> {
     return this.queries.getAllFiles();
   }
 
@@ -658,7 +685,7 @@ export class CodeGraph {
    * @param nodeId - ID of the focal node
    * @returns Context object with all related information
    */
-  getContext(nodeId: string): Context {
+  async getContext(nodeId: string): Promise<Context> {
     return this.graphManager.getContext(nodeId);
   }
 
@@ -672,7 +699,7 @@ export class CodeGraph {
    * @param options - Traversal options
    * @returns Subgraph containing traversed nodes and edges
    */
-  traverse(startId: string, options?: TraversalOptions): Subgraph {
+  async traverse(startId: string, options?: TraversalOptions): Promise<Subgraph> {
     return this.traverser.traverseBFS(startId, options);
   }
 
@@ -686,7 +713,7 @@ export class CodeGraph {
    * @param depth - Maximum depth in each direction (default: 2)
    * @returns Subgraph containing the call graph
    */
-  getCallGraph(nodeId: string, depth: number = 2): Subgraph {
+  async getCallGraph(nodeId: string, depth: number = 2): Promise<Subgraph> {
     return this.traverser.getCallGraph(nodeId, depth);
   }
 
@@ -699,7 +726,7 @@ export class CodeGraph {
    * @param nodeId - ID of the class/interface node
    * @returns Subgraph containing the type hierarchy
    */
-  getTypeHierarchy(nodeId: string): Subgraph {
+  async getTypeHierarchy(nodeId: string): Promise<Subgraph> {
     return this.traverser.getTypeHierarchy(nodeId);
   }
 
@@ -712,7 +739,7 @@ export class CodeGraph {
    * @param nodeId - ID of the symbol node
    * @returns Array of nodes and edges that reference this symbol
    */
-  findUsages(nodeId: string): Array<{ node: Node; edge: Edge }> {
+  async findUsages(nodeId: string): Promise<Array<{ node: Node; edge: Edge }>> {
     return this.traverser.findUsages(nodeId);
   }
 
@@ -723,7 +750,7 @@ export class CodeGraph {
    * @param maxDepth - Maximum depth to traverse (default: 1)
    * @returns Array of nodes that call this function
    */
-  getCallers(nodeId: string, maxDepth: number = 1): Array<{ node: Node; edge: Edge }> {
+  async getCallers(nodeId: string, maxDepth: number = 1): Promise<Array<{ node: Node; edge: Edge }>> {
     return this.traverser.getCallers(nodeId, maxDepth);
   }
 
@@ -734,7 +761,7 @@ export class CodeGraph {
    * @param maxDepth - Maximum depth to traverse (default: 1)
    * @returns Array of nodes called by this function
    */
-  getCallees(nodeId: string, maxDepth: number = 1): Array<{ node: Node; edge: Edge }> {
+  async getCallees(nodeId: string, maxDepth: number = 1): Promise<Array<{ node: Node; edge: Edge }>> {
     return this.traverser.getCallees(nodeId, maxDepth);
   }
 
@@ -747,7 +774,7 @@ export class CodeGraph {
    * @param maxDepth - Maximum depth to traverse (default: 3)
    * @returns Subgraph containing potentially impacted nodes
    */
-  getImpactRadius(nodeId: string, maxDepth: number = 3): Subgraph {
+  async getImpactRadius(nodeId: string, maxDepth: number = 3): Promise<Subgraph> {
     return this.traverser.getImpactRadius(nodeId, maxDepth);
   }
 
@@ -759,11 +786,11 @@ export class CodeGraph {
    * @param edgeKinds - Edge types to consider (all if empty)
    * @returns Array of nodes and edges forming the path, or null if no path exists
    */
-  findPath(
+  async findPath(
     fromId: string,
     toId: string,
     edgeKinds?: Edge['kind'][]
-  ): Array<{ node: Node; edge: Edge | null }> | null {
+  ): Promise<Array<{ node: Node; edge: Edge | null }> | null> {
     return this.traverser.findPath(fromId, toId, edgeKinds);
   }
 
@@ -773,7 +800,7 @@ export class CodeGraph {
    * @param nodeId - ID of the node
    * @returns Array of ancestor nodes from immediate parent to root
    */
-  getAncestors(nodeId: string): Node[] {
+  async getAncestors(nodeId: string): Promise<Node[]> {
     return this.traverser.getAncestors(nodeId);
   }
 
@@ -783,7 +810,7 @@ export class CodeGraph {
    * @param nodeId - ID of the node
    * @returns Array of child nodes
    */
-  getChildren(nodeId: string): Node[] {
+  async getChildren(nodeId: string): Promise<Node[]> {
     return this.traverser.getChildren(nodeId);
   }
 
@@ -793,7 +820,7 @@ export class CodeGraph {
    * @param filePath - Path to the file
    * @returns Array of file paths this file depends on
    */
-  getFileDependencies(filePath: string): string[] {
+  async getFileDependencies(filePath: string): Promise<string[]> {
     return this.graphManager.getFileDependencies(filePath);
   }
 
@@ -803,7 +830,7 @@ export class CodeGraph {
    * @param filePath - Path to the file
    * @returns Array of file paths that depend on this file
    */
-  getFileDependents(filePath: string): string[] {
+  async getFileDependents(filePath: string): Promise<string[]> {
     return this.graphManager.getFileDependents(filePath);
   }
 
@@ -812,7 +839,7 @@ export class CodeGraph {
    *
    * @returns Array of cycles, each cycle is an array of file paths
    */
-  findCircularDependencies(): string[][] {
+  async findCircularDependencies(): Promise<string[][]> {
     return this.graphManager.findCircularDependencies();
   }
 
@@ -822,7 +849,7 @@ export class CodeGraph {
    * @param kinds - Node kinds to check (default: functions, methods, classes)
    * @returns Array of unreferenced nodes
    */
-  findDeadCode(kinds?: Node['kind'][]): Node[] {
+  async findDeadCode(kinds?: Node['kind'][]): Promise<Node[]> {
     return this.graphManager.findDeadCode(kinds);
   }
 
@@ -832,14 +859,14 @@ export class CodeGraph {
    * @param nodeId - ID of the node
    * @returns Object containing various complexity metrics
    */
-  getNodeMetrics(nodeId: string): {
+  async getNodeMetrics(nodeId: string): Promise<{
     incomingEdgeCount: number;
     outgoingEdgeCount: number;
     callCount: number;
     callerCount: number;
     childCount: number;
     depth: number;
-  } {
+  }> {
     return this.graphManager.getNodeMetrics(nodeId);
   }
 
@@ -865,7 +892,7 @@ export class CodeGraph {
             tablePrefix: this.config.vectorStore.tablePrefix,
           }
         : { backend: 'sqlite' };
-      const store = await createVectorStore(storeConfig, this.db.getDb());
+      const store = await createVectorStore(storeConfig, this.db?.getDb());
       this.vectorManager = createVectorManager(store, this.queries, {
         embedder: {
           showProgress: true,
@@ -1026,15 +1053,17 @@ export class CodeGraph {
   /**
    * Optimize the database (vacuum and analyze)
    */
-  optimize(): void {
-    this.db.optimize();
+  async optimize(): Promise<void> {
+    if (this.db) {
+      this.db.optimize();
+    }
   }
 
   /**
    * Clear all data from the graph
    */
-  clear(): void {
-    this.queries.clear();
+  async clear(): Promise<void> {
+    await this.queries.clear();
   }
 
   /**

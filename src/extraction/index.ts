@@ -697,7 +697,7 @@ export class ExtractionOrchestrator {
         // Store in database on main thread (SQLite is not thread-safe)
         if (result.nodes.length > 0 || result.errors.length === 0) {
           const language = detectLanguage(filePath);
-          this.storeExtractionResult(filePath, content, language, stats, result);
+          await this.storeExtractionResult(filePath, content, language, stats, result);
         }
 
         if (result.errors.length > 0) {
@@ -759,7 +759,7 @@ export class ExtractionOrchestrator {
         if (result.nodes.length > 0 || result.errors.length === 0) {
           const language = detectLanguage(filePath);
           const stats = await fsp.stat(path.join(this.rootDir, filePath));
-          this.storeExtractionResult(filePath, content, language, stats, result);
+          await this.storeExtractionResult(filePath, content, language, stats, result);
 
           const idx = errors.indexOf(errEntry);
           if (idx >= 0) errors.splice(idx, 1);
@@ -810,7 +810,7 @@ export class ExtractionOrchestrator {
           if (result.nodes.length > 0 || result.errors.length === 0) {
             const language = detectLanguage(filePath);
             const stats = await fsp.stat(path.join(this.rootDir, filePath));
-            this.storeExtractionResult(filePath, fullContent, language, stats, result);
+            await this.storeExtractionResult(filePath, fullContent, language, stats, result);
 
             const idx = errors.indexOf(errEntry);
             if (idx >= 0) errors.splice(idx, 1);
@@ -992,7 +992,7 @@ export class ExtractionOrchestrator {
 
     // Store in database
     if (result.nodes.length > 0 || result.errors.length === 0) {
-      this.storeExtractionResult(relativePath, content, language, stats, result);
+      await this.storeExtractionResult(relativePath, content, language, stats, result);
     }
 
     return result;
@@ -1001,24 +1001,24 @@ export class ExtractionOrchestrator {
   /**
    * Store extraction result in database
    */
-  private storeExtractionResult(
+  private async storeExtractionResult(
     filePath: string,
     content: string,
     language: Language,
     stats: fs.Stats,
     result: ExtractionResult
-  ): void {
+  ): Promise<void> {
     const contentHash = hashContent(content);
 
     // Check if file already exists and hasn't changed
-    const existingFile = this.queries.getFileByPath(filePath);
+    const existingFile = await this.queries.getFileByPath(filePath);
     if (existingFile && existingFile.contentHash === contentHash) {
       return; // No changes
     }
 
     // Delete existing data for this file
     if (existingFile) {
-      this.queries.deleteFile(filePath);
+      await this.queries.deleteFile(filePath);
     }
 
     // Filter out nodes with missing required fields before insertion.
@@ -1028,7 +1028,7 @@ export class ExtractionOrchestrator {
 
     // Insert nodes
     if (validNodes.length > 0) {
-      this.queries.insertNodes(validNodes);
+      await this.queries.insertNodes(validNodes);
     }
 
     // Filter edges to only reference nodes that were actually inserted
@@ -1038,7 +1038,7 @@ export class ExtractionOrchestrator {
         (e) => insertedIds.has(e.source) && insertedIds.has(e.target)
       );
       if (validEdges.length > 0) {
-        this.queries.insertEdges(validEdges);
+        await this.queries.insertEdges(validEdges);
       }
     }
 
@@ -1053,7 +1053,7 @@ export class ExtractionOrchestrator {
           language: ref.language ?? language,
         }));
       if (refsWithContext.length > 0) {
-        this.queries.insertUnresolvedRefsBatch(refsWithContext);
+        await this.queries.insertUnresolvedRefsBatch(refsWithContext);
       }
     }
 
@@ -1068,7 +1068,7 @@ export class ExtractionOrchestrator {
       nodeCount: result.nodes.length,
       errors: result.errors.length > 0 ? result.errors : undefined,
     };
-    this.queries.upsertFile(fileRecord);
+    await this.queries.upsertFile(fileRecord);
   }
 
   /**
@@ -1101,9 +1101,9 @@ export class ExtractionOrchestrator {
 
       // Handle deleted files
       for (const filePath of gitChanges.deleted) {
-        const tracked = this.queries.getFileByPath(filePath);
+        const tracked = await this.queries.getFileByPath(filePath);
         if (tracked) {
-          this.queries.deleteFile(filePath);
+          await this.queries.deleteFile(filePath);
           filesRemoved++;
         }
       }
@@ -1120,7 +1120,7 @@ export class ExtractionOrchestrator {
         }
 
         const contentHash = hashContent(content);
-        const tracked = this.queries.getFileByPath(filePath);
+        const tracked = await this.queries.getFileByPath(filePath);
 
         if (!tracked) {
           filesToIndex.push(filePath);
@@ -1145,7 +1145,7 @@ export class ExtractionOrchestrator {
       filesChecked = currentFiles.size;
 
       // Build Map for O(1) lookups instead of .find() per file
-      const trackedFiles = this.queries.getAllFiles();
+      const trackedFiles = await this.queries.getAllFiles();
       const trackedMap = new Map<string, FileRecord>();
       for (const f of trackedFiles) {
         trackedMap.set(f.path, f);
@@ -1154,7 +1154,7 @@ export class ExtractionOrchestrator {
       // Find files to remove (in DB but not on disk)
       for (const tracked of trackedFiles) {
         if (!currentFiles.has(tracked.path)) {
-          this.queries.deleteFile(tracked.path);
+          await this.queries.deleteFile(tracked.path);
           filesRemoved++;
         }
       }
@@ -1221,7 +1221,7 @@ export class ExtractionOrchestrator {
    * Get files that have changed since last index.
    * Uses git status as a fast path when available, falling back to full scan.
    */
-  getChangedFiles(): { added: string[]; modified: string[]; removed: string[] } {
+  async getChangedFiles(): Promise<{ added: string[]; modified: string[]; removed: string[] }> {
     const gitChanges = getGitChangedFiles(this.rootDir, this.config);
 
     if (gitChanges) {
@@ -1232,7 +1232,7 @@ export class ExtractionOrchestrator {
 
       // Deleted files — only report if tracked in DB
       for (const filePath of gitChanges.deleted) {
-        const tracked = this.queries.getFileByPath(filePath);
+        const tracked = await this.queries.getFileByPath(filePath);
         if (tracked) {
           removed.push(filePath);
         }
@@ -1250,7 +1250,7 @@ export class ExtractionOrchestrator {
         }
 
         const contentHash = hashContent(content);
-        const tracked = this.queries.getFileByPath(filePath);
+        const tracked = await this.queries.getFileByPath(filePath);
 
         if (!tracked) {
           added.push(filePath);
@@ -1269,7 +1269,7 @@ export class ExtractionOrchestrator {
 
     // === Fallback: full scan (non-git project or git failure) ===
     const currentFiles = new Set(scanDirectory(this.rootDir, this.config));
-    const trackedFiles = this.queries.getAllFiles();
+    const trackedFiles = await this.queries.getAllFiles();
 
     // Build Map for O(1) lookups
     const trackedMap = new Map<string, FileRecord>();

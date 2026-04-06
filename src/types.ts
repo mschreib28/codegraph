@@ -476,6 +476,21 @@ export interface CodeGraphConfig {
   }[];
 
   /** Vector store backend configuration (optional, default: sqlite) */
+  /** Database backend configuration */
+  database?: {
+    /** Backend type: 'sqlite' (default) or 'postgres' */
+    backend: 'sqlite' | 'postgres';
+
+    /** PostgreSQL connection string. Can also use CODEGRAPH_PG_URL env var. */
+    connectionString?: string;
+
+    /** Connection pool size for PostgreSQL (default: 10) */
+    poolSize?: number;
+
+    /** Table name prefix for PostgreSQL (default: '') */
+    tablePrefix?: string;
+  };
+
   vectorStore?: {
     /** Backend type: 'sqlite' (default) or 'pgvector' */
     backend: 'sqlite' | 'pgvector';

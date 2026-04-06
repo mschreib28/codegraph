@@ -49,39 +49,39 @@ describe('Sync Module', () => {
     });
 
     describe('getChangedFiles()', () => {
-      it('should detect added files', () => {
+      it('should detect added files', async () => {
         // Add a new file
         fs.writeFileSync(
           path.join(testDir, 'src', 'new.ts'),
           `export function newFunc() { return 42; }`
         );
 
-        const changes = cg.getChangedFiles();
+        const changes = await cg.getChangedFiles();
 
         expect(changes.added).toContain('src/new.ts');
         expect(changes.modified).toHaveLength(0);
         expect(changes.removed).toHaveLength(0);
       });
 
-      it('should detect modified files', () => {
+      it('should detect modified files', async () => {
         // Modify existing file
         fs.writeFileSync(
           path.join(testDir, 'src', 'index.ts'),
           `export function hello() { return 'modified'; }`
         );
 
-        const changes = cg.getChangedFiles();
+        const changes = await cg.getChangedFiles();
 
         expect(changes.added).toHaveLength(0);
         expect(changes.modified).toContain('src/index.ts');
         expect(changes.removed).toHaveLength(0);
       });
 
-      it('should detect removed files', () => {
+      it('should detect removed files', async () => {
         // Remove file
         fs.unlinkSync(path.join(testDir, 'src', 'index.ts'));
 
-        const changes = cg.getChangedFiles();
+        const changes = await cg.getChangedFiles();
 
         expect(changes.added).toHaveLength(0);
         expect(changes.modified).toHaveLength(0);
@@ -104,7 +104,7 @@ describe('Sync Module', () => {
         expect(result.filesRemoved).toBe(0);
 
         // Verify new function is in the graph
-        const nodes = cg.searchNodes('newFunc');
+        const nodes = await cg.searchNodes('newFunc');
         expect(nodes.length).toBeGreaterThan(0);
       });
 
@@ -120,11 +120,11 @@ describe('Sync Module', () => {
         expect(result.filesModified).toBe(1);
 
         // Verify new function is in the graph
-        const nodes = cg.searchNodes('goodbye');
+        const nodes = await cg.searchNodes('goodbye');
         expect(nodes.length).toBeGreaterThan(0);
 
         // Verify old function is gone
-        const oldNodes = cg.searchNodes('hello');
+        const oldNodes = await cg.searchNodes('hello');
         expect(oldNodes.length).toBe(0);
       });
 
@@ -137,7 +137,7 @@ describe('Sync Module', () => {
         expect(result.filesRemoved).toBe(1);
 
         // Verify function is gone
-        const nodes = cg.searchNodes('hello');
+        const nodes = await cg.searchNodes('hello');
         expect(nodes.length).toBe(0);
       });
 
@@ -221,7 +221,7 @@ describe('Sync Module', () => {
       expect(result.changedFilePaths).toContain('src/new.ts');
 
       // Verify the function was indexed
-      const nodes = cg.searchNodes('newFunc');
+      const nodes = await cg.searchNodes('newFunc');
       expect(nodes.length).toBeGreaterThan(0);
     });
 
@@ -233,7 +233,7 @@ describe('Sync Module', () => {
       expect(result.filesRemoved).toBe(1);
 
       // Verify function is gone
-      const nodes = cg.searchNodes('hello');
+      const nodes = await cg.searchNodes('hello');
       expect(nodes.length).toBe(0);
     });
 

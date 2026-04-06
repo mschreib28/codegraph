@@ -39,6 +39,7 @@ export class ReferenceResolver {
   private importMappingCache: Map<string, ImportMapping[]> = new Map();
   private knownFiles: Set<string> | null = null;
   private cachesWarmed = false;
+  private initialized = false;
 
   constructor(projectRoot: string, queries: QueryBuilder) {
     this.projectRoot = projectRoot;
@@ -49,8 +50,9 @@ export class ReferenceResolver {
   /**
    * Initialize the resolver (detect frameworks, etc.)
    */
-  initialize(): void {
-    this.frameworks = detectFrameworks(this.context);
+  async initialize(): Promise<void> {
+    this.frameworks = await detectFrameworks(this.context);
+    this.initialized = true;
     this.clearCaches();
   }
 
@@ -59,11 +61,16 @@ export class ReferenceResolver {
    * Node lookups are now handled by indexed SQLite queries instead of
    * loading all nodes into memory (which caused OOM on large codebases).
    */
-  warmCaches(): void {
+  async warmCaches(): Promise<void> {
+    // Ensure framework detection has run
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
     if (this.cachesWarmed) return;
 
     // Only cache the set of known file paths (lightweight string set)
-    this.knownFiles = new Set(this.queries.getAllFilePaths());
+    this.knownFiles = new Set(await this.queries.getAllFilePaths());
 
     this.cachesWarmed = true;
   }
@@ -84,22 +91,22 @@ export class ReferenceResolver {
    */
   private createContext(): ResolutionContext {
     return {
-      getNodesInFile: (filePath: string) => {
+      getNodesInFile: async (filePath: string) => {
         if (!this.nodeCache.has(filePath)) {
-          this.nodeCache.set(filePath, this.queries.getNodesByFile(filePath));
+          this.nodeCache.set(filePath, await this.queries.getNodesByFile(filePath));
         }
         return this.nodeCache.get(filePath)!;
       },
 
-      getNodesByName: (name: string) => {
+      getNodesByName: async (name: string) => {
         return this.queries.getNodesByName(name);
       },
 
-      getNodesByQualifiedName: (qualifiedName: string) => {
+      getNodesByQualifiedName: async (qualifiedName: string) => {
         return this.queries.getNodesByQualifiedNameExact(qualifiedName);
       },
 
-      getNodesByKind: (kind: Node['kind']) => {
+      getNodesByKind: async (kind: Node['kind']) => {
         return this.queries.getNodesByKind(kind);
       },
 
@@ -140,15 +147,15 @@ export class ReferenceResolver {
 
       getProjectRoot: () => this.projectRoot,
 
-      getAllFiles: () => {
+      getAllFiles: async () => {
         return this.queries.getAllFilePaths();
       },
 
-      getNodesByLowerName: (lowerName: string) => {
+      getNodesByLowerName: async (lowerName: string) => {
         return this.queries.getNodesByLowerName(lowerName);
       },
 
-      getImportMappings: (filePath: string, language) => {
+      getImportMappings: async (filePath: string, language) => {
         const cacheKey = filePath;
         const cached = this.importMappingCache.get(cacheKey);
         if (cached) return cached;
@@ -169,34 +176,37 @@ export class ReferenceResolver {
   /**
    * Resolve all unresolved references
    */
-  resolveAll(
+  async resolveAll(
     unresolvedRefs: UnresolvedReference[],
     onProgress?: (current: number, total: number) => void
-  ): ResolutionResult {
+  ): Promise<ResolutionResult> {
     // Pre-load all nodes into memory for fast lookups
-    this.warmCaches();
+    await this.warmCaches();
 
     const resolved: ResolvedRef[] = [];
     const unresolved: UnresolvedRef[] = [];
     const byMethod: Record<string, number> = {};
 
     // Convert to our internal format, using denormalized fields when available
-    const refs: UnresolvedRef[] = unresolvedRefs.map((ref) => ({
-      fromNodeId: ref.fromNodeId,
-      referenceName: ref.referenceName,
-      referenceKind: ref.referenceKind,
-      line: ref.line,
-      column: ref.column,
-      filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
-      language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
-    }));
+    const refs: UnresolvedRef[] = [];
+    for (const ref of unresolvedRefs) {
+      refs.push({
+        fromNodeId: ref.fromNodeId,
+        referenceName: ref.referenceName,
+        referenceKind: ref.referenceKind,
+        line: ref.line,
+        column: ref.column,
+        filePath: ref.filePath || await this.getFilePathFromNodeId(ref.fromNodeId),
+        language: ref.language || await this.getLanguageFromNodeId(ref.fromNodeId),
+      });
+    }
 
     const total = refs.length;
     let lastReportedPercent = -1;
 
     for (let i = 0; i < refs.length; i++) {
       const ref = refs[i]!; // Array index is guaranteed to be in bounds
-      const result = this.resolveOne(ref);
+      const result = await this.resolveOne(ref);
 
       if (result) {
         resolved.push(result);
@@ -235,7 +245,7 @@ export class ReferenceResolver {
   /**
    * Resolve a single reference
    */
-  resolveOne(ref: UnresolvedRef): ResolvedRef | null {
+  async resolveOne(ref: UnresolvedRef): Promise<ResolvedRef | null> {
     // Skip built-in/external references
     if (this.isBuiltInOrExternal(ref)) {
       return null;
@@ -245,7 +255,7 @@ export class ReferenceResolver {
 
     // Strategy 1: Try framework-specific resolution
     for (const framework of this.frameworks) {
-      const result = framework.resolve(ref, this.context);
+      const result = await framework.resolve(ref, this.context);
       if (result) {
         if (result.confidence >= 0.9) return result; // High confidence, return immediately
         candidates.push(result);
@@ -253,14 +263,14 @@ export class ReferenceResolver {
     }
 
     // Strategy 2: Try import-based resolution
-    const importResult = resolveViaImport(ref, this.context);
+    const importResult = await resolveViaImport(ref, this.context);
     if (importResult) {
       if (importResult.confidence >= 0.9) return importResult;
       candidates.push(importResult);
     }
 
     // Strategy 3: Try name matching
-    const nameResult = matchReference(ref, this.context);
+    const nameResult = await matchReference(ref, this.context);
     if (nameResult) {
       candidates.push(nameResult);
     }
@@ -293,23 +303,23 @@ export class ReferenceResolver {
   /**
    * Resolve and persist edges to database
    */
-  resolveAndPersist(
+  async resolveAndPersist(
     unresolvedRefs: UnresolvedReference[],
     onProgress?: (current: number, total: number) => void
-  ): ResolutionResult {
-    const result = this.resolveAll(unresolvedRefs, onProgress);
+  ): Promise<ResolutionResult> {
+    const result = await this.resolveAll(unresolvedRefs, onProgress);
 
     // Create edges from resolved references
     const edges = this.createEdges(result.resolved);
 
     // Insert edges into database
     if (edges.length > 0) {
-      this.queries.insertEdges(edges);
+      await this.queries.insertEdges(edges);
     }
 
     // Clean up resolved refs from unresolved_refs table so metrics are accurate
     if (result.resolved.length > 0) {
-      this.queries.deleteSpecificResolvedReferences(
+      await this.queries.deleteSpecificResolvedReferences(
         result.resolved.map((r) => ({
           fromNodeId: r.original.fromNodeId,
           referenceName: r.original.referenceName,
@@ -326,13 +336,13 @@ export class ReferenceResolver {
    * Processes unresolved references in chunks, persisting edges and cleaning
    * up resolved refs after each batch to avoid accumulating large arrays.
    */
-  resolveAndPersistBatched(
+  async resolveAndPersistBatched(
     onProgress?: (current: number, total: number) => void,
     batchSize: number = 5000
-  ): ResolutionResult {
-    this.warmCaches();
+  ): Promise<ResolutionResult> {
+    await this.warmCaches();
 
-    const total = this.queries.getUnresolvedReferencesCount();
+    const total = await this.queries.getUnresolvedReferencesCount();
     let processed = 0;
     const aggregateStats = {
       total: 0,
@@ -344,20 +354,20 @@ export class ReferenceResolver {
     // Process in batches. We always read from offset 0 because resolved refs
     // are deleted after each batch, shifting the remaining rows forward.
     while (true) {
-      const batch = this.queries.getUnresolvedReferencesBatch(0, batchSize);
+      const batch = await this.queries.getUnresolvedReferencesBatch(0, batchSize);
       if (batch.length === 0) break;
 
-      const result = this.resolveAll(batch);
+      const result = await this.resolveAll(batch);
 
       // Persist edges immediately
       const edges = this.createEdges(result.resolved);
       if (edges.length > 0) {
-        this.queries.insertEdges(edges);
+        await this.queries.insertEdges(edges);
       }
 
       // Clean up resolved refs so they don't appear in the next batch
       if (result.resolved.length > 0) {
-        this.queries.deleteSpecificResolvedReferences(
+        await this.queries.deleteSpecificResolvedReferences(
           result.resolved.map((r) => ({
             fromNodeId: r.original.fromNodeId,
             referenceName: r.original.referenceName,
@@ -368,7 +378,7 @@ export class ReferenceResolver {
 
       // Delete unresolvable refs from this batch to avoid re-processing them
       if (result.unresolved.length > 0) {
-        this.queries.deleteSpecificResolvedReferences(
+        await this.queries.deleteSpecificResolvedReferences(
           result.unresolved.map((r) => ({
             fromNodeId: r.fromNodeId,
             referenceName: r.referenceName,
@@ -455,7 +465,7 @@ export class ReferenceResolver {
       const dotIdx = name.indexOf('.');
       if (dotIdx > 0) {
         const receiver = name.substring(0, dotIdx);
-        // self.method and cls.method are internal calls, not built-in — let them resolve
+        // self.method and cls.method are internal calls, not built-in -- let them resolve
         // But receiver types that are built-in types should be filtered
         const pythonBuiltInTypes = new Set([
           'list', 'dict', 'set', 'tuple', 'str', 'int', 'float', 'bool',
@@ -483,7 +493,7 @@ export class ReferenceResolver {
 
     // Pascal/Delphi built-ins and standard library units
     if (ref.language === 'pascal') {
-      // Standard RTL/VCL/FMX unit prefixes — these are external dependencies
+      // Standard RTL/VCL/FMX unit prefixes -- these are external dependencies
       const pascalUnitPrefixes = [
         'System.', 'Winapi.', 'Vcl.', 'Fmx.', 'Data.', 'Datasnap.',
         'Soap.', 'Xml.', 'Web.', 'REST.', 'FireDAC.', 'IBX.',
@@ -525,16 +535,16 @@ export class ReferenceResolver {
   /**
    * Get file path from node ID
    */
-  private getFilePathFromNodeId(nodeId: string): string {
-    const node = this.queries.getNodeById(nodeId);
+  private async getFilePathFromNodeId(nodeId: string): Promise<string> {
+    const node = await this.queries.getNodeById(nodeId);
     return node?.filePath || '';
   }
 
   /**
    * Get language from node ID
    */
-  private getLanguageFromNodeId(nodeId: string): UnresolvedRef['language'] {
-    const node = this.queries.getNodeById(nodeId);
+  private async getLanguageFromNodeId(nodeId: string): Promise<UnresolvedRef['language']> {
+    const node = await this.queries.getNodeById(nodeId);
     return node?.language || 'unknown';
   }
 }
@@ -542,8 +552,8 @@ export class ReferenceResolver {
 /**
  * Create a reference resolver instance
  */
-export function createResolver(projectRoot: string, queries: QueryBuilder): ReferenceResolver {
+export async function createResolver(projectRoot: string, queries: QueryBuilder): Promise<ReferenceResolver> {
   const resolver = new ReferenceResolver(projectRoot, queries);
-  resolver.initialize();
+  await resolver.initialize();
   return resolver;
 }

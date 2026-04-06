@@ -10,9 +10,9 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 export const aspnetResolver: FrameworkResolver = {
   name: 'aspnet',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for .csproj files with ASP.NET references
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.endsWith('.csproj')) {
         const content = context.readFile(file);
@@ -45,10 +45,10 @@ export const aspnetResolver: FrameworkResolver = {
     return allFiles.some((f) => f.includes('/Controllers/') && f.endsWith('Controller.cs'));
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Controller references
     if (ref.referenceName.endsWith('Controller')) {
-      const result = resolveController(ref.referenceName, context);
+      const result = await resolveController(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -61,7 +61,7 @@ export const aspnetResolver: FrameworkResolver = {
 
     // Pattern 2: Service references (dependency injection)
     if (ref.referenceName.endsWith('Service') || ref.referenceName.startsWith('I') && ref.referenceName.length > 1) {
-      const result = resolveService(ref.referenceName, context);
+      const result = await resolveService(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -74,7 +74,7 @@ export const aspnetResolver: FrameworkResolver = {
 
     // Pattern 3: Repository references
     if (ref.referenceName.endsWith('Repository')) {
-      const result = resolveRepository(ref.referenceName, context);
+      const result = await resolveRepository(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -87,7 +87,7 @@ export const aspnetResolver: FrameworkResolver = {
 
     // Pattern 4: Model/Entity references
     if (/^[A-Z][a-zA-Z]+$/.test(ref.referenceName)) {
-      const result = resolveModel(ref.referenceName, context);
+      const result = await resolveModel(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -100,7 +100,7 @@ export const aspnetResolver: FrameworkResolver = {
 
     // Pattern 5: ViewModel references
     if (ref.referenceName.endsWith('ViewModel') || ref.referenceName.endsWith('Dto')) {
-      const result = resolveViewModel(ref.referenceName, context);
+      const result = await resolveViewModel(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -215,12 +215,12 @@ export const aspnetResolver: FrameworkResolver = {
 
 // Helper functions
 
-function resolveController(name: string, context: ResolutionContext): string | null {
-  const allFiles = context.getAllFiles();
+async function resolveController(name: string, context: ResolutionContext): Promise<string | null> {
+  const allFiles = await context.getAllFiles();
 
   for (const file of allFiles) {
     if (file.endsWith('.cs') && file.includes('/Controllers/')) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const controllerNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -233,13 +233,13 @@ function resolveController(name: string, context: ResolutionContext): string | n
   return null;
 }
 
-function resolveService(name: string, context: ResolutionContext): string | null {
+async function resolveService(name: string, context: ResolutionContext): Promise<string | null> {
   const serviceDirs = ['Services', 'Service', 'Application'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.cs') && serviceDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const serviceNode = nodes.find(
         (n) => (n.kind === 'class' || n.kind === 'interface') && n.name === name
       );
@@ -252,7 +252,7 @@ function resolveService(name: string, context: ResolutionContext): string | null
   // Search all C# files for interfaces (often services are injected via interface)
   for (const file of allFiles) {
     if (file.endsWith('.cs')) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const serviceNode = nodes.find(
         (n) => (n.kind === 'class' || n.kind === 'interface') && n.name === name
       );
@@ -265,13 +265,13 @@ function resolveService(name: string, context: ResolutionContext): string | null
   return null;
 }
 
-function resolveRepository(name: string, context: ResolutionContext): string | null {
+async function resolveRepository(name: string, context: ResolutionContext): Promise<string | null> {
   const repoDirs = ['Repositories', 'Repository', 'Data', 'Infrastructure'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.cs') && repoDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const repoNode = nodes.find(
         (n) => (n.kind === 'class' || n.kind === 'interface') && n.name === name
       );
@@ -284,13 +284,13 @@ function resolveRepository(name: string, context: ResolutionContext): string | n
   return null;
 }
 
-function resolveModel(name: string, context: ResolutionContext): string | null {
+async function resolveModel(name: string, context: ResolutionContext): Promise<string | null> {
   const modelDirs = ['Models', 'Model', 'Entities', 'Entity', 'Domain'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.cs') && modelDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const modelNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -303,13 +303,13 @@ function resolveModel(name: string, context: ResolutionContext): string | null {
   return null;
 }
 
-function resolveViewModel(name: string, context: ResolutionContext): string | null {
+async function resolveViewModel(name: string, context: ResolutionContext): Promise<string | null> {
   const viewModelDirs = ['ViewModels', 'ViewModel', 'DTOs', 'Dto'];
 
-  const allFiles = context.getAllFiles();
+  const allFiles = await context.getAllFiles();
   for (const file of allFiles) {
     if (file.endsWith('.cs') && viewModelDirs.some((d) => file.includes(`/${d}/`))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const vmNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );

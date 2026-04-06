@@ -307,7 +307,7 @@ export class ToolHandler {
    * Walks up parent directories to find the nearest .codegraph/ folder,
    * similar to how git finds .git/ directories.
    */
-  private getCodeGraph(projectPath?: string): CodeGraph {
+  private async getCodeGraph(projectPath?: string): Promise<CodeGraph> {
     if (!projectPath) {
       if (!this.cg) {
         throw new Error('CodeGraph not initialized for this project. Run \'codegraph init\' first.');
@@ -336,7 +336,7 @@ export class ToolHandler {
     }
 
     // Open and cache under both paths
-    const cg = CodeGraph.openSync(resolvedRoot);
+    const cg = await CodeGraph.open(resolvedRoot);
     this.projectCache.set(resolvedRoot, cg);
     if (projectPath !== resolvedRoot) {
       this.projectCache.set(projectPath, cg);
@@ -403,12 +403,12 @@ export class ToolHandler {
     const query = this.validateString(args.query, 'query');
     if (typeof query !== 'string') return query;
 
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
     const kind = args.kind as string | undefined;
     const rawLimit = Number(args.limit) || 10;
     const limit = clamp(rawLimit, 1, 100);
 
-    const results = cg.searchNodes(query, {
+    const results = await cg.searchNodes(query, {
       limit,
       kinds: kind ? [kind as NodeKind] : undefined,
     });
@@ -434,7 +434,7 @@ export class ToolHandler {
       markSessionConsulted(sessionId);
     }
 
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
     const maxNodes = (args.maxNodes as number) || 20;
     const includeCode = args.includeCode !== false;
 
@@ -494,10 +494,10 @@ export class ToolHandler {
     const symbol = this.validateString(args.symbol, 'symbol');
     if (typeof symbol !== 'string') return symbol;
 
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
+    const allMatches = await this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
@@ -506,7 +506,7 @@ export class ToolHandler {
     const seen = new Set<string>();
     const allCallers: Node[] = [];
     for (const node of allMatches.nodes) {
-      for (const c of cg.getCallers(node.id)) {
+      for (const c of await cg.getCallers(node.id)) {
         if (!seen.has(c.node.id)) {
           seen.add(c.node.id);
           allCallers.push(c.node);
@@ -529,10 +529,10 @@ export class ToolHandler {
     const symbol = this.validateString(args.symbol, 'symbol');
     if (typeof symbol !== 'string') return symbol;
 
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
+    const allMatches = await this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
@@ -541,7 +541,7 @@ export class ToolHandler {
     const seen = new Set<string>();
     const allCallees: Node[] = [];
     for (const node of allMatches.nodes) {
-      for (const c of cg.getCallees(node.id)) {
+      for (const c of await cg.getCallees(node.id)) {
         if (!seen.has(c.node.id)) {
           seen.add(c.node.id);
           allCallees.push(c.node);
@@ -564,10 +564,10 @@ export class ToolHandler {
     const symbol = this.validateString(args.symbol, 'symbol');
     if (typeof symbol !== 'string') return symbol;
 
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
     const depth = clamp((args.depth as number) || 2, 1, 10);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
+    const allMatches = await this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
@@ -578,7 +578,7 @@ export class ToolHandler {
     const seenEdges = new Set<string>();
 
     for (const node of allMatches.nodes) {
-      const impact = cg.getImpactRadius(node.id, depth);
+      const impact = await cg.getImpactRadius(node.id, depth);
       for (const [id, n] of impact.nodes) {
         mergedNodes.set(id, n);
       }
@@ -615,7 +615,7 @@ export class ToolHandler {
     const query = this.validateString(args.query, 'query');
     if (typeof query !== 'string') return query;
 
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
     const maxFiles = clamp((args.maxFiles as number) || 12, 1, 20);
     const projectRoot = cg.getProjectRoot();
 
@@ -864,11 +864,11 @@ export class ToolHandler {
     const symbol = this.validateString(args.symbol, 'symbol');
     if (typeof symbol !== 'string') return symbol;
 
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
     // Default to false to minimize context usage
     const includeCode = args.includeCode === true;
 
-    const match = this.findSymbol(cg, symbol);
+    const match = await this.findSymbol(cg, symbol);
     if (!match) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
@@ -887,8 +887,8 @@ export class ToolHandler {
    * Handle codegraph_status
    */
   private async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const stats = cg.getStats();
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
+    const stats = await cg.getStats();
 
     const lines: string[] = [
       '## CodeGraph Status',
@@ -921,7 +921,7 @@ export class ToolHandler {
    * Handle codegraph_files - get project file structure from the index
    */
   private async handleFiles(args: Record<string, unknown>): Promise<ToolResult> {
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const cg = await this.getCodeGraph(args.projectPath as string | undefined);
     const pathFilter = args.path as string | undefined;
     const pattern = args.pattern as string | undefined;
     const format = (args.format as 'tree' | 'flat' | 'grouped') || 'tree';
@@ -929,7 +929,7 @@ export class ToolHandler {
     const maxDepth = args.maxDepth != null ? clamp(args.maxDepth as number, 1, 20) : undefined;
 
     // Get all files from the index
-    const allFiles = cg.getFiles();
+    const allFiles = await cg.getFiles();
 
     if (allFiles.length === 0) {
       return this.textResult('No files indexed. Run `codegraph index` first.');
@@ -1134,11 +1134,11 @@ export class ToolHandler {
     return false;
   }
 
-  private findSymbol(cg: CodeGraph, symbol: string): { node: Node; note: string } | null {
+  private async findSymbol(cg: CodeGraph, symbol: string): Promise<{ node: Node; note: string } | null> {
     // Use higher limit for qualified lookups (e.g., "Session.request") since the
     // target may rank lower in FTS when there are many partial matches
     const limit = symbol.includes('.') ? 50 : 10;
-    const results = cg.searchNodes(symbol, { limit });
+    const results = await cg.searchNodes(symbol, { limit });
 
     if (results.length === 0 || !results[0]) {
       return null;
@@ -1168,8 +1168,8 @@ export class ToolHandler {
    * Find ALL symbols matching a name. Used by callers/callees/impact to aggregate
    * results across all matching symbols (e.g., multiple classes with an `execute` method).
    */
-  private findAllSymbols(cg: CodeGraph, symbol: string): { nodes: Node[]; note: string } {
-    const results = cg.searchNodes(symbol, { limit: 50 });
+  private async findAllSymbols(cg: CodeGraph, symbol: string): Promise<{ nodes: Node[]; note: string }> {
+    const results = await cg.searchNodes(symbol, { limit: 50 });
 
     if (results.length === 0) {
       return { nodes: [], note: '' };

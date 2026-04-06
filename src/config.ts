@@ -107,6 +107,16 @@ export function validateConfig(config: unknown): config is CodeGraphConfig {
     }
   }
 
+  // Validate database if present
+  if (c.database !== undefined) {
+    if (typeof c.database !== 'object' || c.database === null) return false;
+    const db = c.database as Record<string, unknown>;
+    if (db.backend !== undefined && db.backend !== 'sqlite' && db.backend !== 'postgres') return false;
+    if (db.connectionString !== undefined && typeof db.connectionString !== 'string') return false;
+    if (db.poolSize !== undefined && (typeof db.poolSize !== 'number' || db.poolSize < 1)) return false;
+    if (db.tablePrefix !== undefined && (typeof db.tablePrefix !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_]{0,50}$/.test(db.tablePrefix))) return false;
+  }
+
   // Validate vectorStore if present
   if (c.vectorStore !== undefined) {
     if (typeof c.vectorStore !== 'object' || c.vectorStore === null) return false;
@@ -140,6 +150,7 @@ function mergeConfig(
     extractDocstrings: overrides.extractDocstrings ?? defaults.extractDocstrings,
     trackCallSites: overrides.trackCallSites ?? defaults.trackCallSites,
     customPatterns: overrides.customPatterns ?? defaults.customPatterns,
+    database: overrides.database ?? defaults.database,
     vectorStore: overrides.vectorStore ?? defaults.vectorStore,
   };
 }

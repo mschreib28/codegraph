@@ -438,12 +438,12 @@ export function clearImportMappingCache(): void {
 /**
  * Resolve a reference using import mappings
  */
-export function resolveViaImport(
+export async function resolveViaImport(
   ref: UnresolvedRef,
   context: ResolutionContext
-): ResolvedRef | null {
+): Promise<ResolvedRef | null> {
   // Use cached import mappings (avoids re-reading and re-parsing per ref)
-  const imports = context.getImportMappings(ref.filePath, ref.language);
+  const imports = await context.getImportMappings(ref.filePath, ref.language);
   if (imports.length === 0 && !context.readFile(ref.filePath)) {
     return null;
   }
@@ -461,7 +461,7 @@ export function resolveViaImport(
 
       if (resolvedPath) {
         // Find the exported symbol in the resolved file
-        const nodesInFile = context.getNodesInFile(resolvedPath);
+        const nodesInFile = await context.getNodesInFile(resolvedPath);
         const exportedName = imp.isDefault ? 'default' : imp.exportedName;
 
         // Look for the symbol

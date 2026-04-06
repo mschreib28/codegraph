@@ -2564,7 +2564,7 @@ export function multiply(a: number, b: number): number {
     expect(result.nodesCreated).toBeGreaterThanOrEqual(2);
 
     // Check nodes were stored
-    const nodes = cg.getNodesInFile('src/utils.ts');
+    const nodes = await cg.getNodesInFile('src/utils.ts');
     expect(nodes.length).toBeGreaterThanOrEqual(2);
 
     const addFunc = nodes.find((n) => n.name === 'add');
@@ -2596,7 +2596,7 @@ export function multiply(a: number, b: number): number {
     expect(result.success).toBe(true);
     expect(result.filesIndexed).toBe(2);
 
-    const files = cg.getFiles();
+    const files = await cg.getFiles();
     expect(files.length).toBe(2);
 
     cg.close();
@@ -2613,7 +2613,7 @@ export function multiply(a: number, b: number): number {
     await cg.indexAll();
 
     // Check file is tracked
-    const file = cg.getFile('src/main.ts');
+    const file = await cg.getFile('src/main.ts');
     expect(file).toBeDefined();
     expect(file?.contentHash).toBeDefined();
 
@@ -2621,7 +2621,7 @@ export function multiply(a: number, b: number): number {
     fs.writeFileSync(path.join(srcDir, 'main.ts'), `export const x = 2;`);
 
     // Check for changes
-    const changes = cg.getChangedFiles();
+    const changes = await cg.getChangedFiles();
     expect(changes.modified).toContain('src/main.ts');
 
     cg.close();
@@ -2640,7 +2640,7 @@ export function multiply(a: number, b: number): number {
     const cg = CodeGraph.initSync(tempDir);
     await cg.indexAll();
 
-    const initialNodes = cg.getNodesInFile('src/main.ts');
+    const initialNodes = await cg.getNodesInFile('src/main.ts');
     expect(initialNodes.some((n) => n.name === 'original')).toBe(true);
 
     // Modify file
@@ -2654,7 +2654,7 @@ export function multiply(a: number, b: number): number {
     expect(syncResult.filesModified).toBe(1);
 
     // Check nodes were updated
-    const updatedNodes = cg.getNodesInFile('src/main.ts');
+    const updatedNodes = await cg.getNodesInFile('src/main.ts');
     expect(updatedNodes.some((n) => n.name === 'updated')).toBe(true);
     expect(updatedNodes.some((n) => n.name === 'original')).toBe(false);
 

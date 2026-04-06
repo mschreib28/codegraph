@@ -138,11 +138,11 @@ describe('CodeGraph Foundation', () => {
   });
 
   describe('Database', () => {
-    it('should create database with correct schema', () => {
+    it('should create database with correct schema', async () => {
       const cg = CodeGraph.initSync(tempDir);
 
       // Check that we can get stats (requires tables to exist)
-      const stats = cg.getStats();
+      const stats = await cg.getStats();
       expect(stats.nodeCount).toBe(0);
       expect(stats.edgeCount).toBe(0);
       expect(stats.fileCount).toBe(0);
@@ -150,9 +150,9 @@ describe('CodeGraph Foundation', () => {
       cg.close();
     });
 
-    it('should return correct database size', () => {
+    it('should return correct database size', async () => {
       const cg = CodeGraph.initSync(tempDir);
-      const stats = cg.getStats();
+      const stats = await cg.getStats();
 
       // Database should have some size (at least the schema)
       expect(stats.dbSizeBytes).toBeGreaterThan(0);
@@ -160,22 +160,22 @@ describe('CodeGraph Foundation', () => {
       cg.close();
     });
 
-    it('should support optimize operation', () => {
+    it('should support optimize operation', async () => {
       const cg = CodeGraph.initSync(tempDir);
 
       // Should not throw
-      expect(() => cg.optimize()).not.toThrow();
+      await expect(cg.optimize()).resolves.not.toThrow();
 
       cg.close();
     });
 
-    it('should support clear operation', () => {
+    it('should support clear operation', async () => {
       const cg = CodeGraph.initSync(tempDir);
 
       // Should not throw
-      expect(() => cg.clear()).not.toThrow();
+      await cg.clear();
 
-      const stats = cg.getStats();
+      const stats = await cg.getStats();
       expect(stats.nodeCount).toBe(0);
 
       cg.close();
@@ -192,10 +192,10 @@ describe('CodeGraph Foundation', () => {
       expect(config.rootDir).toBe(path.resolve(tempDir));
     });
 
-    it('should update configuration', () => {
+    it('should update configuration', async () => {
       const cg = CodeGraph.initSync(tempDir);
 
-      cg.updateConfig({ maxFileSize: 999999 });
+      await cg.updateConfig({ maxFileSize: 999999 });
 
       expect(cg.getConfig().maxFileSize).toBe(999999);
 
@@ -247,29 +247,29 @@ describe('CodeGraph Foundation', () => {
   });
 
   describe('Graph Query Methods', () => {
-    it('should throw "Node not found" for non-existent nodes', () => {
+    it('should throw "Node not found" for non-existent nodes', async () => {
       const cg = CodeGraph.initSync(tempDir);
 
       // getContext throws for non-existent nodes
-      expect(() => cg.getContext('non-existent')).toThrow(/not found/i);
+      await expect(cg.getContext('non-existent')).rejects.toThrow(/not found/i);
 
       cg.close();
     });
 
-    it('should return empty results for non-existent nodes', () => {
+    it('should return empty results for non-existent nodes', async () => {
       const cg = CodeGraph.initSync(tempDir);
 
       // These methods return empty results instead of throwing
-      const traverseResult = cg.traverse('non-existent');
+      const traverseResult = await cg.traverse('non-existent');
       expect(traverseResult.nodes.size).toBe(0);
 
-      const callGraph = cg.getCallGraph('non-existent');
+      const callGraph = await cg.getCallGraph('non-existent');
       expect(callGraph.nodes.size).toBe(0);
 
-      const typeHierarchy = cg.getTypeHierarchy('non-existent');
+      const typeHierarchy = await cg.getTypeHierarchy('non-existent');
       expect(typeHierarchy.nodes.size).toBe(0);
 
-      const usages = cg.findUsages('non-existent');
+      const usages = await cg.findUsages('non-existent');
       expect(usages.length).toBe(0);
 
       cg.close();
@@ -356,28 +356,28 @@ describe('Query Builder', () => {
     cleanupTempDir(tempDir);
   });
 
-  it('should return null for non-existent node', () => {
-    const node = cg.getNode('nonexistent');
+  it('should return null for non-existent node', async () => {
+    const node = await cg.getNode('nonexistent');
     expect(node).toBeNull();
   });
 
-  it('should return empty array for nodes in non-existent file', () => {
-    const nodes = cg.getNodesInFile('nonexistent.ts');
+  it('should return empty array for nodes in non-existent file', async () => {
+    const nodes = await cg.getNodesInFile('nonexistent.ts');
     expect(nodes).toEqual([]);
   });
 
-  it('should return empty array for edges from non-existent node', () => {
-    const edges = cg.getOutgoingEdges('nonexistent');
+  it('should return empty array for edges from non-existent node', async () => {
+    const edges = await cg.getOutgoingEdges('nonexistent');
     expect(edges).toEqual([]);
   });
 
-  it('should return null for non-existent file', () => {
-    const file = cg.getFile('nonexistent.ts');
+  it('should return null for non-existent file', async () => {
+    const file = await cg.getFile('nonexistent.ts');
     expect(file).toBeNull();
   });
 
-  it('should return empty array for files when none tracked', () => {
-    const files = cg.getFiles();
+  it('should return empty array for files when none tracked', async () => {
+    const files = await cg.getFiles();
     expect(files).toEqual([]);
   });
 });

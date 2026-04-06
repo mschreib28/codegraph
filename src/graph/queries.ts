@@ -29,42 +29,42 @@ export class GraphQueryManager {
    * @param nodeId - ID of the focal node
    * @returns Context object with all related information
    */
-  getContext(nodeId: string): Context {
-    const focal = this.queries.getNodeById(nodeId);
+  async getContext(nodeId: string): Promise<Context> {
+    const focal = await this.queries.getNodeById(nodeId);
 
     if (!focal) {
       throw new Error(`Node not found: ${nodeId}`);
     }
 
     // Get ancestors (containment hierarchy)
-    const ancestors = this.traverser.getAncestors(nodeId);
+    const ancestors = await this.traverser.getAncestors(nodeId);
 
     // Get children
-    const children = this.traverser.getChildren(nodeId);
+    const children = await this.traverser.getChildren(nodeId);
 
     // Get incoming references (things that reference this node)
-    const incomingEdges = this.queries.getIncomingEdges(nodeId);
+    const incomingEdges = await this.queries.getIncomingEdges(nodeId);
     const incomingRefs: Array<{ node: Node; edge: Edge }> = [];
     for (const edge of incomingEdges) {
       // Skip containment edges (already in ancestors)
       if (edge.kind === 'contains') {
         continue;
       }
-      const node = this.queries.getNodeById(edge.source);
+      const node = await this.queries.getNodeById(edge.source);
       if (node) {
         incomingRefs.push({ node, edge });
       }
     }
 
     // Get outgoing references (things this node references)
-    const outgoingEdges = this.queries.getOutgoingEdges(nodeId);
+    const outgoingEdges = await this.queries.getOutgoingEdges(nodeId);
     const outgoingRefs: Array<{ node: Node; edge: Edge }> = [];
     for (const edge of outgoingEdges) {
       // Skip containment edges (already in children)
       if (edge.kind === 'contains') {
         continue;
       }
-      const node = this.queries.getNodeById(edge.target);
+      const node = await this.queries.getNodeById(edge.target);
       if (node) {
         outgoingRefs.push({ node, edge });
       }
@@ -74,9 +74,9 @@ export class GraphQueryManager {
     const types: Node[] = [];
     const typeEdgeKinds: EdgeKind[] = ['type_of', 'returns'];
     for (const kind of typeEdgeKinds) {
-      const typeEdges = this.queries.getOutgoingEdges(nodeId, [kind]);
+      const typeEdges = await this.queries.getOutgoingEdges(nodeId, [kind]);
       for (const edge of typeEdges) {
-        const typeNode = this.queries.getNodeById(edge.target);
+        const typeNode = await this.queries.getNodeById(edge.target);
         if (typeNode && !types.some((t) => t.id === typeNode.id)) {
           types.push(typeNode);
         }
@@ -87,9 +87,9 @@ export class GraphQueryManager {
     const imports: Node[] = [];
     const fileNode = ancestors.find((a) => a.kind === 'file');
     if (fileNode) {
-      const importEdges = this.queries.getOutgoingEdges(fileNode.id, ['imports']);
+      const importEdges = await this.queries.getOutgoingEdges(fileNode.id, ['imports']);
       for (const edge of importEdges) {
-        const importNode = this.queries.getNodeById(edge.target);
+        const importNode = await this.queries.getNodeById(edge.target);
         if (importNode) {
           imports.push(importNode);
         }
@@ -115,8 +115,8 @@ export class GraphQueryManager {
    * @param filePath - Path to the file
    * @returns Array of file paths this file depends on
    */
-  getFileDependencies(filePath: string): string[] {
-    const nodes = this.queries.getNodesByFile(filePath);
+  async getFileDependencies(filePath: string): Promise<string[]> {
+    const nodes = await this.queries.getNodesByFile(filePath);
     const fileNode = nodes.find((n) => n.kind === 'file');
 
     if (!fileNode) {
@@ -124,10 +124,10 @@ export class GraphQueryManager {
     }
 
     const dependencies = new Set<string>();
-    const importEdges = this.queries.getOutgoingEdges(fileNode.id, ['imports']);
+    const importEdges = await this.queries.getOutgoingEdges(fileNode.id, ['imports']);
 
     for (const edge of importEdges) {
-      const targetNode = this.queries.getNodeById(edge.target);
+      const targetNode = await this.queries.getNodeById(edge.target);
       if (targetNode && targetNode.filePath !== filePath) {
         dependencies.add(targetNode.filePath);
       }
@@ -144,16 +144,16 @@ export class GraphQueryManager {
    * @param filePath - Path to the file
    * @returns Array of file paths that depend on this file
    */
-  getFileDependents(filePath: string): string[] {
-    const nodes = this.queries.getNodesByFile(filePath);
+  async getFileDependents(filePath: string): Promise<string[]> {
+    const nodes = await this.queries.getNodesByFile(filePath);
     const dependents = new Set<string>();
 
     // Check file-level incoming import edges (file:X imports file:Y)
     const fileNode = nodes.find((n) => n.kind === 'file');
     if (fileNode) {
-      const incomingFileEdges = this.queries.getIncomingEdges(fileNode.id, ['imports']);
+      const incomingFileEdges = await this.queries.getIncomingEdges(fileNode.id, ['imports']);
       for (const edge of incomingFileEdges) {
-        const sourceNode = this.queries.getNodeById(edge.source);
+        const sourceNode = await this.queries.getNodeById(edge.source);
         if (sourceNode && sourceNode.filePath !== filePath) {
           dependents.add(sourceNode.filePath);
         }
@@ -163,9 +163,9 @@ export class GraphQueryManager {
     // Also check node-level imports of exported symbols
     for (const node of nodes) {
       if (node.isExported) {
-        const incomingEdges = this.queries.getIncomingEdges(node.id, ['imports']);
+        const incomingEdges = await this.queries.getIncomingEdges(node.id, ['imports']);
         for (const edge of incomingEdges) {
-          const sourceNode = this.queries.getNodeById(edge.source);
+          const sourceNode = await this.queries.getNodeById(edge.source);
           if (sourceNode && sourceNode.filePath !== filePath) {
             dependents.add(sourceNode.filePath);
           }
@@ -182,8 +182,8 @@ export class GraphQueryManager {
    * @param filePath - Path to the file
    * @returns Array of exported nodes
    */
-  getExportedSymbols(filePath: string): Node[] {
-    const nodes = this.queries.getNodesByFile(filePath);
+  async getExportedSymbols(filePath: string): Promise<Node[]> {
+    const nodes = await this.queries.getNodesByFile(filePath);
     return nodes.filter((n) => n.isExported);
   }
 
@@ -193,7 +193,7 @@ export class GraphQueryManager {
    * @param pattern - Pattern to match (supports * wildcard)
    * @returns Array of matching nodes
    */
-  findByQualifiedName(pattern: string): Node[] {
+  async findByQualifiedName(pattern: string): Promise<Node[]> {
     // Convert glob pattern to regex
     const regexPattern = pattern
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -216,7 +216,7 @@ export class GraphQueryManager {
     ];
 
     for (const kind of kinds) {
-      const nodes = this.queries.getNodesByKind(kind);
+      const nodes = await this.queries.getNodesByKind(kind);
       for (const node of nodes) {
         if (regex.test(node.qualifiedName)) {
           allNodes.push(node);
@@ -234,8 +234,8 @@ export class GraphQueryManager {
    *
    * @returns Map of directory paths to contained files
    */
-  getModuleStructure(): Map<string, string[]> {
-    const files = this.queries.getAllFiles();
+  async getModuleStructure(): Promise<Map<string, string[]>> {
+    const files = await this.queries.getAllFiles();
     const structure = new Map<string, string[]>();
 
     for (const file of files) {
@@ -256,13 +256,13 @@ export class GraphQueryManager {
    *
    * @returns Array of cycles, each cycle is an array of node IDs
    */
-  findCircularDependencies(): string[][] {
-    const files = this.queries.getAllFiles();
+  async findCircularDependencies(): Promise<string[][]> {
+    const files = await this.queries.getAllFiles();
     const cycles: string[][] = [];
     const visited = new Set<string>();
     const recursionStack = new Set<string>();
 
-    const dfs = (filePath: string, path: string[]): void => {
+    const dfs = async (filePath: string, path: string[]): Promise<void> => {
       if (recursionStack.has(filePath)) {
         // Found a cycle
         const cycleStart = path.indexOf(filePath);
@@ -279,9 +279,9 @@ export class GraphQueryManager {
       visited.add(filePath);
       recursionStack.add(filePath);
 
-      const dependencies = this.getFileDependencies(filePath);
+      const dependencies = await this.getFileDependencies(filePath);
       for (const dep of dependencies) {
-        dfs(dep, [...path, filePath]);
+        await dfs(dep, [...path, filePath]);
       }
 
       recursionStack.delete(filePath);
@@ -289,7 +289,7 @@ export class GraphQueryManager {
 
     for (const file of files) {
       if (!visited.has(file.path)) {
-        dfs(file.path, []);
+        await dfs(file.path, []);
       }
     }
 
@@ -302,22 +302,22 @@ export class GraphQueryManager {
    * @param nodeId - ID of the node
    * @returns Object containing various complexity metrics
    */
-  getNodeMetrics(nodeId: string): {
+  async getNodeMetrics(nodeId: string): Promise<{
     incomingEdgeCount: number;
     outgoingEdgeCount: number;
     callCount: number;
     callerCount: number;
     childCount: number;
     depth: number;
-  } {
-    const incomingEdges = this.queries.getIncomingEdges(nodeId);
-    const outgoingEdges = this.queries.getOutgoingEdges(nodeId);
+  }> {
+    const incomingEdges = await this.queries.getIncomingEdges(nodeId);
+    const outgoingEdges = await this.queries.getOutgoingEdges(nodeId);
 
     const callEdges = outgoingEdges.filter((e) => e.kind === 'calls');
     const callerEdges = incomingEdges.filter((e) => e.kind === 'calls');
     const containsEdges = outgoingEdges.filter((e) => e.kind === 'contains');
 
-    const ancestors = this.traverser.getAncestors(nodeId);
+    const ancestors = await this.traverser.getAncestors(nodeId);
 
     return {
       incomingEdgeCount: incomingEdges.length,
@@ -335,19 +335,19 @@ export class GraphQueryManager {
    * @param kinds - Node kinds to check (default: functions, methods, classes)
    * @returns Array of unreferenced nodes
    */
-  findDeadCode(kinds?: Node['kind'][]): Node[] {
+  async findDeadCode(kinds?: Node['kind'][]): Promise<Node[]> {
     const targetKinds = kinds || ['function', 'method', 'class'];
     const deadCode: Node[] = [];
 
     for (const kind of targetKinds) {
-      const nodes = this.queries.getNodesByKind(kind);
+      const nodes = await this.queries.getNodesByKind(kind);
       for (const node of nodes) {
         // Skip exported symbols (they may be used externally)
         if (node.isExported) {
           continue;
         }
 
-        const incomingEdges = this.queries.getIncomingEdges(node.id);
+        const incomingEdges = await this.queries.getIncomingEdges(node.id);
 
         // Filter out containment edges
         const references = incomingEdges.filter((e) => e.kind !== 'contains');
@@ -368,10 +368,10 @@ export class GraphQueryManager {
    * @param includeEdges - Whether to include edges between matching nodes
    * @returns Subgraph containing matching nodes
    */
-  getFilteredSubgraph(
+  async getFilteredSubgraph(
     filter: (node: Node) => boolean,
     includeEdges: boolean = true
-  ): Subgraph {
+  ): Promise<Subgraph> {
     const nodes = new Map<string, Node>();
     const edges: Edge[] = [];
 
@@ -392,7 +392,7 @@ export class GraphQueryManager {
     ];
 
     for (const kind of kinds) {
-      const kindNodes = this.queries.getNodesByKind(kind);
+      const kindNodes = await this.queries.getNodesByKind(kind);
       for (const node of kindNodes) {
         if (filter(node)) {
           nodes.set(node.id, node);
@@ -403,7 +403,7 @@ export class GraphQueryManager {
     // Include edges between matching nodes
     if (includeEdges) {
       for (const nodeId of nodes.keys()) {
-        const outgoing = this.queries.getOutgoingEdges(nodeId);
+        const outgoing = await this.queries.getOutgoingEdges(nodeId);
         for (const edge of outgoing) {
           if (nodes.has(edge.target)) {
             edges.push(edge);

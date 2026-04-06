@@ -10,7 +10,7 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 export const expressResolver: FrameworkResolver = {
   name: 'express',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for Express in package.json
     const packageJson = context.readFile('package.json');
     if (packageJson) {
@@ -26,7 +26,7 @@ export const expressResolver: FrameworkResolver = {
     }
 
     // Check for common Express patterns
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (
         file.includes('routes') ||
@@ -43,10 +43,10 @@ export const expressResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Middleware references
     if (isMiddlewareName(ref.referenceName)) {
-      const result = resolveMiddleware(ref.referenceName, context);
+      const result = await resolveMiddleware(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -61,7 +61,7 @@ export const expressResolver: FrameworkResolver = {
     const controllerMatch = ref.referenceName.match(/^(\w+)Controller\.(\w+)$/);
     if (controllerMatch) {
       const [, controller, method] = controllerMatch;
-      const result = resolveController(controller!, method!, context);
+      const result = await resolveController(controller!, method!, context);
       if (result) {
         return {
           original: ref,
@@ -76,7 +76,7 @@ export const expressResolver: FrameworkResolver = {
     const serviceMatch = ref.referenceName.match(/^(\w+)(Service|Helper|Utils?)\.(\w+)$/);
     if (serviceMatch) {
       const [, name, suffix, method] = serviceMatch;
-      const result = resolveService(name! + suffix!, method!, context);
+      const result = await resolveService(name! + suffix!, method!, context);
       if (result) {
         return {
           original: ref,
@@ -156,18 +156,18 @@ function isMiddlewareName(name: string): boolean {
 /**
  * Resolve middleware reference
  */
-function resolveMiddleware(
+async function resolveMiddleware(
   name: string,
   context: ResolutionContext
-): string | null {
+): Promise<string | null> {
   // Look in middleware directories
   const middlewareDirs = ['middleware', 'middlewares', 'src/middleware', 'src/middlewares'];
 
   for (const dir of middlewareDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.startsWith(dir) || file.includes('/middleware/')) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const match = nodes.find(
           (n) =>
             n.name.toLowerCase() === name.toLowerCase() ||
@@ -186,21 +186,21 @@ function resolveMiddleware(
 /**
  * Resolve controller method
  */
-function resolveController(
+async function resolveController(
   controller: string,
   method: string,
   context: ResolutionContext
-): string | null {
+): Promise<string | null> {
   const controllerDirs = ['controllers', 'src/controllers', 'app/controllers'];
 
   for (const dir of controllerDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (
         (file.startsWith(dir) || file.includes('/controllers/')) &&
         file.toLowerCase().includes(controller.toLowerCase())
       ) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const methodNode = nodes.find(
           (n) => (n.kind === 'method' || n.kind === 'function') && n.name === method
         );
@@ -217,21 +217,21 @@ function resolveController(
 /**
  * Resolve service/helper
  */
-function resolveService(
+async function resolveService(
   serviceName: string,
   method: string,
   context: ResolutionContext
-): string | null {
+): Promise<string | null> {
   const serviceDirs = ['services', 'src/services', 'helpers', 'src/helpers', 'utils', 'src/utils'];
 
   for (const dir of serviceDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (
         (file.startsWith(dir) || file.includes('/services/') || file.includes('/helpers/') || file.includes('/utils/')) &&
         file.toLowerCase().includes(serviceName.toLowerCase().replace(/(service|helper|utils?)$/i, ''))
       ) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const methodNode = nodes.find(
           (n) => (n.kind === 'method' || n.kind === 'function') && n.name === method
         );

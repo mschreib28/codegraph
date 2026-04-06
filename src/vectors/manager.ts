@@ -118,7 +118,7 @@ export class VectorManager {
     // Get all nodes that should be embedded
     const nodesToEmbed: Node[] = [];
     for (const kind of this.nodeKinds) {
-      const nodes = this.queries.getNodesByKind(kind);
+      const nodes = await this.queries.getNodesByKind(kind);
       nodesToEmbed.push(...nodes);
     }
 
@@ -210,7 +210,7 @@ export class VectorManager {
     // Get nodes and filter by kind if specified
     const results: SearchResult[] = [];
     for (const vr of vectorResults) {
-      const node = this.queries.getNodeById(vr.nodeId);
+      const node = await this.queries.getNodeById(vr.nodeId);
       if (!node) {
         continue;
       }
@@ -252,7 +252,7 @@ export class VectorManager {
 
     // If no embedding exists, generate one
     if (!embedding) {
-      const node = this.queries.getNodeById(nodeId);
+      const node = await this.queries.getNodeById(nodeId);
       if (!node) {
         throw new Error(`Node not found: ${nodeId}`);
       }
@@ -279,7 +279,7 @@ export class VectorManager {
         continue;
       }
 
-      const node = this.queries.getNodeById(vr.nodeId);
+      const node = await this.queries.getNodeById(vr.nodeId);
       if (!node) {
         continue;
       }

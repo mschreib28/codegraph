@@ -10,7 +10,7 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 export const reactResolver: FrameworkResolver = {
   name: 'react',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for React in package.json
     const packageJson = context.readFile('package.json');
     if (packageJson) {
@@ -26,14 +26,14 @@ export const reactResolver: FrameworkResolver = {
     }
 
     // Check for .jsx/.tsx files
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     return allFiles.some((f) => f.endsWith('.jsx') || f.endsWith('.tsx'));
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Component references (PascalCase)
     if (isPascalCase(ref.referenceName) && !isBuiltInType(ref.referenceName)) {
-      const result = resolveComponent(ref.referenceName, ref.filePath, context);
+      const result = await resolveComponent(ref.referenceName, ref.filePath, context);
       if (result) {
         return {
           original: ref,
@@ -46,7 +46,7 @@ export const reactResolver: FrameworkResolver = {
 
     // Pattern 2: Hook references (use*)
     if (ref.referenceName.startsWith('use') && ref.referenceName.length > 3) {
-      const result = resolveHook(ref.referenceName, context);
+      const result = await resolveHook(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -59,7 +59,7 @@ export const reactResolver: FrameworkResolver = {
 
     // Pattern 3: Context references
     if (ref.referenceName.endsWith('Context') || ref.referenceName.endsWith('Provider')) {
-      const result = resolveContext(ref.referenceName, context);
+      const result = await resolveContext(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -194,11 +194,11 @@ function isBuiltInType(name: string): boolean {
 /**
  * Resolve a component reference
  */
-function resolveComponent(
+async function resolveComponent(
   name: string,
   fromFile: string,
   context: ResolutionContext
-): string | null {
+): Promise<string | null> {
   // Look for component in common locations
   const componentDirs = [
     'components',
@@ -212,10 +212,11 @@ function resolveComponent(
 
   // First, check same directory
   const fromDir = fromFile.substring(0, fromFile.lastIndexOf('/'));
-  const sameDir = context.getAllFiles().filter((f) => f.startsWith(fromDir));
+  const allFilesForSameDir = await context.getAllFiles();
+  const sameDir = allFilesForSameDir.filter((f) => f.startsWith(fromDir));
   for (const file of sameDir) {
     if (file.toLowerCase().includes(name.toLowerCase())) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const component = nodes.find(
         (n) => (n.kind === 'component' || n.kind === 'function' || n.kind === 'class') && n.name === name
       );
@@ -227,10 +228,10 @@ function resolveComponent(
 
   // Then check component directories
   for (const dir of componentDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.startsWith(dir) && file.toLowerCase().includes(name.toLowerCase())) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const component = nodes.find(
           (n) => (n.kind === 'component' || n.kind === 'function' || n.kind === 'class') && n.name === name
         );
@@ -247,14 +248,14 @@ function resolveComponent(
 /**
  * Resolve a custom hook reference
  */
-function resolveHook(name: string, context: ResolutionContext): string | null {
+async function resolveHook(name: string, context: ResolutionContext): Promise<string | null> {
   const hookDirs = ['hooks', 'src/hooks', 'lib/hooks', 'utils/hooks'];
 
   for (const dir of hookDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.startsWith(dir) || file.includes('/hooks/')) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const hook = nodes.find((n) => n.kind === 'function' && n.name === name);
         if (hook) {
           return hook.id;
@@ -264,7 +265,7 @@ function resolveHook(name: string, context: ResolutionContext): string | null {
   }
 
   // Also check all files for the hook
-  const allNodes = context.getNodesByName(name);
+  const allNodes = await context.getNodesByName(name);
   const hookNode = allNodes.find((n) => n.kind === 'function' && n.name.startsWith('use'));
   if (hookNode) {
     return hookNode.id;
@@ -276,14 +277,14 @@ function resolveHook(name: string, context: ResolutionContext): string | null {
 /**
  * Resolve a context reference
  */
-function resolveContext(name: string, context: ResolutionContext): string | null {
+async function resolveContext(name: string, context: ResolutionContext): Promise<string | null> {
   const contextDirs = ['context', 'contexts', 'src/context', 'src/contexts', 'providers', 'src/providers'];
 
   for (const dir of contextDirs) {
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.startsWith(dir) || file.includes('/context/') || file.includes('/contexts/')) {
-        const nodes = context.getNodesInFile(file);
+        const nodes = await context.getNodesInFile(file);
         const contextNode = nodes.find((n) => n.name === name || n.name === name.replace(/Context$|Provider$/, ''));
         if (contextNode) {
           return contextNode.id;

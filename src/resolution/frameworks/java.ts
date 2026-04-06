@@ -10,7 +10,7 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 export const springResolver: FrameworkResolver = {
   name: 'spring',
 
-  detect(context: ResolutionContext): boolean {
+  async detect(context: ResolutionContext): Promise<boolean> {
     // Check for pom.xml with Spring
     const pomXml = context.readFile('pom.xml');
     if (pomXml && (pomXml.includes('spring-boot') || pomXml.includes('springframework'))) {
@@ -29,7 +29,7 @@ export const springResolver: FrameworkResolver = {
     }
 
     // Check for Spring annotations in Java files
-    const allFiles = context.getAllFiles();
+    const allFiles = await context.getAllFiles();
     for (const file of allFiles) {
       if (file.endsWith('.java')) {
         const content = context.readFile(file);
@@ -47,10 +47,10 @@ export const springResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  async resolve(ref: UnresolvedRef, context: ResolutionContext): Promise<ResolvedRef | null> {
     // Pattern 1: Service references (dependency injection)
     if (ref.referenceName.endsWith('Service')) {
-      const result = resolveService(ref.referenceName, context);
+      const result = await resolveService(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -63,7 +63,7 @@ export const springResolver: FrameworkResolver = {
 
     // Pattern 2: Repository references
     if (ref.referenceName.endsWith('Repository')) {
-      const result = resolveRepository(ref.referenceName, context);
+      const result = await resolveRepository(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -76,7 +76,7 @@ export const springResolver: FrameworkResolver = {
 
     // Pattern 3: Controller references
     if (ref.referenceName.endsWith('Controller')) {
-      const result = resolveController(ref.referenceName, context);
+      const result = await resolveController(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -89,7 +89,7 @@ export const springResolver: FrameworkResolver = {
 
     // Pattern 4: Entity/Model references
     if (/^[A-Z][a-zA-Z]+$/.test(ref.referenceName)) {
-      const result = resolveEntity(ref.referenceName, context);
+      const result = await resolveEntity(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -102,7 +102,7 @@ export const springResolver: FrameworkResolver = {
 
     // Pattern 5: Component references
     if (ref.referenceName.endsWith('Component') || ref.referenceName.endsWith('Config')) {
-      const result = resolveComponent(ref.referenceName, context);
+      const result = await resolveComponent(ref.referenceName, context);
       if (result) {
         return {
           original: ref,
@@ -178,12 +178,12 @@ export const springResolver: FrameworkResolver = {
 
 // Helper functions
 
-function resolveService(name: string, context: ResolutionContext): string | null {
-  const allFiles = context.getAllFiles();
+async function resolveService(name: string, context: ResolutionContext): Promise<string | null> {
+  const allFiles = await context.getAllFiles();
 
   for (const file of allFiles) {
     if (file.endsWith('.java') && (file.includes('/service/') || file.includes('/services/'))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const serviceNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -196,7 +196,7 @@ function resolveService(name: string, context: ResolutionContext): string | null
   // Also check interface definitions
   for (const file of allFiles) {
     if (file.endsWith('.java')) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const serviceNode = nodes.find(
         (n) => (n.kind === 'class' || n.kind === 'interface') && n.name === name
       );
@@ -209,12 +209,12 @@ function resolveService(name: string, context: ResolutionContext): string | null
   return null;
 }
 
-function resolveRepository(name: string, context: ResolutionContext): string | null {
-  const allFiles = context.getAllFiles();
+async function resolveRepository(name: string, context: ResolutionContext): Promise<string | null> {
+  const allFiles = await context.getAllFiles();
 
   for (const file of allFiles) {
     if (file.endsWith('.java') && (file.includes('/repository/') || file.includes('/repositories/'))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const repoNode = nodes.find(
         (n) => (n.kind === 'class' || n.kind === 'interface') && n.name === name
       );
@@ -227,12 +227,12 @@ function resolveRepository(name: string, context: ResolutionContext): string | n
   return null;
 }
 
-function resolveController(name: string, context: ResolutionContext): string | null {
-  const allFiles = context.getAllFiles();
+async function resolveController(name: string, context: ResolutionContext): Promise<string | null> {
+  const allFiles = await context.getAllFiles();
 
   for (const file of allFiles) {
     if (file.endsWith('.java') && (file.includes('/controller/') || file.includes('/controllers/'))) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const controllerNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -245,8 +245,8 @@ function resolveController(name: string, context: ResolutionContext): string | n
   return null;
 }
 
-function resolveEntity(name: string, context: ResolutionContext): string | null {
-  const allFiles = context.getAllFiles();
+async function resolveEntity(name: string, context: ResolutionContext): Promise<string | null> {
+  const allFiles = await context.getAllFiles();
 
   // Check entity/model directories first
   for (const file of allFiles) {
@@ -257,7 +257,7 @@ function resolveEntity(name: string, context: ResolutionContext): string | null 
       file.includes('/models/') ||
       file.includes('/domain/')
     )) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const entityNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );
@@ -270,8 +270,8 @@ function resolveEntity(name: string, context: ResolutionContext): string | null 
   return null;
 }
 
-function resolveComponent(name: string, context: ResolutionContext): string | null {
-  const allFiles = context.getAllFiles();
+async function resolveComponent(name: string, context: ResolutionContext): Promise<string | null> {
+  const allFiles = await context.getAllFiles();
 
   for (const file of allFiles) {
     if (file.endsWith('.java') && (
@@ -279,7 +279,7 @@ function resolveComponent(name: string, context: ResolutionContext): string | nu
       file.includes('/components/') ||
       file.includes('/config/')
     )) {
-      const nodes = context.getNodesInFile(file);
+      const nodes = await context.getNodesInFile(file);
       const componentNode = nodes.find(
         (n) => n.kind === 'class' && n.name === name
       );

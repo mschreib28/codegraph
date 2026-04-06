@@ -48,14 +48,15 @@ export class VisualizerServer {
   /**
    * Build a compact symbol index string for Claude prompts
    */
-  private buildSymbolIndex(): string {
+  private async buildSymbolIndex(): Promise<string> {
     if (this.symbolIndexCache) return this.symbolIndexCache;
 
     const validKinds: NodeKind[] = ['function', 'method', 'class', 'interface', 'component', 'route', 'enum', 'type_alias'];
     const byFile = new Map<string, string[]>();
 
     for (const kind of validKinds) {
-      for (const node of this.cg.getNodesByKind(kind)) {
+      const kindNodes = await this.cg.getNodesByKind(kind);
+      for (const node of kindNodes) {
         const symbols = byFile.get(node.filePath) || [];
         symbols.push(`${node.kind}:${node.name}`);
         byFile.set(node.filePath, symbols);
@@ -78,7 +79,7 @@ export class VisualizerServer {
     // Check if claude is available (cache result)
     if (this.claudeAvailable === false) return null;
 
-    const symbolIndex = this.buildSymbolIndex();
+    const symbolIndex = await this.buildSymbolIndex();
 
     const prompt = `Given the question and codebase symbol index below, identify the single best ENTRY POINT symbol — the one function, component, or route handler where this flow starts.
 
@@ -229,7 +230,7 @@ ${symbolIndex}`;
     try {
       // GET /api/status
       if (pathname === '/api/status') {
-        const stats = this.cg.getStats();
+        const stats = await this.cg.getStats();
         json({ stats, projectRoot: this.projectRoot, projectName: path.basename(this.projectRoot) });
         return;
       }
@@ -239,7 +240,7 @@ ${symbolIndex}`;
         const embeddingStats = await this.cg.getEmbeddingStats();
         const isInitialized = this.cg.isEmbeddingsInitialized();
         const totalVectors = embeddingStats?.totalVectors ?? 0;
-        const stats = this.cg.getStats();
+        const stats = await this.cg.getStats();
         // Consider ready if we have vectors for at least half the eligible nodes
         const eligibleNodes = stats.nodeCount - (stats.nodesByKind.file ?? 0) - (stats.nodesByKind.import ?? 0);
         const isReady = totalVectors > 0 && totalVectors >= eligibleNodes * 0.5;
@@ -295,7 +296,7 @@ ${symbolIndex}`;
           json({ results: [] });
           return;
         }
-        const results = this.cg.searchNodes(q, { kinds: kind ? [kind] : undefined, limit });
+        const results = await this.cg.searchNodes(q, { kinds: kind ? [kind] : undefined, limit });
         json({ results });
         return;
       }
@@ -320,7 +321,7 @@ ${symbolIndex}`;
           // Find the entry point in the graph
           for (const name of claudeNames) {
             if (entryNodeId) break;
-            const results = this.cg.searchNodes(name, { kinds: validKinds, limit: 3 });
+            const results = await this.cg.searchNodes(name, { kinds: validKinds, limit: 3 });
             for (const r of results) {
               if (r.node.name.toLowerCase() === name.toLowerCase() ||
                   r.node.name.toLowerCase().includes(name.toLowerCase()) ||
@@ -341,7 +342,7 @@ ${symbolIndex}`;
 
           for (const kw of keywords) {
             if (entryNodeId) break;
-            const results = this.cg.searchNodes(kw, { kinds: validKinds, limit: 5 });
+            const results = await this.cg.searchNodes(kw, { kinds: validKinds, limit: 5 });
             if (results.length > 0) {
               entryNodeId = results[0]!.node.id;
             }
@@ -354,7 +355,7 @@ ${symbolIndex}`;
         }
 
         // Get the call graph from this entry point (depth 3)
-        const callGraph = this.cg.getCallGraph(entryNodeId, 3);
+        const callGraph = await this.cg.getCallGraph(entryNodeId, 3);
         const result = serializeSubgraph(callGraph);
 
         json({
@@ -374,7 +375,7 @@ ${symbolIndex}`;
         const kinds: NodeKind[] = ['class', 'function', 'interface', 'component', 'enum', 'type_alias'];
         const nodes: Node[] = [];
         for (const kind of kinds) {
-          const kindNodes = this.cg.getNodesByKind(kind);
+          const kindNodes = await this.cg.getNodesByKind(kind);
           for (const n of kindNodes) {
             if (n.isExported || n.kind === 'class' || n.kind === 'component') {
               nodes.push(n);
@@ -389,7 +390,7 @@ ${symbolIndex}`;
 
       // GET /api/files
       if (pathname === '/api/files') {
-        const files = this.cg.getFiles();
+        const files = await this.cg.getFiles();
         json({ files });
         return;
       }
@@ -402,13 +403,13 @@ ${symbolIndex}`;
 
         // GET /api/node/<id>
         if (!sub || sub === '/') {
-          const node = this.cg.getNode(nodeId);
+          const node = await this.cg.getNode(nodeId);
           if (!node) {
             json({ error: 'Node not found' }, 404);
             return;
           }
           const code = await this.cg.getCode(nodeId);
-          const ancestors = this.cg.getAncestors(nodeId);
+          const ancestors = await this.cg.getAncestors(nodeId);
           json({ node, code, ancestors });
           return;
         }
@@ -416,7 +417,7 @@ ${symbolIndex}`;
         // GET /api/node/<id>/callers?depth=...
         if (sub === '/callers') {
           const depth = parseInt(query.depth || '1', 10);
-          const items = this.cg.getCallers(nodeId, depth);
+          const items = await this.cg.getCallers(nodeId, depth);
           json({ items });
           return;
         }
@@ -424,14 +425,14 @@ ${symbolIndex}`;
         // GET /api/node/<id>/callees?depth=...
         if (sub === '/callees') {
           const depth = parseInt(query.depth || '1', 10);
-          const items = this.cg.getCallees(nodeId, depth);
+          const items = await this.cg.getCallees(nodeId, depth);
           json({ items });
           return;
         }
 
         // GET /api/node/<id>/children
         if (sub === '/children') {
-          const children = this.cg.getChildren(nodeId);
+          const children = await this.cg.getChildren(nodeId);
           json({ children });
           return;
         }
@@ -439,7 +440,7 @@ ${symbolIndex}`;
         // GET /api/node/<id>/impact?depth=...
         if (sub === '/impact') {
           const depth = parseInt(query.depth || '2', 10);
-          const subgraph = this.cg.getImpactRadius(nodeId, depth);
+          const subgraph = await this.cg.getImpactRadius(nodeId, depth);
           json(serializeSubgraph(subgraph));
           return;
         }
@@ -447,14 +448,14 @@ ${symbolIndex}`;
         // GET /api/node/<id>/callgraph?depth=...
         if (sub === '/callgraph') {
           const depth = parseInt(query.depth || '2', 10);
-          const subgraph = this.cg.getCallGraph(nodeId, depth);
+          const subgraph = await this.cg.getCallGraph(nodeId, depth);
           json(serializeSubgraph(subgraph));
           return;
         }
 
         // GET /api/node/<id>/context
         if (sub === '/context') {
-          const context = this.cg.getContext(nodeId);
+          const context = await this.cg.getContext(nodeId);
           json({ context });
           return;
         }
@@ -470,7 +471,7 @@ ${symbolIndex}`;
           json({ error: 'path parameter required' }, 400);
           return;
         }
-        const nodes = this.cg.getNodesInFile(filePath);
+        const nodes = await this.cg.getNodesInFile(filePath);
         json({ nodes });
         return;
       }

@@ -10,11 +10,11 @@ import { UnresolvedRef, ResolvedRef, ResolutionContext } from './types';
 /**
  * Try to resolve a reference by exact name match
  */
-export function matchByExactName(
+export async function matchByExactName(
   ref: UnresolvedRef,
   context: ResolutionContext
-): ResolvedRef | null {
-  const candidates = context.getNodesByName(ref.referenceName);
+): Promise<ResolvedRef | null> {
+  const candidates = await context.getNodesByName(ref.referenceName);
 
   if (candidates.length === 0) {
     return null;
@@ -51,16 +51,16 @@ export function matchByExactName(
 /**
  * Try to resolve by qualified name
  */
-export function matchByQualifiedName(
+export async function matchByQualifiedName(
   ref: UnresolvedRef,
   context: ResolutionContext
-): ResolvedRef | null {
+): Promise<ResolvedRef | null> {
   // Check if the reference name looks qualified (contains :: or .)
   if (!ref.referenceName.includes('::') && !ref.referenceName.includes('.')) {
     return null;
   }
 
-  const candidates = context.getNodesByQualifiedName(ref.referenceName);
+  const candidates = await context.getNodesByQualifiedName(ref.referenceName);
 
   if (candidates.length === 1) {
     return {
@@ -75,7 +75,7 @@ export function matchByQualifiedName(
   const parts = ref.referenceName.split(/[:.]/);
   const lastName = parts[parts.length - 1];
   if (lastName) {
-    const partialCandidates = context.getNodesByName(lastName);
+    const partialCandidates = await context.getNodesByName(lastName);
     for (const candidate of partialCandidates) {
       if (candidate.qualifiedName.endsWith(ref.referenceName)) {
         return {
@@ -94,10 +94,10 @@ export function matchByQualifiedName(
 /**
  * Try to resolve by method name on a class/object
  */
-export function matchMethodCall(
+export async function matchMethodCall(
   ref: UnresolvedRef,
   context: ResolutionContext
-): ResolvedRef | null {
+): Promise<ResolvedRef | null> {
   // Parse method call patterns like "obj.method" or "Class::method"
   const dotMatch = ref.referenceName.match(/^(\w+)\.(\w+)$/);
   const colonMatch = ref.referenceName.match(/^(\w+)::(\w+)$/);
@@ -110,14 +110,14 @@ export function matchMethodCall(
   const [, objectOrClass, methodName] = match;
 
   // Strategy 1: Direct class name match (existing logic)
-  const classCandidates = context.getNodesByName(objectOrClass!);
+  const classCandidates = await context.getNodesByName(objectOrClass!);
 
   for (const classNode of classCandidates) {
     if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'interface') {
       // Skip cross-language class matches
       if (classNode.language !== ref.language) continue;
 
-      const nodesInFile = context.getNodesInFile(classNode.filePath);
+      const nodesInFile = await context.getNodesInFile(classNode.filePath);
       const methodNode = nodesInFile.find(
         (n) =>
           n.kind === 'method' &&
@@ -140,13 +140,13 @@ export function matchMethodCall(
   // e.g., "permissionEngine" → look for classes containing "PermissionEngine"
   const capitalizedReceiver = objectOrClass!.charAt(0).toUpperCase() + objectOrClass!.slice(1);
   if (capitalizedReceiver !== objectOrClass) {
-    const fuzzyClassCandidates = context.getNodesByName(capitalizedReceiver);
+    const fuzzyClassCandidates = await context.getNodesByName(capitalizedReceiver);
     for (const classNode of fuzzyClassCandidates) {
       if (classNode.kind === 'class' || classNode.kind === 'struct' || classNode.kind === 'interface') {
         // Skip cross-language class matches
         if (classNode.language !== ref.language) continue;
 
-        const nodesInFile = context.getNodesInFile(classNode.filePath);
+        const nodesInFile = await context.getNodesInFile(classNode.filePath);
         const methodNode = nodesInFile.find(
           (n) =>
             n.kind === 'method' &&
@@ -170,7 +170,7 @@ export function matchMethodCall(
   // name similarity with the containing class. Handles abbreviated variable
   // names like permissionEngine → PermissionRuleEngine.
   if (methodName) {
-    const methodCandidates = context.getNodesByName(methodName!);
+    const methodCandidates = await context.getNodesByName(methodName!);
     const methods = methodCandidates.filter(
       (n) => n.kind === 'method' && n.name === methodName
     );
@@ -320,14 +320,14 @@ function findBestMatch(
 /**
  * Fuzzy match - last resort with lower confidence
  */
-export function matchFuzzy(
+export async function matchFuzzy(
   ref: UnresolvedRef,
   context: ResolutionContext
-): ResolvedRef | null {
+): Promise<ResolvedRef | null> {
   const lowerName = ref.referenceName.toLowerCase();
 
   // Use pre-built lowercase index for O(1) lookup instead of scanning all nodes
-  const candidates = context.getNodesByLowerName(lowerName);
+  const candidates = await context.getNodesByLowerName(lowerName);
 
   // Filter to callable kinds only (function, method, class)
   const callableKinds = new Set(['function', 'method', 'class']);
@@ -353,27 +353,27 @@ export function matchFuzzy(
 /**
  * Match all strategies in order of confidence
  */
-export function matchReference(
+export async function matchReference(
   ref: UnresolvedRef,
   context: ResolutionContext
-): ResolvedRef | null {
+): Promise<ResolvedRef | null> {
   // Try strategies in order of confidence
   let result: ResolvedRef | null;
 
   // 1. Qualified name match (highest confidence)
-  result = matchByQualifiedName(ref, context);
+  result = await matchByQualifiedName(ref, context);
   if (result) return result;
 
   // 2. Method call pattern
-  result = matchMethodCall(ref, context);
+  result = await matchMethodCall(ref, context);
   if (result) return result;
 
   // 3. Exact name match
-  result = matchByExactName(ref, context);
+  result = await matchByExactName(ref, context);
   if (result) return result;
 
   // 4. Fuzzy match (lowest confidence)
-  result = matchFuzzy(ref, context);
+  result = await matchFuzzy(ref, context);
   if (result) return result;
 
   return null;
