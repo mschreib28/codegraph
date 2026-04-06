@@ -293,6 +293,180 @@ At the start of a session, ask the user if they'd like to initialize CodeGraph:
 
 ---
 
+## 🐘 Using PostgreSQL for Vector Search
+
+By default, CodeGraph stores embeddings in SQLite. For faster semantic search on larger codebases, you can use PostgreSQL with pgvector for approximate nearest neighbor (ANN) search via HNSW indexes.
+
+### Step 1: Install PostgreSQL with pgvector
+
+**macOS (Homebrew):**
+```bash
+brew install postgresql
+brew install pgvector
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt-get install postgresql postgresql-contrib
+sudo apt-get install postgresql-<version>-pgvector
+```
+
+**Other platforms:** See [pgvector installation guide](https://github.com/pgvector/pgvector#installation)
+
+### Step 2: Start PostgreSQL
+
+**macOS (Homebrew):**
+```bash
+brew services start postgresql
+```
+
+**Linux (systemd):**
+```bash
+sudo systemctl start postgresql
+```
+
+### Step 3: Create a Database
+
+Connect to PostgreSQL and create a database for CodeGraph:
+
+```bash
+# Connect to PostgreSQL (on macOS with Homebrew, no password needed)
+psql postgres
+
+# Inside psql:
+CREATE DATABASE codegraph;
+\c codegraph
+CREATE EXTENSION IF NOT EXISTS vector;
+\q
+```
+
+Verify the setup:
+```bash
+psql codegraph -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
+```
+
+You should see: `vector`
+
+### Step 4: Install the PostgreSQL Driver
+
+```bash
+npm install pg
+```
+
+### Step 5: Configure CodeGraph
+
+You have two options:
+
+**Option A: Per-Project Configuration**
+
+Edit `.codegraph/config.json` in your project:
+
+```json
+{
+  "version": 1,
+  "languages": ["typescript", "javascript"],
+  "vectorStore": {
+    "backend": "pgvector",
+    "connectionString": "postgresql://localhost:5432/codegraph"
+  }
+}
+```
+
+**Option B: Global Configuration (Environment Variable)**
+
+Set once in your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
+
+```bash
+export CODEGRAPH_PG_URL="postgresql://localhost:5432/codegraph"
+```
+
+Then in `.codegraph/config.json`:
+
+```json
+{
+  "version": 1,
+  "vectorStore": {
+    "backend": "pgvector"
+  }
+}
+```
+
+The `CODEGRAPH_PG_URL` environment variable will be used as the connection string.
+
+### Step 6: Index Your Project
+
+If you're switching from SQLite to pgvector, regenerate embeddings:
+
+```bash
+codegraph index --force
+```
+
+For new projects:
+
+```bash
+codegraph init --index
+```
+
+### Step 7: Verify the Setup
+
+Check that vectors are being stored in PostgreSQL:
+
+```bash
+psql codegraph -c "SELECT COUNT(*) FROM codegraph_vectors;"
+```
+
+You should see the number of vectors indexed for your project.
+
+### Configuration Options
+
+For advanced configuration, see the full options in `.codegraph/config.json`:
+
+```json
+{
+  "vectorStore": {
+    "backend": "pgvector",
+    "connectionString": "postgresql://user:pass@host:5432/dbname",
+    "indexType": "hnsw",           // HNSW indexes for faster search
+    "distanceMetric": "cosine",    // cosine, l2, or inner_product
+    "poolSize": 5,                 // Connection pool size
+    "tablePrefix": "codegraph_"    // Table name prefix
+  }
+}
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `backend` | `"sqlite"` or `"pgvector"` | `"sqlite"` |
+| `connectionString` | PostgreSQL connection URL | — |
+| `indexType` | `"hnsw"` (recommended), `"ivfflat"`, or `"none"` | `"hnsw"` |
+| `distanceMetric` | `"cosine"`, `"l2"`, or `"inner_product"` | `"cosine"` |
+| `poolSize` | Connection pool size | `5` |
+| `tablePrefix` | Table name prefix | `"codegraph_"` |
+
+### Troubleshooting PostgreSQL Setup
+
+**Connection Refused:**
+```bash
+# Verify PostgreSQL is running
+psql postgres -c "SELECT version();"
+```
+
+**pgvector Extension Not Found:**
+```bash
+# Verify pgvector is installed
+psql codegraph -c "CREATE EXTENSION vector;"
+```
+
+**Switching Backends:**
+When switching from SQLite to pgvector or back, always re-index to regenerate embeddings:
+```bash
+codegraph index --force
+```
+
+The graph data (nodes, edges, files) stays in SQLite — only vector embeddings use the configured backend.
+
+---
+
 ## 💻 CLI Usage
 
 ```bash
