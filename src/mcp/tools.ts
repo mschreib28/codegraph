@@ -150,10 +150,6 @@ export const tools: ToolDefinition[] = [
           type: 'string',
           description: 'Name of the function, method, or class to find callers for',
         },
-        file: {
-          type: 'string',
-          description: 'File path to disambiguate when multiple symbols share the same name (e.g., "src/components/EventLog.res")',
-        },
         limit: {
           type: 'number',
           description: 'Maximum number of callers to return (default: 20)',
@@ -173,10 +169,6 @@ export const tools: ToolDefinition[] = [
         symbol: {
           type: 'string',
           description: 'Name of the function, method, or class to find callees for',
-        },
-        file: {
-          type: 'string',
-          description: 'File path to disambiguate when multiple symbols share the same name (e.g., "src/components/EventLog.res")',
         },
         limit: {
           type: 'number',
@@ -198,10 +190,6 @@ export const tools: ToolDefinition[] = [
           type: 'string',
           description: 'Name of the symbol to analyze impact for',
         },
-        file: {
-          type: 'string',
-          description: 'File path to disambiguate when multiple symbols share the same name (e.g., "src/components/EventLog.res")',
-        },
         depth: {
           type: 'number',
           description: 'How many levels of dependencies to traverse (default: 2)',
@@ -221,10 +209,6 @@ export const tools: ToolDefinition[] = [
         symbol: {
           type: 'string',
           description: 'Name of the symbol to get details for',
-        },
-        file: {
-          type: 'string',
-          description: 'File path to disambiguate when multiple symbols share the same name (e.g., "src/components/EventLog.res")',
         },
         includeCode: {
           type: 'boolean',
