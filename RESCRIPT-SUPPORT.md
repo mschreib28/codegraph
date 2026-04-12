@@ -44,8 +44,8 @@ Added `file` parameter to `codegraph_node`, `codegraph_callers`, `codegraph_call
 
 The implementation follows CodeGraph's established patterns:
 
-- **ReScript extraction** uses the standard `TreeSitterExtractor` with a ReScript-specific `LanguageExtractor` configuration in `src/extraction/tree-sitter.ts`
-- **`visitReScriptNode()`** handles ReScript's wrapper node pattern where declarations use intermediate binding nodes (`let_declaration` → `let_binding`, `module_declaration` → `module_binding`, `type_declaration` → `type_binding`)
+- **ReScript extraction** is implemented as a `LanguageExtractor` in `src/extraction/languages/rescript.ts`, following the same per-language file pattern as TypeScript, Go, Rust, etc.
+- **`visitNode()` hook** handles ReScript's wrapper node pattern where declarations use intermediate binding nodes (`let_declaration` → `let_binding`, `module_declaration` → `module_binding`, `type_declaration` → `type_binding`)
 - **Pipe expression handling** extracts the piped function from `pipe_expression` nodes and creates `calls` edges, enabling call graph traversal through `x->Array.map(f)->Array.filter(g)` chains
 - **ERROR node recovery** walks children of tree-sitter ERROR nodes to extract valid structures (common in `tree-sitter-rescript` for certain syntax patterns)
 - **`tree-sitter-rescript.wasm`** (908KB) ships in `src/extraction/wasm/` (not in the `tree-sitter-wasms` npm package), following the same pattern as Pascal
@@ -112,9 +112,9 @@ gcc -shared -fPIC -O2 -I /tmp/tree-sitter-rescript/src \
 |------|--------|
 | `src/types.ts` | Added `'rescript'` to `Language` type, `.res`/`.resi` to `DEFAULT_CONFIG.include`, ReScript compiler output dirs to `exclude` |
 | `src/extraction/grammars.ts` | WASM loader, extension mappings (`.res`, `.resi`), display name |
-| `src/extraction/tree-sitter.ts` | ReScript `LanguageExtractor`, `visitReScriptNode()` with 8 helper methods, import handling, pipe expression extraction, ERROR node recovery |
+| `src/extraction/languages/rescript.ts` | `LanguageExtractor` with `visitNode()` hook, `extractImport()`, helper functions for let bindings, modules, types, externals, pipe calls, ERROR node recovery |
+| `src/extraction/languages/index.ts` | Registers `rescriptExtractor` in the `EXTRACTORS` map |
 | `src/extraction/wasm/tree-sitter-rescript.wasm` | Pre-built WASM grammar (908KB) |
-| `src/mcp/tools.ts` | Added `file` parameter to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact` for symbol disambiguation |
 | `__tests__/extraction.test.ts` | 12 new tests covering all ReScript extraction features |
 
 ## Test Results
