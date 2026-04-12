@@ -43,6 +43,8 @@ npm-debug.log*
 # CodeGraph data directories (in test projects)
 .codegraph/
 
+test_frameworks
+
 # Test language repos for manual testing
 test-languages/
 

@@ -19,9 +19,6 @@ import * as path from 'path';
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
 import { StdioTransport, JsonRpcRequest, JsonRpcNotification, ErrorCodes } from './transport';
 import { tools, ToolHandler } from './tools';
-import { initSentry, captureException } from '../sentry';
-
-initSentry({ processName: 'codegraph-mcp' });
 
 /**
  * Convert a file:// URI to a filesystem path.
@@ -119,9 +116,9 @@ export class MCPServer {
     try {
       this.cg = await CodeGraph.open(resolvedRoot);
       this.toolHandler.setDefaultCodeGraph(this.cg);
+      this.startWatching();
     } catch (err) {
       // Log the error so transient failures are diagnosable (see issue #47)
-      captureException(err);
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[CodeGraph MCP] Failed to open project at ${resolvedRoot}: ${msg}\n`);
     }
@@ -151,8 +148,34 @@ export class MCPServer {
       this.cg = CodeGraph.openSync(resolvedRoot);
       this.projectPath = resolvedRoot;
       this.toolHandler.setDefaultCodeGraph(this.cg);
+      this.startWatching();
     } catch {
       // Still failing — will retry on next tool call
+    }
+  }
+
+  /**
+   * Start file watching on the active CodeGraph instance.
+   * Logs sync activity to stderr for diagnostics.
+   */
+  private startWatching(): void {
+    if (!this.cg) return;
+
+    const started = this.cg.watch({
+      onSyncComplete: (result) => {
+        if (result.filesChanged > 0) {
+          process.stderr.write(
+            `[CodeGraph MCP] Auto-synced ${result.filesChanged} file(s) in ${result.durationMs}ms\n`
+          );
+        }
+      },
+      onSyncError: (err) => {
+        process.stderr.write(`[CodeGraph MCP] Auto-sync error: ${err.message}\n`);
+      },
+    });
+
+    if (started) {
+      process.stderr.write('[CodeGraph MCP] File watcher active — graph will auto-sync on changes\n');
     }
   }
 
@@ -259,8 +282,9 @@ export class MCPServer {
    * Handle tools/list request
    */
   private async handleToolsList(request: JsonRpcRequest): Promise<void> {
+    this.retryInitIfNeeded();
     this.transport.sendResult(request.id, {
-      tools: tools,
+      tools: this.toolHandler.getTools(),
     });
   }
 

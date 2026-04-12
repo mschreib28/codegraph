@@ -233,6 +233,9 @@ export interface ExtractionError {
   /** Error message */
   message: string;
 
+  /** File path where the error occurred */
+  filePath?: string;
+
   /** Line number if available */
   line?: number;
 
@@ -463,9 +466,6 @@ export interface CodeGraphConfig {
   /** Whether to track call sites */
   trackCallSites: boolean;
 
-  /** Whether to compute embeddings for semantic search */
-  enableEmbeddings: boolean;
-
   /** Custom symbol patterns to extract */
   customPatterns?: {
     /** Name for this pattern group */
@@ -684,7 +684,6 @@ export const DEFAULT_CONFIG: CodeGraphConfig = {
   maxFileSize: 1024 * 1024, // 1MB
   extractDocstrings: true,
   trackCallSites: true,
-  enableEmbeddings: false,
 };
 
 // =============================================================================

@@ -91,6 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
 CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_language ON nodes(language);
 CREATE INDEX IF NOT EXISTS idx_nodes_file_line ON nodes(file_path, start_line);
+CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
 
 -- Full-text search index on node names, docstrings, and signatures
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
@@ -138,22 +139,6 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_name ON unresolved_refs(reference_name
 CREATE INDEX IF NOT EXISTS idx_unresolved_file_path ON unresolved_refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node_id, reference_name);
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
-
--- =============================================================================
--- Vector Storage (for future semantic search)
--- =============================================================================
-
--- Vector embeddings for semantic search
--- Note: No foreign key constraint to allow standalone vector testing
--- The VectorManager handles node-vector relationship at the application level
-CREATE TABLE IF NOT EXISTS vectors (
-    node_id TEXT PRIMARY KEY,
-    embedding BLOB NOT NULL, -- Float32 array stored as blob
-    model TEXT NOT NULL, -- Model used to generate embedding
-    created_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_vectors_model ON vectors(model);
 
 -- Project metadata for version/provenance tracking
 CREATE TABLE IF NOT EXISTS project_metadata (

@@ -82,6 +82,129 @@ describe('Resolution Module', () => {
       expect(result?.resolvedBy).toBe('exact-match');
     });
 
+    it('should prefer same-module candidates over cross-module matches', () => {
+      // Simulates a Python monorepo where multiple apps define navigate()
+      const candidateA: Node = {
+        id: 'func:apps/app_a/src/server.py:navigate:10',
+        kind: 'function',
+        name: 'navigate',
+        qualifiedName: 'apps/app_a/src/server.py::navigate',
+        filePath: 'apps/app_a/src/server.py',
+        language: 'python',
+        startLine: 10,
+        endLine: 20,
+        startColumn: 0,
+        endColumn: 0,
+        updatedAt: Date.now(),
+      };
+
+      const candidateB: Node = {
+        id: 'func:apps/app_b/src/server.py:navigate:15',
+        kind: 'function',
+        name: 'navigate',
+        qualifiedName: 'apps/app_b/src/server.py::navigate',
+        filePath: 'apps/app_b/src/server.py',
+        language: 'python',
+        startLine: 15,
+        endLine: 25,
+        startColumn: 0,
+        endColumn: 0,
+        updatedAt: Date.now(),
+      };
+
+      const context: ResolutionContext = {
+        getNodesInFile: () => [],
+        getNodesByName: (name) => name === 'navigate' ? [candidateA, candidateB] : [],
+        getNodesByQualifiedName: () => [],
+        getNodesByKind: () => [],
+        fileExists: () => true,
+        readFile: () => null,
+        getProjectRoot: () => '/test',
+        getAllFiles: () => [],
+        getNodesByLowerName: () => [],
+        getImportMappings: () => [],
+      };
+
+      // Reference from app_a should resolve to app_a's navigate, not app_b's
+      const ref = {
+        fromNodeId: 'func:apps/app_a/src/handler.py:handler:5',
+        referenceName: 'navigate',
+        referenceKind: 'calls' as const,
+        line: 5,
+        column: 10,
+        filePath: 'apps/app_a/src/handler.py',
+        language: 'python' as const,
+      };
+
+      const result = matchReference(ref, context);
+
+      expect(result).not.toBeNull();
+      expect(result?.targetNodeId).toBe('func:apps/app_a/src/server.py:navigate:10');
+      expect(result?.resolvedBy).toBe('exact-match');
+    });
+
+    it('should lower confidence for cross-module exact matches', () => {
+      // Only one candidate but in a completely different module
+      const candidates: Node[] = [
+        {
+          id: 'func:apps/app_b/src/server.py:navigate:10',
+          kind: 'function',
+          name: 'navigate',
+          qualifiedName: 'apps/app_b/src/server.py::navigate',
+          filePath: 'apps/app_b/src/server.py',
+          language: 'python',
+          startLine: 10,
+          endLine: 20,
+          startColumn: 0,
+          endColumn: 0,
+          updatedAt: Date.now(),
+        },
+        {
+          id: 'func:apps/app_c/src/server.py:navigate:10',
+          kind: 'function',
+          name: 'navigate',
+          qualifiedName: 'apps/app_c/src/server.py::navigate',
+          filePath: 'apps/app_c/src/server.py',
+          language: 'python',
+          startLine: 10,
+          endLine: 20,
+          startColumn: 0,
+          endColumn: 0,
+          updatedAt: Date.now(),
+        },
+      ];
+
+      const context: ResolutionContext = {
+        getNodesInFile: () => [],
+        getNodesByName: (name) => name === 'navigate' ? candidates : [],
+        getNodesByQualifiedName: () => [],
+        getNodesByKind: () => [],
+        fileExists: () => true,
+        readFile: () => null,
+        getProjectRoot: () => '/test',
+        getAllFiles: () => [],
+        getNodesByLowerName: () => [],
+        getImportMappings: () => [],
+      };
+
+      // Reference from app_a — neither candidate is in the same module
+      const ref = {
+        fromNodeId: 'func:apps/app_a/src/handler.py:handler:5',
+        referenceName: 'navigate',
+        referenceKind: 'calls' as const,
+        line: 5,
+        column: 10,
+        filePath: 'apps/app_a/src/handler.py',
+        language: 'python' as const,
+      };
+
+      const result = matchReference(ref, context);
+
+      // Should still resolve but with low confidence
+      expect(result).not.toBeNull();
+      expect(result?.confidence).toBeLessThanOrEqual(0.4);
+    });
+
     it('should match qualified name references', () => {
       const mockClassNode: Node = {
         id: 'class:user.ts:User:5',

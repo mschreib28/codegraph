@@ -650,6 +650,78 @@ pub trait Repository {
     expect(traitNode).toBeDefined();
     expect(traitNode?.name).toBe('Repository');
   });
+
+  it('should extract impl Trait for Type as implements edges', () => {
+    const code = `
+pub struct MyCache {}
+
+pub trait Cache {
+    fn get(&self, key: &str) -> Option<String>;
+}
+
+impl Cache for MyCache {
+    fn get(&self, key: &str) -> Option<String> {
+        None
+    }
+}
+`;
+    const result = extractFromSource('cache.rs', code);
+
+    // Should have an unresolved reference for implements
+    const implRef = result.unresolvedReferences.find(
+      (r) => r.referenceKind === 'implements' && r.referenceName === 'Cache'
+    );
+    expect(implRef).toBeDefined();
+
+    // The struct MyCache should be the source
+    const myCacheNode = result.nodes.find((n) => n.name === 'MyCache' && n.kind === 'struct');
+    expect(myCacheNode).toBeDefined();
+    expect(implRef?.fromNodeId).toBe(myCacheNode?.id);
+  });
+
+  it('should extract trait supertraits as extends references', () => {
+    const code = `
+pub trait Display {}
+
+pub trait Error: Display {
+    fn description(&self) -> &str;
+}
+`;
+    const result = extractFromSource('error.rs', code);
+
+    const extendsRef = result.unresolvedReferences.find(
+      (r) => r.referenceKind === 'extends' && r.referenceName === 'Display'
+    );
+    expect(extendsRef).toBeDefined();
+
+    const errorTrait = result.nodes.find((n) => n.name === 'Error' && n.kind === 'trait');
+    expect(errorTrait).toBeDefined();
+    expect(extendsRef?.fromNodeId).toBe(errorTrait?.id);
+  });
+
+  it('should not create implements edges for plain impl blocks', () => {
+    const code = `
+pub struct Counter {
+    count: u32,
+}
+
+impl Counter {
+    pub fn new() -> Counter {
+        Counter { count: 0 }
+    }
+    pub fn increment(&mut self) {
+        self.count += 1;
+    }
+}
+`;
+    const result = extractFromSource('counter.rs', code);
+
+    // Should have no implements references (no trait involved)
+    const implRefs = result.unresolvedReferences.filter(
+      (r) => r.referenceKind === 'implements'
+    );
+    expect(implRefs).toHaveLength(0);
+  });
 });
 
 describe('Java Extraction', () => {
@@ -743,6 +815,37 @@ class UserController
     expect(classNode).toBeDefined();
     expect(classNode?.name).toBe('UserController');
   });
+
+  it('should extract class inheritance (extends) and interface implementation', () => {
+    const code = `<?php
+
+class ChildController extends BaseController implements Serializable, JsonSerializable
+{
+    public function serialize(): string
+    {
+        return json_encode($this);
+    }
+}
+`;
+    const result = extractFromSource('ChildController.php', code);
+
+    const classNode = result.nodes.find((n) => n.kind === 'class');
+    expect(classNode).toBeDefined();
+    expect(classNode?.name).toBe('ChildController');
+
+    const extendsRef = result.unresolvedReferences.find(
+      (r) => r.referenceKind === 'extends'
+    );
+    expect(extendsRef).toBeDefined();
+    expect(extendsRef?.referenceName).toBe('BaseController');
+
+    const implementsRefs = result.unresolvedReferences.filter(
+      (r) => r.referenceKind === 'implements'
+    );
+    expect(implementsRefs.length).toBe(2);
+    expect(implementsRefs.map((r) => r.referenceName)).toContain('Serializable');
+    expect(implementsRefs.map((r) => r.referenceName)).toContain('JsonSerializable');
+  });
 });
 
 describe('Swift Extraction', () => {
@@ -818,6 +921,47 @@ public protocol Repository {
     expect(protocolNode).toBeDefined();
     expect(protocolNode?.name).toBe('Repository');
   });
+
+  it('should extract class inheritance and protocol conformance', () => {
+    const code = `
+class DataRequest: Request {
+    func validate() {}
+}
+
+class UploadRequest: DataRequest, Sendable {
+    func upload() {}
+}
+
+enum AFError: Error {
+    case invalidURL
+}
+
+struct HTTPMethod: RawRepresentable {
+    let rawValue: String
+}
+
+protocol UploadConvertible: URLRequestConvertible {
+    func asURLRequest() throws -> URLRequest
+}
+`;
+    const result = extractFromSource('Inheritance.swift', code);
+
+    const extendsRefs = result.unresolvedReferences.filter(
+      (r) => r.referenceKind === 'extends'
+    );
+
+    // DataRequest extends Request
+    expect(extendsRefs.find((r) => r.referenceName === 'Request')).toBeDefined();
+    // UploadRequest extends DataRequest and Sendable
+    expect(extendsRefs.find((r) => r.referenceName === 'DataRequest')).toBeDefined();
+    expect(extendsRefs.find((r) => r.referenceName === 'Sendable')).toBeDefined();
+    // AFError extends Error
+    expect(extendsRefs.find((r) => r.referenceName === 'Error')).toBeDefined();
+    // HTTPMethod extends RawRepresentable
+    expect(extendsRefs.find((r) => r.referenceName === 'RawRepresentable')).toBeDefined();
+    // UploadConvertible extends URLRequestConvertible
+    expect(extendsRefs.find((r) => r.referenceName === 'URLRequestConvertible')).toBeDefined();
+  });
 });
 
 describe('Kotlin Extraction', () => {
@@ -868,6 +1012,113 @@ suspend fun loadData(): List<String> {
     const funcNode = result.nodes.find((n) => n.kind === 'function');
     expect(funcNode).toBeDefined();
     expect(funcNode?.isAsync).toBe(true);
+  });
+
+  it('should extract fun interface declarations', () => {
+    const code = `
+fun interface OnObjectRetainedListener {
+  fun onObjectRetained()
+}
+`;
+    const result = extractFromSource('listener.kt', code);
+
+    const ifaceNode = result.nodes.find((n) => n.kind === 'interface');
+    expect(ifaceNode).toBeDefined();
+    expect(ifaceNode?.name).toBe('OnObjectRetainedListener');
+
+    const methodNode = result.nodes.find((n) => n.kind === 'method');
+    expect(methodNode).toBeDefined();
+    expect(methodNode?.name).toBe('onObjectRetained');
+    expect(methodNode?.qualifiedName).toBe('OnObjectRetainedListener::onObjectRetained');
+  });
+
+  it('should extract complex fun interface with nested classes', () => {
+    const code = `
+fun interface EventListener {
+  fun onEvent(event: Event)
+
+  sealed class Event {
+    class DumpingHeap : Event()
+  }
+}
+`;
+    const result = extractFromSource('events.kt', code);
+
+    const ifaceNode = result.nodes.find((n) => n.kind === 'interface');
+    expect(ifaceNode).toBeDefined();
+    expect(ifaceNode?.name).toBe('EventListener');
+
+    // Nested sealed class should still be extracted (as sibling due to grammar limitations)
+    const eventClass = result.nodes.find((n) => n.kind === 'class' && n.name === 'Event');
+    expect(eventClass).toBeDefined();
+
+    const dumpingHeap = result.nodes.find((n) => n.kind === 'class' && n.name === 'DumpingHeap');
+    expect(dumpingHeap).toBeDefined();
+  });
+
+  it('should not affect regular function declarations', () => {
+    const code = `
+fun interface MyCallback {
+  fun invoke(value: Int)
+}
+
+fun regularFunction(): String {
+  return "hello"
+}
+`;
+    const result = extractFromSource('mixed.kt', code);
+
+    const ifaceNode = result.nodes.find((n) => n.kind === 'interface');
+    expect(ifaceNode).toBeDefined();
+    expect(ifaceNode?.name).toBe('MyCallback');
+
+    const funcNode = result.nodes.find((n) => n.kind === 'function');
+    expect(funcNode).toBeDefined();
+    expect(funcNode?.name).toBe('regularFunction');
+  });
+
+  it('should extract fun interface with annotation on method (Pattern 2b)', () => {
+    // When the SAM method has annotations like @Throws, tree-sitter produces a different
+    // misparse: function_declaration > ERROR("interface Name {") instead of
+    // function_declaration > user_type("interface"). This is the OkHttp Interceptor pattern.
+    const code = `
+import java.io.IOException
+
+fun interface Interceptor {
+  @Throws(IOException::class)
+  fun intercept(chain: Chain): Response
+}
+`;
+    const result = extractFromSource('interceptor.kt', code);
+
+    const ifaceNode = result.nodes.find((n) => n.kind === 'interface');
+    expect(ifaceNode).toBeDefined();
+    expect(ifaceNode?.name).toBe('Interceptor');
+  });
+
+  it('should extract methods from interface with nested fun interface', () => {
+    // When an interface contains a nested `fun interface`, tree-sitter misparsed
+    // the parent body as ERROR. Methods inside should still be extracted.
+    const code = `
+interface WebSocket {
+  fun request(): Request
+  fun send(text: String): Boolean
+  fun cancel()
+  fun interface Factory {
+    fun newWebSocket(request: Request): WebSocket
+  }
+}
+`;
+    const result = extractFromSource('websocket.kt', code);
+
+    const wsIface = result.nodes.find((n) => n.kind === 'interface' && n.name === 'WebSocket');
+    expect(wsIface).toBeDefined();
+
+    const methods = result.nodes.filter((n) => n.kind === 'method' && n.qualifiedName?.startsWith('WebSocket::'));
+    const methodNames = methods.map((m) => m.name);
+    expect(methodNames).toContain('request');
+    expect(methodNames).toContain('send');
+    expect(methodNames).toContain('cancel');
   });
 });
 
@@ -1640,6 +1891,70 @@ require_relative 'helper'
       expect(names).toContain('json');
       expect(names).toContain('yaml');
       expect(names).toContain('helper');
+    });
+  });
+
+  describe('Ruby modules', () => {
+    it('should extract module as module node with containment', () => {
+      const code = `
+module CachedCounting
+  def self.disable
+    @enabled = false
+  end
+
+  def perform_increment!(key, count)
+    write_cache!(key, count)
+  end
+end
+`;
+      const result = extractFromSource('concerns/cached_counting.rb', code);
+
+      const moduleNode = result.nodes.find((n) => n.kind === 'module' && n.name === 'CachedCounting');
+      expect(moduleNode).toBeDefined();
+      expect(moduleNode?.qualifiedName).toBe('CachedCounting');
+
+      // Methods inside module should have module-qualified names
+      const disableMethod = result.nodes.find((n) => n.name === 'disable' && n.kind === 'method');
+      expect(disableMethod).toBeDefined();
+      expect(disableMethod?.qualifiedName).toBe('CachedCounting::disable');
+
+      const incrementMethod = result.nodes.find((n) => n.name === 'perform_increment!' && n.kind === 'method');
+      expect(incrementMethod).toBeDefined();
+      expect(incrementMethod?.qualifiedName).toBe('CachedCounting::perform_increment!');
+
+      // Containment edge from module to methods
+      const containsEdges = result.edges.filter((e) => e.source === moduleNode?.id && e.kind === 'contains');
+      expect(containsEdges.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should handle nested modules with classes', () => {
+      const code = `
+module Discourse
+  module Auth
+    class AuthProvider
+      def authenticate(params)
+        validate(params)
+      end
+    end
+  end
+end
+`;
+      const result = extractFromSource('lib/auth.rb', code);
+
+      const discourseModule = result.nodes.find((n) => n.kind === 'module' && n.name === 'Discourse');
+      expect(discourseModule).toBeDefined();
+
+      const authModule = result.nodes.find((n) => n.kind === 'module' && n.name === 'Auth');
+      expect(authModule).toBeDefined();
+      expect(authModule?.qualifiedName).toBe('Discourse::Auth');
+
+      const authProvider = result.nodes.find((n) => n.kind === 'class' && n.name === 'AuthProvider');
+      expect(authProvider).toBeDefined();
+      expect(authProvider?.qualifiedName).toBe('Discourse::Auth::AuthProvider');
+
+      const authMethod = result.nodes.find((n) => n.name === 'authenticate');
+      expect(authMethod).toBeDefined();
+      expect(authMethod?.qualifiedName).toBe('Discourse::Auth::AuthProvider::authenticate');
     });
   });
 

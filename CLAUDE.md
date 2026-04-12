@@ -58,10 +58,6 @@ src/
 │   ├── index.ts          # GraphQueryManager
 │   ├── traversal.ts      # GraphTraverser (BFS/DFS, impact radius)
 │   └── queries.ts        # High-level graph queries
-├── vectors/              # Semantic search with embeddings
-│   ├── index.ts          # VectorManager
-│   ├── embedder.ts       # ONNX runtime + model loading
-│   └── search.ts         # Similarity search
 ├── context/              # Context building for AI assistants
 │   ├── index.ts          # ContextBuilder
 │   └── formatter.ts      # Markdown/JSON output formatting
@@ -78,19 +74,16 @@ src/
 │   ├── index.ts          # MCPServer class
 │   ├── tools.ts          # MCP tool definitions
 │   └── transport.ts      # Stdio transport
-├── sentry.ts             # Error tracking/reporting
 └── bin/codegraph.ts      # CLI entry point
 ```
 
 ### Key Classes
 
-- **CodeGraph** (`src/index.ts`): Main entry point. Lifecycle methods (`init`, `open`, `close`), indexing (`indexAll`, `sync`), graph queries (`traverse`, `getCallGraph`, `getImpactRadius`), semantic search (`semanticSearch`, `findSimilar`), context building (`buildContext`)
+- **CodeGraph** (`src/index.ts`): Main entry point. Lifecycle methods (`init`, `open`, `close`), indexing (`indexAll`, `sync`), graph queries (`traverse`, `getCallGraph`, `getImpactRadius`), context building (`buildContext`)
 
 - **ExtractionOrchestrator** (`src/extraction/index.ts`): Coordinates file scanning, parsing, and storing. Uses tree-sitter native bindings for each supported language
 
 - **GraphTraverser** (`src/graph/traversal.ts`): BFS/DFS traversal, call graph construction, impact radius calculation, path finding
-
-- **VectorManager** (`src/vectors/manager.ts`): Manages embeddings using `@xenova/transformers` for ONNX inference. Stores vectors in SQLite BLOB format
 
 - **ReferenceResolver** (`src/resolution/index.ts`): Resolves unresolved references after full indexing using framework patterns, import resolution, and name matching
 
@@ -101,12 +94,11 @@ SQLite database with:
 - `edges`: Relationships (calls, imports, extends, contains, etc.)
 - `files`: Tracked source files with content hashes
 - `unresolved_refs`: References pending resolution
-- `vectors`: Embeddings stored as BLOBs
 - `nodes_fts`: FTS5 virtual table for full-text search
 
 ### Supported Languages
 
-TypeScript, JavaScript, TSX, JSX, Python, Go, Rust, Java, C, C++, C#, PHP, Ruby, Swift, Kotlin, Dart, Liquid, Pascal, ReScript
+TypeScript, JavaScript, TSX, JSX, Svelte, Python, Go, Rust, Java, C, C++, C#, PHP, Ruby, Swift, Kotlin, Dart, Liquid, Pascal, ReScript
 
 ### Node and Edge Types
 
@@ -129,12 +121,13 @@ codegraph serve --mcp       # Start MCP server
 
 ## MCP Tools Best Practices
 
-These tools are designed to be used by **Explore agents** for faster codebase exploration:
+Use these tools **directly in the main session** for fast code exploration (replaces the need for Explore agents in most cases):
 
 | Tool | Use For |
 |------|---------|
+| `codegraph_explore` | **Deep exploration** — comprehensive context for a topic in ONE call |
+| `codegraph_context` | Quick context for a task (lighter than explore) |
 | `codegraph_search` | Find symbols by name (functions, classes, types) |
-| `codegraph_context` | Get relevant code context for a task |
 | `codegraph_callers` | Find what calls a function |
 | `codegraph_callees` | Find what a function calls |
 | `codegraph_impact` | See what's affected by changing a symbol |
@@ -153,7 +146,6 @@ Tests are in `__tests__/` directory with files mirroring the module structure:
 - `extraction.test.ts` - Tree-sitter parsing for all languages
 - `resolution.test.ts` - Reference resolution
 - `graph.test.ts` - Traversal and graph queries
-- `vectors.test.ts` - Embedding and semantic search
 - `context.test.ts` - Context building
 - `sync.test.ts` - Incremental updates and git hooks
 
