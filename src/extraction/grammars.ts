@@ -124,12 +124,12 @@ export async function loadGrammarsForLanguages(languages: Language[]): Promise<v
   for (const lang of toLoad) {
     const wasmFile = WASM_GRAMMAR_FILES[lang];
     try {
-        // Pascal and ReScript ship their own WASM (not in tree-sitter-wasms)
-        const wasmPath = (lang === 'pascal' || lang === 'rescript')
-          ? path.join(__dirname, 'wasm', wasmFile)
-          : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
-        const language = await WasmLanguage.load(wasmPath);
-        languageCache.set(lang, language);
+      // Pascal and ReScript ship their own WASM (not in tree-sitter-wasms)
+      const wasmPath = (lang === 'pascal' || lang === 'rescript')
+        ? path.join(__dirname, 'wasm', wasmFile)
+        : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
+      const language = await WasmLanguage.load(wasmPath);
+      languageCache.set(lang, language);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[CodeGraph] Failed to load ${lang} grammar — parsing will be unavailable: ${message}`);
