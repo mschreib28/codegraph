@@ -86,17 +86,36 @@ export interface ResolutionContext {
 }
 
 /**
+ * Result of framework-specific file extraction.
+ */
+export interface FrameworkExtractionResult {
+  /** Framework-specific nodes (e.g. routes) */
+  nodes: Node[];
+  /** Framework-specific unresolved references (e.g. route -> handler) */
+  references: UnresolvedRef[];
+}
+
+/**
  * Framework-specific resolver
  */
 export interface FrameworkResolver {
   /** Framework name */
   name: string;
-  /** Detect if project uses this framework */
+  /** Languages this framework applies to. If omitted, applies to all languages. */
+  languages?: Language[];
+  /** Detect if project uses this framework (project-level, called once at startup) */
   detect(context: ResolutionContext): boolean;
   /** Resolve a reference using framework-specific patterns */
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null;
-  /** Extract additional nodes specific to this framework */
-  extractNodes?(filePath: string, content: string): Node[];
+  /**
+   * Extract framework-specific nodes and references from a file.
+   *
+   * Returns route nodes, middleware nodes, etc., plus unresolved references
+   * that link those nodes to handlers (view classes, controller methods,
+   * included modules). Unresolved references flow into the normal resolution
+   * pipeline; the framework's own `resolve()` is one of the strategies tried.
+   */
+  extract?(filePath: string, content: string): FrameworkExtractionResult;
 }
 
 /**
