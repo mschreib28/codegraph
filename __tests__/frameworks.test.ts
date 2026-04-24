@@ -198,3 +198,20 @@ describe('laravelResolver.extract', () => {
     expect(references[0].referenceName).toBe('UserController');
   });
 });
+
+import { railsResolver } from '../src/resolution/frameworks/ruby';
+
+describe('railsResolver.extract', () => {
+  it('extracts route with controller#action syntax', () => {
+    const src = `get '/users', to: 'users#index'\n`;
+    const { nodes, references } = railsResolver.extract!('config/routes.rb', src);
+    expect(nodes[0].name).toBe('GET /users');
+    expect(references[0].referenceName).toBe('index');
+  });
+
+  it('extracts route without to: keyword', () => {
+    const src = `post '/items' => 'items#create'\n`;
+    const { nodes, references } = railsResolver.extract!('config/routes.rb', src);
+    expect(references[0].referenceName).toBe('create');
+  });
+});
