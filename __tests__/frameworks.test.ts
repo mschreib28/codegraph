@@ -215,3 +215,19 @@ describe('railsResolver.extract', () => {
     expect(references[0].referenceName).toBe('create');
   });
 });
+
+import { springResolver } from '../src/resolution/frameworks/java';
+
+describe('springResolver.extract', () => {
+  it('extracts route with @GetMapping and next method', () => {
+    const src = `
+@GetMapping("/users")
+public List<User> listUsers() {
+  return users;
+}
+`;
+    const { nodes, references } = springResolver.extract!('UserController.java', src);
+    expect(nodes[0].name).toBe('GET /users');
+    expect(references[0].referenceName).toBe('listUsers');
+  });
+});
