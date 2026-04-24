@@ -9,107 +9,106 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 
 export const djangoResolver: FrameworkResolver = {
   name: 'django',
+  languages: ['python'],
 
-  detect(context: ResolutionContext): boolean {
-    // Check for Django in requirements.txt or setup.py
+  detect(context) {
     const requirements = context.readFile('requirements.txt');
-    if (requirements && requirements.includes('django')) {
-      return true;
-    }
-
+    if (requirements && requirements.toLowerCase().includes('django')) return true;
     const setup = context.readFile('setup.py');
-    if (setup && setup.includes('django')) {
-      return true;
-    }
-
+    if (setup && setup.toLowerCase().includes('django')) return true;
     const pyproject = context.readFile('pyproject.toml');
-    if (pyproject && pyproject.includes('django')) {
-      return true;
-    }
-
-    // Check for manage.py (Django signature)
+    if (pyproject && pyproject.toLowerCase().includes('django')) return true;
     return context.fileExists('manage.py');
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    // Pattern 1: Model references
+  resolve(ref, context) {
     if (ref.referenceName.endsWith('Model') || /^[A-Z][a-z]+$/.test(ref.referenceName)) {
       const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, MODEL_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.8,
-          resolvedBy: 'framework',
-        };
-      }
+      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
     }
-
-    // Pattern 2: View references
     if (ref.referenceName.endsWith('View') || ref.referenceName.endsWith('ViewSet')) {
       const result = resolveByNameAndKind(ref.referenceName, VIEW_KINDS, VIEW_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.8,
-          resolvedBy: 'framework',
-        };
-      }
+      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
     }
-
-    // Pattern 3: Form references
     if (ref.referenceName.endsWith('Form')) {
       const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, FORM_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.8,
-          resolvedBy: 'framework',
-        };
-      }
+      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
     }
-
     return null;
   },
 
-  extractNodes(filePath: string, content: string): Node[] {
+  extract(filePath, content) {
+    if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
+
     const nodes: Node[] = [];
+    const references: UnresolvedRef[] = [];
     const now = Date.now();
 
-    // Extract URL patterns
-    // path('route/', view, name='name')
-    const urlPatterns = [
-      /path\s*\(\s*['"]([^'"]+)['"],\s*(\w+)/g,
-      /url\s*\(\s*r?['"]([^'"]+)['"],\s*(\w+)/g,
-    ];
+    // path('url', handler, name=...) / re_path(r'...', handler) / url(r'...', handler)
+    // Capture groups: 1=function name, 2=url string, 3=handler expr
+    // Handler expr may contain one balanced () pair (e.g. View.as_view(), include('x.y'))
+    const routeRegex = /\b(path|re_path|url)\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*([\w.]+(?:\s*\([^)]*\))?)/g;
 
-    for (const pattern of urlPatterns) {
-      let match;
-      while ((match = pattern.exec(content)) !== null) {
-        const [, urlPath] = match;
-        const line = content.slice(0, match.index).split('\n').length;
+    let match: RegExpExecArray | null;
+    while ((match = routeRegex.exec(content)) !== null) {
+      const [, _fn, urlPath, handlerExpr] = match;
+      const line = content.slice(0, match.index).split('\n').length;
 
-        nodes.push({
-          id: `route:${filePath}:${urlPath}:${line}`,
-          kind: 'route',
-          name: urlPath!,
-          qualifiedName: `${filePath}::route:${urlPath}`,
+      const routeNode: Node = {
+        id: `route:${filePath}:${line}:${urlPath}`,
+        kind: 'route',
+        name: urlPath!,
+        qualifiedName: `${filePath}::route:${urlPath}`,
+        filePath,
+        startLine: line,
+        endLine: line,
+        startColumn: 0,
+        endColumn: match[0].length,
+        language: 'python',
+        updatedAt: now,
+      };
+      nodes.push(routeNode);
+
+      const handler = handlerExpr!.trim();
+      const target = resolveHandlerName(handler);
+      if (target) {
+        references.push({
+          fromNodeId: routeNode.id,
+          referenceName: target.name,
+          referenceKind: target.kind,
+          line,
+          column: 0,
           filePath,
-          startLine: line,
-          endLine: line,
-          startColumn: 0,
-          endColumn: match[0].length,
           language: 'python',
-          updatedAt: now,
         });
       }
     }
 
-    return nodes;
+    return { nodes, references };
   },
 };
+
+/**
+ * Parse a Django URL handler expression and return the symbol/module to link.
+ * Returns null for shapes we can't confidently link (e.g. lambdas).
+ */
+function resolveHandlerName(expr: string): { name: string; kind: 'references' | 'imports' } | null {
+  // include('module.path')
+  const includeMatch = expr.match(/^include\s*\(\s*['"]([^'"]+)['"]/);
+  if (includeMatch) return { name: includeMatch[1]!, kind: 'imports' };
+
+  // Strip trailing .as_view(...) or .as_view()
+  let head = expr.replace(/\.as_view\s*\([^)]*\)\s*$/, '');
+  // Drop any other trailing method call
+  head = head.replace(/\.\w+\s*\([^)]*\)\s*$/, '');
+
+  const dotted = head.split('.').filter(Boolean);
+  if (dotted.length === 0) return null;
+  const last = dotted[dotted.length - 1]!;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(last)) return null;
+
+  return { name: last, kind: 'references' };
+}
 
 export const flaskResolver: FrameworkResolver = {
   name: 'flask',
