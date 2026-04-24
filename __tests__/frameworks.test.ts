@@ -231,3 +231,20 @@ public List<User> listUsers() {
     expect(references[0].referenceName).toBe('listUsers');
   });
 });
+
+import { goResolver } from '../src/resolution/frameworks/go';
+
+describe('goResolver.extract', () => {
+  it('extracts route from r.GET', () => {
+    const src = `r.GET("/users", listUsers)\n`;
+    const { nodes, references } = goResolver.extract!('main.go', src);
+    expect(nodes[0].name).toBe('GET /users');
+    expect(references[0].referenceName).toBe('listUsers');
+  });
+
+  it('extracts route from router.HandleFunc', () => {
+    const src = `router.HandleFunc("/items", createItem)\n`;
+    const { nodes, references } = goResolver.extract!('main.go', src);
+    expect(references[0].referenceName).toBe('createItem');
+  });
+});
