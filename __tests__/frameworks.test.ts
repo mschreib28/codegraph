@@ -248,3 +248,14 @@ describe('goResolver.extract', () => {
     expect(references[0].referenceName).toBe('createItem');
   });
 });
+
+import { rustResolver } from '../src/resolution/frameworks/rust';
+
+describe('rustResolver.extract', () => {
+  it('extracts route from axum .route with get()', () => {
+    const src = `let app = Router::new().route("/users", get(list_users));\n`;
+    const { nodes, references } = rustResolver.extract!('main.rs', src);
+    expect(nodes[0].name).toBe('GET /users');
+    expect(references[0].referenceName).toBe('list_users');
+  });
+});
