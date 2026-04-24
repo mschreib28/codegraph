@@ -276,3 +276,14 @@ public IActionResult ListUsers()
     expect(references[0].referenceName).toBe('ListUsers');
   });
 });
+
+import { vaporResolver } from '../src/resolution/frameworks/swift';
+
+describe('vaporResolver.extract', () => {
+  it('extracts route from app.get with use:', () => {
+    const src = `app.get("users", use: listUsers)\n`;
+    const { nodes, references } = vaporResolver.extract!('routes.swift', src);
+    expect(nodes[0].name).toBe('GET users');
+    expect(references[0].referenceName).toBe('listUsers');
+  });
+});

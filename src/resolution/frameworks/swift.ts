@@ -9,6 +9,7 @@ import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from
 
 export const swiftUIResolver: FrameworkResolver = {
   name: 'swiftui',
+  languages: ['swift'],
 
   detect(context: ResolutionContext): boolean {
     // Check for SwiftUI imports in Swift files
@@ -75,7 +76,8 @@ export const swiftUIResolver: FrameworkResolver = {
     return null;
   },
 
-  extractNodes(filePath: string, content: string): Node[] {
+  extract(filePath, content) {
+    if (!filePath.endsWith('.swift')) return { nodes: [], references: [] };
     const nodes: Node[] = [];
     const now = Date.now();
 
@@ -83,7 +85,7 @@ export const swiftUIResolver: FrameworkResolver = {
     // struct ContentView: View { ... }
     const viewPattern = /struct\s+(\w+)\s*:\s*(?:\w+\s*,\s*)*View/g;
 
-    let match;
+    let match: RegExpExecArray | null;
     while ((match = viewPattern.exec(content)) !== null) {
       const [, viewName] = match;
       const line = content.slice(0, match.index).split('\n').length;
@@ -125,12 +127,13 @@ export const swiftUIResolver: FrameworkResolver = {
       });
     }
 
-    return nodes;
+    return { nodes, references: [] };
   },
 };
 
 export const uikitResolver: FrameworkResolver = {
   name: 'uikit',
+  languages: ['swift'],
 
   detect(context: ResolutionContext): boolean {
     const allFiles = context.getAllFiles();
@@ -206,14 +209,15 @@ export const uikitResolver: FrameworkResolver = {
     return null;
   },
 
-  extractNodes(filePath: string, content: string): Node[] {
+  extract(filePath, content) {
+    if (!filePath.endsWith('.swift')) return { nodes: [], references: [] };
     const nodes: Node[] = [];
     const now = Date.now();
 
     // Extract UIViewController subclasses
     const vcPattern = /class\s+(\w+)\s*:\s*(?:\w+\s*,\s*)*UIViewController/g;
 
-    let match;
+    let match: RegExpExecArray | null;
     while ((match = vcPattern.exec(content)) !== null) {
       const [, vcName] = match;
       const line = content.slice(0, match.index).split('\n').length;
@@ -255,12 +259,13 @@ export const uikitResolver: FrameworkResolver = {
       });
     }
 
-    return nodes;
+    return { nodes, references: [] };
   },
 };
 
 export const vaporResolver: FrameworkResolver = {
   name: 'vapor',
+  languages: ['swift'],
 
   detect(context: ResolutionContext): boolean {
     // Check for Package.swift with Vapor dependency
@@ -326,24 +331,25 @@ export const vaporResolver: FrameworkResolver = {
     return null;
   },
 
-  extractNodes(filePath: string, content: string): Node[] {
+  extract(filePath, content) {
+    if (!filePath.endsWith('.swift')) return { nodes: [], references: [] };
     const nodes: Node[] = [];
+    const references: UnresolvedRef[] = [];
     const now = Date.now();
 
-    // Extract Vapor routes
-    // app.get("path") { ... }, app.post("path") { ... }
-    const routePattern = /\.(get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']/g;
-
-    let match;
-    while ((match = routePattern.exec(content)) !== null) {
-      const [, method, path] = match;
+    // Vapor: (app|router|routes).METHOD("path", use: handler)
+    const routeRegex = /\b(?:app|router|routes)\.(get|post|put|patch|delete)\s*\(\s*"([^"]+)"\s*,\s*use:\s*([A-Za-z_][A-Za-z0-9_.]*)/g;
+    let match: RegExpExecArray | null;
+    while ((match = routeRegex.exec(content)) !== null) {
+      const [, method, routePath, handlerExpr] = match;
       const line = content.slice(0, match.index).split('\n').length;
+      const upper = method!.toUpperCase();
 
-      nodes.push({
-        id: `route:${filePath}:${method!.toUpperCase()}:${path}:${line}`,
+      const routeNode: Node = {
+        id: `route:${filePath}:${line}:${upper}:${routePath}`,
         kind: 'route',
-        name: `${method!.toUpperCase()} ${path}`,
-        qualifiedName: `${filePath}::${method!.toUpperCase()}:${path}`,
+        name: `${upper} ${routePath}`,
+        qualifiedName: `${filePath}::route:${routePath}`,
         filePath,
         startLine: line,
         endLine: line,
@@ -351,34 +357,26 @@ export const vaporResolver: FrameworkResolver = {
         endColumn: match[0].length,
         language: 'swift',
         updatedAt: now,
-      });
+      };
+      nodes.push(routeNode);
+
+      // Last segment of dotted path (e.g. UserController.list -> list)
+      const parts = handlerExpr!.split('.');
+      const handlerName = parts[parts.length - 1];
+      if (handlerName) {
+        references.push({
+          fromNodeId: routeNode.id,
+          referenceName: handlerName,
+          referenceKind: 'references',
+          line,
+          column: 0,
+          filePath,
+          language: 'swift',
+        });
+      }
     }
 
-    // Extract grouped routes
-    // app.grouped("api").get("users") { ... }
-    const groupedRoutePattern = /\.grouped\s*\(\s*["']([^"']+)["']\s*\)\s*\.(get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']/g;
-
-    while ((match = groupedRoutePattern.exec(content)) !== null) {
-      const [, prefix, method, path] = match;
-      const line = content.slice(0, match.index).split('\n').length;
-      const fullPath = `${prefix}/${path}`;
-
-      nodes.push({
-        id: `route:${filePath}:${method!.toUpperCase()}:${fullPath}:${line}`,
-        kind: 'route',
-        name: `${method!.toUpperCase()} /${fullPath}`,
-        qualifiedName: `${filePath}::${method!.toUpperCase()}:${fullPath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'swift',
-        updatedAt: now,
-      });
-    }
-
-    return nodes;
+    return { nodes, references };
   },
 };
 
