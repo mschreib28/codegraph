@@ -5,6 +5,7 @@
  */
 
 import { FrameworkResolver, ResolutionContext } from '../types';
+import type { Language } from '../../types';
 import { laravelResolver } from './laravel';
 import { expressResolver } from './express';
 import { reactResolver } from './react';
@@ -72,6 +73,19 @@ export function detectFrameworks(context: ResolutionContext): FrameworkResolver[
       return false;
     }
   });
+}
+
+/**
+ * Filter a list of detected frameworks down to ones that apply to a given language.
+ * Frameworks without an explicit `languages` list are treated as universal.
+ */
+export function getApplicableFrameworks(
+  detected: FrameworkResolver[],
+  language: Language
+): FrameworkResolver[] {
+  return detected.filter(
+    (fw) => !fw.languages || fw.languages.includes(language)
+  );
 }
 
 /**
