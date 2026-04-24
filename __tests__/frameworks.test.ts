@@ -96,3 +96,55 @@ urlpatterns = [
     expect(references).toEqual([]);
   });
 });
+
+import { flaskResolver, fastapiResolver } from '../src/resolution/frameworks/python';
+
+describe('flaskResolver.extract', () => {
+  it('extracts route and reference from @app.route', () => {
+    const src = `
+@app.route('/users')
+def list_users():
+    return []
+`;
+    const { nodes, references } = flaskResolver.extract!('app.py', src);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].kind).toBe('route');
+    expect(nodes[0].name).toBe('GET /users');
+    expect(references[0].referenceName).toBe('list_users');
+  });
+
+  it('extracts blueprint routes', () => {
+    const src = `
+@users_bp.route('/<id>', methods=['POST'])
+def create_user(id):
+    pass
+`;
+    const { nodes, references } = flaskResolver.extract!('routes.py', src);
+    expect(nodes[0].name).toBe('POST /<id>');
+    expect(references[0].referenceName).toBe('create_user');
+  });
+});
+
+describe('fastapiResolver.extract', () => {
+  it('extracts route and reference from @app.get', () => {
+    const src = `
+@app.get('/users')
+async def list_users():
+    return []
+`;
+    const { nodes, references } = fastapiResolver.extract!('main.py', src);
+    expect(nodes[0].name).toBe('GET /users');
+    expect(references[0].referenceName).toBe('list_users');
+  });
+
+  it('extracts route from router.post', () => {
+    const src = `
+@router.post('/items')
+def create_item(item: Item):
+    pass
+`;
+    const { nodes, references } = fastapiResolver.extract!('items.py', src);
+    expect(nodes[0].name).toBe('POST /items');
+    expect(references[0].referenceName).toBe('create_item');
+  });
+});

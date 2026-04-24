@@ -5,7 +5,7 @@
  */
 
 import { Node } from '../../types';
-import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { FrameworkResolver, UnresolvedRef, ResolutionContext, FrameworkExtractionResult } from '../types';
 
 export const djangoResolver: FrameworkResolver = {
   name: 'django',
@@ -112,166 +112,148 @@ function resolveHandlerName(expr: string): { name: string; kind: 'references' | 
 
 export const flaskResolver: FrameworkResolver = {
   name: 'flask',
+  languages: ['python'],
 
-  detect(context: ResolutionContext): boolean {
+  detect(context) {
     const requirements = context.readFile('requirements.txt');
-    if (requirements && (requirements.includes('flask') || requirements.includes('Flask'))) {
-      return true;
-    }
-
+    if (requirements && /\bflask\b/i.test(requirements)) return true;
     const pyproject = context.readFile('pyproject.toml');
-    if (pyproject && pyproject.includes('flask')) {
-      return true;
-    }
-
-    // Check for Flask app pattern in common files
-    const appFiles = ['app.py', 'application.py', 'main.py', '__init__.py'];
-    for (const file of appFiles) {
+    if (pyproject && /\bflask\b/i.test(pyproject)) return true;
+    for (const file of ['app.py', 'application.py', 'main.py', '__init__.py']) {
       const content = context.readFile(file);
-      if (content && content.includes('Flask(__name__)')) {
-        return true;
-      }
+      if (content && content.includes('Flask(__name__)')) return true;
     }
-
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    // Pattern 1: Blueprint references
+  resolve(ref, context) {
     if (ref.referenceName.endsWith('_bp') || ref.referenceName.endsWith('_blueprint')) {
       const result = resolveByNameAndKind(ref.referenceName, VARIABLE_KINDS, [], context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.8,
-          resolvedBy: 'framework',
-        };
-      }
+      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
     }
-
     return null;
   },
 
-  extractNodes(filePath: string, content: string): Node[] {
-    const nodes: Node[] = [];
-    const now = Date.now();
-
-    // Extract Flask route decorators
-    // @app.route('/path') or @blueprint.route('/path')
-    const routePattern = /@(\w+)\.route\s*\(\s*['"]([^'"]+)['"]/g;
-
-    let match;
-    while ((match = routePattern.exec(content)) !== null) {
-      const [, _appOrBp, routePath] = match;
-      const line = content.slice(0, match.index).split('\n').length;
-
-      nodes.push({
-        id: `route:${filePath}:${routePath}:${line}`,
-        kind: 'route',
-        name: `${routePath}`,
-        qualifiedName: `${filePath}::route:${routePath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'python',
-        updatedAt: now,
-      });
-    }
-
-    return nodes;
+  extract(filePath, content) {
+    if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
+    return extractDecoratorRoutes(filePath, content, {
+      // Flask: @x.route('/path', methods=[...])
+      decoratorRegex: /@(\w+)\.route\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*methods\s*=\s*\[([^\]]+)\])?\s*\)\s*\n\s*(?:async\s+)?def\s+(\w+)/g,
+      defaultMethod: 'GET',
+      methodFromGroup: 3,
+      pathGroup: 2,
+      handlerGroup: 4,
+      language: 'python',
+    });
   },
 };
 
 export const fastapiResolver: FrameworkResolver = {
   name: 'fastapi',
+  languages: ['python'],
 
-  detect(context: ResolutionContext): boolean {
+  detect(context) {
     const requirements = context.readFile('requirements.txt');
-    if (requirements && requirements.includes('fastapi')) {
-      return true;
-    }
-
+    if (requirements && /\bfastapi\b/i.test(requirements)) return true;
     const pyproject = context.readFile('pyproject.toml');
-    if (pyproject && pyproject.includes('fastapi')) {
-      return true;
-    }
-
-    // Check for FastAPI app pattern
-    const appFiles = ['app.py', 'main.py', 'api.py'];
-    for (const file of appFiles) {
+    if (pyproject && /\bfastapi\b/i.test(pyproject)) return true;
+    for (const file of ['app.py', 'main.py', 'api.py']) {
       const content = context.readFile(file);
-      if (content && content.includes('FastAPI()')) {
-        return true;
-      }
+      if (content && content.includes('FastAPI(')) return true;
     }
-
     return false;
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    // Pattern 1: Router references
+  resolve(ref, context) {
     if (ref.referenceName.endsWith('_router') || ref.referenceName === 'router') {
       const result = resolveByNameAndKind(ref.referenceName, VARIABLE_KINDS, ROUTER_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.8,
-          resolvedBy: 'framework',
-        };
-      }
+      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
     }
-
-    // Pattern 2: Dependency references
     if (ref.referenceName.startsWith('get_') || ref.referenceName.startsWith('Depends')) {
       const result = resolveByNameAndKind(ref.referenceName, FUNCTION_KINDS, DEP_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.75,
-          resolvedBy: 'framework',
-        };
-      }
+      if (result) return { original: ref, targetNodeId: result, confidence: 0.75, resolvedBy: 'framework' };
     }
-
     return null;
   },
 
-  extractNodes(filePath: string, content: string): Node[] {
-    const nodes: Node[] = [];
-    const now = Date.now();
-
-    // Extract FastAPI route decorators
-    // @app.get('/path') or @router.post('/path')
-    const routePattern = /@(\w+)\.(get|post|put|patch|delete|options|head)\s*\(\s*['"]([^'"]+)['"]/g;
-
-    let match;
-    while ((match = routePattern.exec(content)) !== null) {
-      const [, _appOrRouter, method, routePath] = match;
-      const line = content.slice(0, match.index).split('\n').length;
-
-      nodes.push({
-        id: `route:${filePath}:${method!.toUpperCase()}:${routePath}:${line}`,
-        kind: 'route',
-        name: `${method!.toUpperCase()} ${routePath}`,
-        qualifiedName: `${filePath}::${method!.toUpperCase()}:${routePath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'python',
-        updatedAt: now,
-      });
-    }
-
-    return nodes;
+  extract(filePath, content) {
+    if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
+    return extractDecoratorRoutes(filePath, content, {
+      // FastAPI: @x.METHOD('/path') -> handler on the next def line
+      decoratorRegex: /@(\w+)\.(get|post|put|patch|delete|options|head)\s*\(\s*['"]([^'"]+)['"]/g,
+      defaultMethod: '',
+      methodGroup: 2,
+      pathGroup: 3,
+      findHandler: true,
+      language: 'python',
+    });
   },
 };
+
+interface DecoratorRouteOpts {
+  decoratorRegex: RegExp;
+  defaultMethod: string;
+  methodGroup?: number;
+  methodFromGroup?: number; // methods=[...] list
+  pathGroup: number;
+  handlerGroup?: number;
+  findHandler?: boolean;
+  language: 'python';
+}
+
+function extractDecoratorRoutes(filePath: string, content: string, opts: DecoratorRouteOpts): FrameworkExtractionResult {
+  const nodes: Node[] = [];
+  const references: UnresolvedRef[] = [];
+  const now = Date.now();
+  let match: RegExpExecArray | null;
+  while ((match = opts.decoratorRegex.exec(content)) !== null) {
+    const routePath = match[opts.pathGroup];
+    let method = opts.defaultMethod;
+    if (opts.methodGroup && match[opts.methodGroup]) {
+      method = match[opts.methodGroup]!.toUpperCase();
+    } else if (opts.methodFromGroup && match[opts.methodFromGroup]) {
+      const m = match[opts.methodFromGroup]!.match(/['"]([A-Z]+)['"]/i);
+      if (m) method = m[1]!.toUpperCase();
+    }
+    const line = content.slice(0, match.index).split('\n').length;
+    const name = method ? `${method} ${routePath}` : routePath!;
+    const routeNode: Node = {
+      id: `route:${filePath}:${line}:${method}:${routePath}`,
+      kind: 'route',
+      name,
+      qualifiedName: `${filePath}::${method}:${routePath}`,
+      filePath,
+      startLine: line,
+      endLine: line,
+      startColumn: 0,
+      endColumn: match[0].length,
+      language: opts.language,
+      updatedAt: now,
+    };
+    nodes.push(routeNode);
+
+    let handlerName: string | undefined;
+    if (opts.handlerGroup && match[opts.handlerGroup]) {
+      handlerName = match[opts.handlerGroup];
+    } else if (opts.findHandler) {
+      const tail = content.slice(match.index + match[0].length);
+      const defMatch = tail.match(/\n\s*(?:async\s+)?def\s+(\w+)/);
+      if (defMatch) handlerName = defMatch[1];
+    }
+    if (handlerName) {
+      references.push({
+        fromNodeId: routeNode.id,
+        referenceName: handlerName,
+        referenceKind: 'references',
+        line,
+        column: 0,
+        filePath,
+        language: 'python',
+      });
+    }
+  }
+  return { nodes, references };
+}
 
 // Directory patterns
 const MODEL_DIRS = ['models', 'app/models', 'src/models'];
