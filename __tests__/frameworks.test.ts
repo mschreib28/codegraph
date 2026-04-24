@@ -287,3 +287,25 @@ describe('vaporResolver.extract', () => {
     expect(references[0].referenceName).toBe('listUsers');
   });
 });
+
+import { reactResolver } from '../src/resolution/frameworks/react';
+import { svelteResolver } from '../src/resolution/frameworks/svelte';
+
+describe('reactResolver.extract (smoke)', () => {
+  it('returns { nodes, references } shape', () => {
+    const src = `<Route path="/users" element={<UsersPage/>}/>`;
+    const result = reactResolver.extract!('App.tsx', src);
+    expect(result).toHaveProperty('nodes');
+    expect(result).toHaveProperty('references');
+    expect(Array.isArray(result.nodes)).toBe(true);
+    expect(Array.isArray(result.references)).toBe(true);
+  });
+});
+
+describe('svelteResolver.extract (smoke)', () => {
+  it('returns { nodes, references } shape', () => {
+    const result = svelteResolver.extract!('+page.svelte', '');
+    expect(result).toHaveProperty('nodes');
+    expect(result).toHaveProperty('references');
+  });
+});
