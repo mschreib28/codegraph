@@ -124,11 +124,72 @@ export function shouldIncludeFile(
 }
 
 /**
+ * Enumerate all initialized submodule paths (recursively), relative to `rootDir`.
+ *
+ * Uses `git submodule foreach` so we get exactly the submodules git considers
+ * active — uninitialized / deinitialized submodules are skipped automatically,
+ * which is what we want (we can't ls-files inside a directory with no .git).
+ *
+ * Returns [] when there are no submodules or when the command fails. Errors
+ * here are non-fatal: submodule indexing is a best-effort enhancement on top
+ * of the parent-repo file scan.
+ */
+function getGitSubmodules(rootDir: string): string[] {
+  try {
+    const output = execFileSync(
+      'git',
+      ['submodule', 'foreach', '--recursive', '--quiet', 'echo "$displaypath"'],
+      { cwd: rootDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    const paths: string[] = [];
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) paths.push(normalizePath(trimmed));
+    }
+    return paths;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Run `git ls-files -co --exclude-standard` inside a submodule and return
+ * paths prefixed back into the parent repo's relative-path namespace.
+ * Errors are swallowed so one broken submodule doesn't fail the whole scan.
+ */
+function getSubmoduleFiles(rootDir: string, submodulePath: string): string[] {
+  try {
+    const output = execFileSync(
+      'git',
+      ['ls-files', '-co', '--exclude-standard'],
+      {
+        cwd: path.join(rootDir, submodulePath),
+        encoding: 'utf-8',
+        timeout: 30000,
+        maxBuffer: 50 * 1024 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }
+    );
+    const out: string[] = [];
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) out.push(normalizePath(`${submodulePath}/${trimmed}`));
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Get all files visible to git (tracked + untracked but not ignored).
- * Respects .gitignore at all levels (root, subdirectories).
+ * Respects .gitignore at all levels (root, subdirectories) and recurses
+ * into git submodules — `git ls-files` itself does not enter submodules,
+ * so each one is enumerated separately and its paths are prefixed.
+ * Pass `indexSubmodules: false` in config to skip the submodule walk.
  * Returns null on failure (non-git project) so callers can fall back.
  */
-function getGitVisibleFiles(rootDir: string): Set<string> | null {
+function getGitVisibleFiles(rootDir: string, config: CodeGraphConfig): Set<string> | null {
   try {
     // Check if the project directory is gitignored by a parent repo.
     // When rootDir lives inside a parent git repo that ignores it,
@@ -167,6 +228,18 @@ function getGitVisibleFiles(rootDir: string): Set<string> | null {
         files.add(normalizePath(trimmed));
       }
     }
+
+    // Recurse into submodules: each submodule has its own git index, and the
+    // parent repo's ls-files only emits the submodule directory entry, not
+    // the files inside.
+    if (config.indexSubmodules !== false) {
+      for (const submodulePath of getGitSubmodules(rootDir)) {
+        for (const filePath of getSubmoduleFiles(rootDir, submodulePath)) {
+          files.add(filePath);
+        }
+      }
+    }
+
     return files;
   } catch {
     return null;
@@ -185,44 +258,127 @@ interface GitChanges {
 }
 
 /**
- * Use `git status` to detect changed files instead of scanning every file.
- * Returns null on failure so callers fall back to full scan.
+ * Decode the C-style-quoted path that `git status --porcelain` emits when
+ * a path contains spaces, control chars, or non-ASCII bytes (the path is
+ * wrapped in double quotes and individual bytes are escaped, e.g.
+ *   "vendor/my\\040sub/file"
+ * Returns the path unchanged if it isn't quoted.
  */
-function getGitChangedFiles(rootDir: string, config: CodeGraphConfig): GitChanges | null {
+function unquoteGitPath(raw: string): string {
+  if (raw.length < 2 || raw[0] !== '"' || raw[raw.length - 1] !== '"') {
+    return raw;
+  }
+  const body = raw.slice(1, -1);
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== '\\') {
+      bytes.push(body.charCodeAt(i));
+      continue;
+    }
+    const next = body[++i];
+    if (next === undefined) break;
+    if (next >= '0' && next <= '7') {
+      // Octal escape (up to 3 digits) representing a single byte
+      let octal = next;
+      let peek = body[i + 1];
+      while (octal.length < 3 && peek !== undefined && peek >= '0' && peek <= '7') {
+        octal += peek;
+        i++;
+        peek = body[i + 1];
+      }
+      bytes.push(parseInt(octal, 8));
+    } else {
+      const map: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 };
+      bytes.push(map[next] ?? next.charCodeAt(0));
+    }
+  }
+  return Buffer.from(bytes).toString('utf-8');
+}
+
+/**
+ * Run `git status --porcelain --no-renames` in `cwd` and bucket the entries.
+ * `pathPrefix`, when non-empty, is prepended to every file path so submodule
+ * status output can be reported relative to the parent repo's root.
+ * `submoduleDirs` is the set of paths (relative to the parent root) that
+ * are themselves submodule directories — the parent repo's status emits
+ * a single entry per submodule (e.g. ` m sub`), and we ignore those because
+ * the actual file-level changes are picked up by status runs inside each.
+ *
+ * Returns `true` if the command ran successfully (even if the working tree
+ * was clean), `false` if it failed — callers use this to fall back to a
+ * full filesystem scan when the parent-repo status is unreliable.
+ */
+function readGitStatus(
+  cwd: string,
+  pathPrefix: string,
+  submoduleDirs: ReadonlySet<string>,
+  config: CodeGraphConfig,
+  buckets: GitChanges,
+): boolean {
+  let output: string;
   try {
-    const output = execFileSync(
+    output = execFileSync(
       'git',
       ['status', '--porcelain', '--no-renames'],
-      { cwd: rootDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      { cwd, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
     );
-
-    const modified: string[] = [];
-    const added: string[] = [];
-    const deleted: string[] = [];
-
-    for (const line of output.split('\n')) {
-      if (line.length < 4) continue; // Minimum: "XY file"
-
-      const statusCode = line.substring(0, 2);
-      const filePath = normalizePath(line.substring(3));
-
-      // Skip files that don't match include/exclude config
-      if (!shouldIncludeFile(filePath, config)) continue;
-
-      if (statusCode === '??') {
-        added.push(filePath);
-      } else if (statusCode.includes('D')) {
-        deleted.push(filePath);
-      } else {
-        // M, MM, AM, A (staged), etc. — treat as modified
-        modified.push(filePath);
-      }
-    }
-
-    return { modified, added, deleted };
   } catch {
+    return false;
+  }
+
+  for (const line of output.split('\n')) {
+    if (line.length < 4) continue; // Minimum: "XY file"
+
+    const statusCode = line.substring(0, 2);
+    const rawPath = unquoteGitPath(line.substring(3));
+    const filePath = pathPrefix
+      ? normalizePath(`${pathPrefix}/${rawPath}`)
+      : normalizePath(rawPath);
+
+    // The submodule directory itself shows up as a status entry in the
+    // parent repo (e.g. " m sub" when the submodule's HEAD has moved);
+    // skip it — file-level changes are captured by recursing into the submodule.
+    if (submoduleDirs.has(filePath)) continue;
+
+    // Skip files that don't match include/exclude config
+    if (!shouldIncludeFile(filePath, config)) continue;
+
+    if (statusCode === '??') {
+      buckets.added.push(filePath);
+    } else if (statusCode.includes('D')) {
+      buckets.deleted.push(filePath);
+    } else {
+      // M, MM, AM, A (staged), etc. — treat as modified
+      buckets.modified.push(filePath);
+    }
+  }
+  return true;
+}
+
+/**
+ * Use `git status` to detect changed files instead of scanning every file.
+ * Returns null on failure so callers fall back to full scan.
+ *
+ * Recurses into git submodules: status inside the parent repo only emits
+ * a directory-level entry for a changed submodule, so we additionally run
+ * status inside each active submodule to pick up file-level changes.
+ * Submodule status failures are non-fatal — only a parent-repo failure
+ * triggers the full-scan fallback.
+ */
+function getGitChangedFiles(rootDir: string, config: CodeGraphConfig): GitChanges | null {
+  const submodules = config.indexSubmodules === false ? [] : getGitSubmodules(rootDir);
+  const submoduleDirs = new Set(submodules);
+  const buckets: GitChanges = { modified: [], added: [], deleted: [] };
+
+  if (!readGitStatus(rootDir, '', submoduleDirs, config, buckets)) {
     return null;
   }
+  for (const submodulePath of submodules) {
+    readGitStatus(path.join(rootDir, submodulePath), submodulePath, submoduleDirs, config, buckets);
+  }
+
+  return buckets;
 }
 
 /**
@@ -243,7 +399,7 @@ export function scanDirectory(
   onProgress?: (current: number, file: string) => void
 ): string[] {
   // Fast path: use git to get all visible files (respects .gitignore everywhere)
-  const gitFiles = getGitVisibleFiles(rootDir);
+  const gitFiles = getGitVisibleFiles(rootDir, config);
   if (gitFiles) {
     const files: string[] = [];
     let count = 0;
@@ -270,7 +426,7 @@ export async function scanDirectoryAsync(
   config: CodeGraphConfig,
   onProgress?: (current: number, file: string) => void
 ): Promise<string[]> {
-  const gitFiles = getGitVisibleFiles(rootDir);
+  const gitFiles = getGitVisibleFiles(rootDir, config);
   if (gitFiles) {
     const files: string[] = [];
     let count = 0;
