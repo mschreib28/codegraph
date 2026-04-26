@@ -162,7 +162,25 @@ CREATE TABLE IF NOT EXISTS symbol_summaries (
     -- NULL until the embedding model is configured/auto-detected.
     embedding BLOB,
     embedding_model TEXT,
+    -- Role classification (api_endpoint | business_logic | data_model |
+    -- util | framework_glue | test_helper | unknown). Lets callers
+    -- filter by intent rather than just by tree-sitter kind.
+    role TEXT,
+    role_model TEXT,
     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_summaries_model ON symbol_summaries(model);
 CREATE INDEX IF NOT EXISTS idx_summaries_embedding_model ON symbol_summaries(embedding_model);
+CREATE INDEX IF NOT EXISTS idx_summaries_role ON symbol_summaries(role);
+
+-- Directory-level LLM summaries: one paragraph synthesised from the
+-- symbol summaries inside the directory. Lets "what does src/sync/ do?"
+-- be answered without a graph traversal.
+CREATE TABLE IF NOT EXISTS directory_summaries (
+    dir_path TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    model TEXT NOT NULL,
+    generated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dir_summaries_model ON directory_summaries(model);

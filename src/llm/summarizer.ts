@@ -177,6 +177,8 @@ export async function summarizeAll(
           [{ role: 'user', content: buildPrompt(sym, body) }],
           { temperature: 0, maxTokens: 80 }
         );
+        // Don't persist a stale write if close()/abort fired during the call.
+        if (options.signal?.aborted) return;
         let summary = result.text.trim().split('\n')[0]?.trim() ?? '';
         if (summary.length === 0) {
           errors++;

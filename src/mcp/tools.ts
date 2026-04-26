@@ -57,9 +57,14 @@ export interface ToolDefinition {
 
 interface PropertySchema {
   type: string;
-  description: string;
+  description?: string;
   enum?: string[];
   default?: unknown;
+  /** For type === 'array': the item shape. */
+  items?: PropertySchema | { type: 'object'; properties: Record<string, PropertySchema>; required?: string[] };
+  /** For type === 'object': nested properties. */
+  properties?: Record<string, PropertySchema>;
+  required?: string[];
 }
 
 /**
@@ -119,6 +124,115 @@ export const tools: ToolDefinition[] = [
         projectPath: projectPathProperty,
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'codegraph_pending_summaries',
+    description: 'Pull a batch of code symbols that need a one-line summary. Returns each symbol\'s body and content_hash. Designed for cases when no local LLM is available — the calling agent (you) can summarise each item and persist results via codegraph_save_summaries. Cache shape is identical to the local-LLM path, so the two coexist.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: 'Max symbols per batch (default 20, max 200)',
+          default: 20,
+        },
+        modelHint: {
+          type: 'string',
+          description: 'Label to record alongside saved summaries (default "agent-mcp"). Use your model id when known so cache provenance stays clear.',
+          default: 'agent-mcp',
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+  },
+  {
+    name: 'codegraph_save_summaries',
+    description: 'Persist agent-generated symbol summaries returned from codegraph_pending_summaries. Re-validates content_hash against current disk before writing — items whose body changed since the batch was issued are skipped.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          description: 'Summaries to persist. Each item must echo back the contentHash from codegraph_pending_summaries unchanged.',
+          items: {
+            type: 'object',
+            properties: {
+              nodeId: { type: 'string' },
+              contentHash: { type: 'string' },
+              summary: {
+                type: 'string',
+                description: 'One line, max 200 chars. Action verb. No "This function..." preamble.',
+              },
+            },
+            required: ['nodeId', 'contentHash', 'summary'],
+          },
+        },
+        model: {
+          type: 'string',
+          description: 'Model label to record (must match the modelHint from the pending batch for cache hits to short-circuit on the next call). Defaults to "agent-mcp".',
+          default: 'agent-mcp',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['items'],
+    },
+  },
+  {
+    name: 'codegraph_dead_code',
+    description: 'Find potentially-dead symbols. Combines the graph signal (no incoming calls, not exported, not in test/script paths) with an LLM judge that knows about framework hooks, dynamic dispatch, and public APIs the static graph misses. Returns a CANDIDATE list with confidence — not a delete list.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        maxCandidates: {
+          type: 'number',
+          description: 'Cap on graph candidates the LLM judges (default 50)',
+          default: 50,
+        },
+        verdict: {
+          type: 'string',
+          description: 'Filter results by verdict (default shows all, dead-first)',
+          enum: ['dead', 'live', 'uncertain', 'all'],
+          default: 'all',
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+  },
+  {
+    name: 'codegraph_role',
+    description: 'List symbols matching an LLM-assigned role (api_endpoint | business_logic | data_model | util | framework_glue | test_helper). Useful for "show me the API surface" or "list all data models". Requires the role classifier pass to have run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        role: {
+          type: 'string',
+          description: 'Role label to filter by',
+          enum: ['api_endpoint', 'business_logic', 'data_model', 'util', 'framework_glue', 'test_helper', 'unknown'],
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum results (default: 50)',
+          default: 50,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['role'],
+    },
+  },
+  {
+    name: 'codegraph_module',
+    description: 'Get the LLM-synthesised paragraph describing what a directory/module does. Built from the symbol summaries inside it. Cheap: pure DB lookup. Useful for "what is in src/sync/?" before drilling into specific symbols.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dirPath: {
+          type: 'string',
+          description: 'Project-relative directory path (e.g. "src/sync", "src/llm").',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['dirPath'],
     },
   },
   {
@@ -469,6 +583,16 @@ export class ToolHandler {
           return await this.handleSearch(args);
         case 'codegraph_ask':
           return await this.handleAsk(args);
+        case 'codegraph_module':
+          return await this.handleModule(args);
+        case 'codegraph_role':
+          return await this.handleRole(args);
+        case 'codegraph_dead_code':
+          return await this.handleDeadCode(args);
+        case 'codegraph_pending_summaries':
+          return this.handlePendingSummaries(args);
+        case 'codegraph_save_summaries':
+          return this.handleSaveSummaries(args);
         case 'codegraph_similar':
           return await this.handleSimilar(args);
         case 'codegraph_context':
@@ -572,6 +696,191 @@ export class ToolHandler {
     } catch (err) {
       return this.errorResult(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /**
+   * Handle codegraph_pending_summaries — agent-as-LLM bridge. Returns
+   * the next batch of un-summarised symbols (with bodies) for the
+   * calling agent to summarise.
+   */
+  private handlePendingSummaries(args: Record<string, unknown>): ToolResult {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const limit = clamp(Number(args.limit) || 20, 1, 200);
+    const modelHint = (args.modelHint as string | undefined) ?? 'agent-mcp';
+    const batch = cg.pendingSummariesBatch({ limit, modelHint });
+
+    if (batch.items.length === 0) {
+      return this.textResult(
+        `No pending summaries (${batch.total} total candidates, all have current cache entries for model "${modelHint}").`
+      );
+    }
+
+    // Return as JSON so the agent can consume it programmatically.
+    return this.textResult(
+      JSON.stringify(
+        {
+          items: batch.items,
+          remaining: batch.remaining,
+          total: batch.total,
+          modelHint: batch.modelHint,
+          instructions:
+            'Summarise each item.body in ONE LINE (max 200 chars), starting with an action verb. No "This function..." preamble. Then call codegraph_save_summaries with [{nodeId, contentHash, summary}, ...] echoing each item\'s contentHash unchanged. Use the same modelHint as the model arg.',
+        },
+        null,
+        2
+      )
+    );
+  }
+
+  /**
+   * Handle codegraph_save_summaries — persist a batch of agent-
+   * generated summaries with content_hash re-validation.
+   */
+  private handleSaveSummaries(args: Record<string, unknown>): ToolResult {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const items = args.items as Array<{ nodeId?: unknown; contentHash?: unknown; summary?: unknown }> | undefined;
+    if (!Array.isArray(items)) {
+      return this.errorResult('items must be an array of { nodeId, contentHash, summary }');
+    }
+    const cleaned: Array<{ nodeId: string; contentHash: string; summary: string }> = [];
+    for (const it of items) {
+      if (
+        typeof it?.nodeId !== 'string' ||
+        typeof it?.contentHash !== 'string' ||
+        typeof it?.summary !== 'string'
+      ) {
+        return this.errorResult(
+          'each item requires string nodeId, contentHash, and summary'
+        );
+      }
+      cleaned.push({
+        nodeId: it.nodeId,
+        contentHash: it.contentHash,
+        summary: it.summary,
+      });
+    }
+    const model = (args.model as string | undefined) ?? 'agent-mcp';
+    const result = cg.saveAgentSummaries(cleaned, model);
+    const lines: string[] = [
+      `Saved ${result.saved} summaries (model: ${model}); skipped ${result.skipped}.`,
+    ];
+    if (result.errors.length > 0) {
+      lines.push('', 'Skipped:');
+      for (const e of result.errors.slice(0, 20)) lines.push(`  - ${e}`);
+      if (result.errors.length > 20) lines.push(`  ... and ${result.errors.length - 20} more`);
+    }
+    return this.textResult(lines.join('\n'));
+  }
+
+  /**
+   * Handle codegraph_dead_code — pre-filter by graph signal, ask the
+   * LLM to weigh in on each candidate. Returns a confidence-tagged
+   * list, NOT a delete recommendation.
+   */
+  private async handleDeadCode(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const llmConfig = await cg.getEffectiveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      return this.errorResult(
+        'No LLM available for dead-code judge. Configure config.llm or run a local Ollama server.'
+      );
+    }
+    const maxCandidates = clamp(Number(args.maxCandidates) || 50, 1, 500);
+    const verdictFilter = (args.verdict as string | undefined) ?? 'all';
+
+    try {
+      const result = await cg.findDeadCodeCandidates({ maxCandidates });
+      let rows = result.results;
+      if (verdictFilter !== 'all') {
+        rows = rows.filter((r) => r.verdict === verdictFilter);
+      }
+
+      if (rows.length === 0) {
+        return this.textResult(
+          `Judged ${result.judged}/${result.candidates} candidates; no entries matched filter "${verdictFilter}".`
+        );
+      }
+
+      const lines: string[] = [
+        `## Dead-code candidates (${rows.length} of ${result.candidates} judged)`,
+        '',
+        `_Combines graph signal (no callers + not exported) with LLM verdict._`,
+        '',
+      ];
+      for (const c of rows) {
+        const loc = c.node.startLine ? `:${c.node.startLine}` : '';
+        const conf = `${(c.confidence * 100).toFixed(0)}%`;
+        lines.push(`### [${c.verdict.toUpperCase()} ${conf}] ${c.node.name} (${c.node.kind})`);
+        lines.push(`${c.node.filePath}${loc}`);
+        if (c.reason) lines.push(`> ${c.reason}`);
+        lines.push('');
+      }
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    } catch (err) {
+      return this.errorResult(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Handle codegraph_role — list symbols whose LLM-assigned role
+   * matches. Hits the cache only; no LLM call at query time.
+   */
+  private async handleRole(args: Record<string, unknown>): Promise<ToolResult> {
+    const role = this.validateString(args.role, 'role');
+    if (typeof role !== 'string') return role;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const limit = clamp(Number(args.limit) || 50, 1, 500);
+
+    const nodes = cg.findNodesByRole(role as never, limit);
+    if (nodes.length === 0) {
+      return this.textResult(
+        `No symbols classified as "${role}". The role classifier may not have run yet — check codegraph_status for coverage.`
+      );
+    }
+    const summaries = cg.getSymbolSummaries(nodes.map((n) => n.id));
+    const lines: string[] = [`## Symbols with role: ${role} (${nodes.length})`, ''];
+    for (const n of nodes) {
+      const loc = n.startLine ? `:${n.startLine}` : '';
+      lines.push(`- **${n.name}** (${n.kind}) — ${n.filePath}${loc}`);
+      const s = summaries.get(n.id);
+      if (s) lines.push(`  ${s}`);
+    }
+    return this.textResult(this.truncateOutput(lines.join('\n')));
+  }
+
+  /**
+   * Handle codegraph_module — return the cached directory summary,
+   * or list every dir we have a summary for when no path is given.
+   */
+  private async handleModule(args: Record<string, unknown>): Promise<ToolResult> {
+    const dirPathRaw = args.dirPath as string | undefined;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    if (!dirPathRaw) {
+      const all = cg.getAllDirectorySummaries();
+      if (all.length === 0) {
+        return this.textResult(
+          'No module summaries cached yet. Run a sync after the LLM background pass to populate them.'
+        );
+      }
+      const lines: string[] = ['## Module summaries', ''];
+      for (const { dirPath, summary } of all) {
+        lines.push(`### ${dirPath}`);
+        lines.push(summary);
+        lines.push('');
+      }
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    }
+
+    // Normalise a leading "./" or trailing slash before lookup
+    const dirPath = dirPathRaw.replace(/^\.\//, '').replace(/\/+$/, '');
+    const summary = cg.getDirectorySummary(dirPath);
+    if (!summary) {
+      return this.textResult(
+        `No summary cached for "${dirPath}". The directory may not have ≥3 summarised symbols yet, or the background pass hasn't completed.`
+      );
+    }
+    return this.textResult(`## ${dirPath}\n\n${summary}`);
   }
 
   /**

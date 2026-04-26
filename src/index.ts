@@ -53,6 +53,18 @@ import { LlmClient, LlmEndpointConfig } from './llm/client';
 import { summarizeAll, SUMMARIZABLE_KINDS } from './llm/summarizer';
 import { embedAllSummaries } from './llm/embeddings';
 import { askWithCandidates, AskOptions, AskResult } from './llm/ask';
+import { summarizeAllDirectories } from './llm/dir-summarizer';
+import { classifyAllRoles, RoleLabel } from './llm/classifier';
+import { summarizeChange, ChangeIntentOptions, ChangeIntentResult } from './llm/change-intent';
+import { judgeDeadCode, DeadCodeOptions, DeadCodeResult } from './llm/dead-code';
+import { checkNamingConvention, NamingCheckResult } from './llm/naming';
+import {
+  pendingSummariesBatch,
+  saveAgentSummaries,
+  PendingBatch,
+  SaveSummaryItem,
+  SaveResult,
+} from './llm/agent-bridge';
 import { detectLocalLlm, detectionToConfig } from './llm/detect';
 import { logDebug, logWarn } from './errors';
 
@@ -706,6 +718,42 @@ export class CodeGraph {
             durationMs: eResult.durationMs,
           });
         }
+
+        // Phase-3: roll the symbol summaries up into one paragraph per
+        // directory. Cheap once symbol summaries exist (only dirs
+        // whose content changed regenerate).
+        if (!controller.signal.aborted) {
+          const dResult = await summarizeAllDirectories(
+            this.queries,
+            client,
+            llmConfig.chatModel!,
+            { signal: controller.signal, concurrency: 1 }
+          );
+          logDebug('Background directory summarisation complete', {
+            candidates: dResult.candidates,
+            generated: dResult.generated,
+            cacheHits: dResult.cacheHits,
+            errors: dResult.errors,
+            durationMs: dResult.durationMs,
+          });
+        }
+
+        // Phase-4: role classification. One short call per symbol;
+        // assigns a coarse label (api_endpoint, business_logic, ...).
+        if (!controller.signal.aborted) {
+          const cResult = await classifyAllRoles(
+            this.queries,
+            client,
+            llmConfig.chatModel!,
+            { signal: controller.signal, concurrency: 2 }
+          );
+          logDebug('Background role classification complete', {
+            candidates: cResult.candidates,
+            classified: cResult.classified,
+            errors: cResult.errors,
+            durationMs: cResult.durationMs,
+          });
+        }
       } catch (err) {
         // Background work must not crash the host process. Worst case
         // is no summaries — the rest of codegraph still works.
@@ -766,6 +814,125 @@ export class CodeGraph {
   getSymbolSummaries(nodeIds: string[]): Map<string, string> {
     if (nodeIds.length === 0) return new Map();
     return this.queries.getSymbolSummaries(nodeIds);
+  }
+
+  /** Read a single directory's cached LLM summary, or null. */
+  getDirectorySummary(dirPath: string): string | null {
+    return this.queries.getDirectorySummary(dirPath)?.summary ?? null;
+  }
+
+  /** All directory summaries as { dirPath, summary } pairs. */
+  getAllDirectorySummaries(): Array<{ dirPath: string; summary: string }> {
+    return this.queries.getAllDirectorySummaries();
+  }
+
+  /** Bulk-fetch role labels for a set of node ids. */
+  getSymbolRoles(nodeIds: string[]): Map<string, string> {
+    if (nodeIds.length === 0) return new Map();
+    return this.queries.getSymbolRoles(nodeIds);
+  }
+
+  /** Find every classified node with a given role. */
+  findNodesByRole(role: RoleLabel, limit = 100): Node[] {
+    return this.queries.findNodesByRole(role, limit);
+  }
+
+  /** Counts of symbols per role (for status display). */
+  getRoleCounts(): Map<string, number> {
+    return this.queries.getRoleCounts();
+  }
+
+  // ===========================================================================
+  // Agent-as-LLM bridge (works without a local LLM)
+  // ===========================================================================
+
+  /**
+   * Pull a batch of un-summarised symbols (with bodies + content_hash)
+   * for an external agent — typically the AI assistant currently in
+   * the user's session — to summarise. The agent then calls
+   * {@link saveAgentSummaries} to persist its results.
+   *
+   * Designed for users without a local LLM. The cache shape is
+   * identical to the local-pass output, so both paths can coexist.
+   */
+  pendingSummariesBatch(options: { limit?: number; modelHint?: string } = {}): PendingBatch {
+    return pendingSummariesBatch(this.projectRoot, this.queries, options);
+  }
+
+  /**
+   * Persist a batch of agent-generated summaries. Re-validates the
+   * content_hash against current disk content to guard against
+   * stale answers.
+   */
+  saveAgentSummaries(items: ReadonlyArray<SaveSummaryItem>, modelLabel = 'agent-mcp'): SaveResult {
+    return saveAgentSummaries(this.projectRoot, this.queries, items, modelLabel);
+  }
+
+  /**
+   * Judge potentially-dead symbols. Pre-filters by graph signal
+   * (zero incoming calls + not exported) and asks the LLM to weigh
+   * in on entry points the static graph misses (framework hooks,
+   * dynamic dispatch, public API consumed externally).
+   *
+   * Returns a CANDIDATE list with confidence — not a delete list.
+   * The user always decides.
+   */
+  async findDeadCodeCandidates(options: DeadCodeOptions = {}): Promise<DeadCodeResult> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      throw new Error('No LLM available for dead-code judge.');
+    }
+    const client = new LlmClient(llmConfig);
+    if (!(await client.isReachable())) {
+      throw new Error(`LLM endpoint not reachable at ${llmConfig.endpoint}`);
+    }
+    return judgeDeadCode(this.queries, client, options);
+  }
+
+  /**
+   * Check whether a newly added symbol's name follows the conventions
+   * already established in the codebase for the same kind. Advisory
+   * only — the judge is asked to err on the side of "consistent" when
+   * unsure.
+   *
+   * Designed to be called from a sync hook for each newly added node;
+   * lightweight enough to run a few dozen at a time.
+   */
+  async checkNamingDrift(symbol: {
+    name: string;
+    kind: string;
+    filePath: string;
+  }): Promise<NamingCheckResult> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      throw new Error('No LLM available for naming-drift check.');
+    }
+    const client = new LlmClient(llmConfig);
+    return checkNamingConvention(this.queries, client, symbol);
+  }
+
+  /**
+   * One-shot "what did this change do" intent generator. Designed for
+   * PR-review tooling that supplies the before/after bodies for a
+   * specific symbol. No caching at this layer — caller controls
+   * lifetime and whether to persist.
+   */
+  async summarizeChange(
+    name: string,
+    kind: string,
+    beforeBody: string,
+    afterBody: string,
+    options: ChangeIntentOptions = {}
+  ): Promise<ChangeIntentResult> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      throw new Error('No LLM available for summarizeChange.');
+    }
+    const client = new LlmClient(llmConfig);
+    if (!(await client.isReachable())) {
+      throw new Error(`LLM endpoint not reachable at ${llmConfig.endpoint}`);
+    }
+    return summarizeChange(client, name, kind, beforeBody, afterBody, options);
   }
 
   /**

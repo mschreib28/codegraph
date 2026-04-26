@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 /**
  * Migration definition
@@ -79,6 +79,35 @@ const migrations: Migration[] = [
       db.exec(`
         ALTER TABLE symbol_summaries ADD COLUMN embedding BLOB;
         ALTER TABLE symbol_summaries ADD COLUMN embedding_model TEXT;
+      `);
+    },
+  },
+  {
+    version: 6,
+    description:
+      'Add directory_summaries table for module-level LLM-generated descriptions',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS directory_summaries (
+          dir_path TEXT PRIMARY KEY,
+          summary TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          model TEXT NOT NULL,
+          generated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_dir_summaries_model ON directory_summaries(model);
+      `);
+    },
+  },
+  {
+    version: 7,
+    description:
+      'Add role + role_model columns on symbol_summaries for LLM role classification',
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE symbol_summaries ADD COLUMN role TEXT;
+        ALTER TABLE symbol_summaries ADD COLUMN role_model TEXT;
+        CREATE INDEX IF NOT EXISTS idx_summaries_role ON symbol_summaries(role);
       `);
     },
   },
