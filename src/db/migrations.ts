@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * Migration definition
@@ -68,6 +68,17 @@ const migrations: Migration[] = [
           FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_summaries_model ON symbol_summaries(model);
+      `);
+    },
+  },
+  {
+    version: 5,
+    description:
+      'Add embedding BLOB and embedding_model columns on symbol_summaries for semantic search',
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE symbol_summaries ADD COLUMN embedding BLOB;
+        ALTER TABLE symbol_summaries ADD COLUMN embedding_model TEXT;
       `);
     },
   },

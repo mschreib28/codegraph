@@ -92,13 +92,13 @@ const projectPathProperty: PropertySchema = {
 export const tools: ToolDefinition[] = [
   {
     name: 'codegraph_search',
-    description: 'Quick symbol search by name. Returns locations only (no code). Use codegraph_context instead for comprehensive task context.',
+    description: 'Symbol search. Hybrid by default — blends FTS5 lexical match with cosine similarity over LLM-generated summaries. Falls back to FTS-only when embeddings are not yet available, so this is safe to use universally. Use codegraph_context for comprehensive task context, codegraph_ask for natural-language questions.',
     inputSchema: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: 'Symbol name or partial name (e.g., "auth", "signIn", "UserService")',
+          description: 'Symbol name, partial name, or short concept (e.g., "auth", "signIn", "rate limiting middleware")',
         },
         kind: {
           type: 'string',
@@ -110,9 +110,65 @@ export const tools: ToolDefinition[] = [
           description: 'Maximum results (default: 10)',
           default: 10,
         },
+        mode: {
+          type: 'string',
+          description: 'Ranking mode. "hybrid" (default) blends FTS + semantic; "fts" forces lexical-only.',
+          enum: ['hybrid', 'fts'],
+          default: 'hybrid',
+        },
         projectPath: projectPathProperty,
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'codegraph_ask',
+    description: 'Ask a natural-language question about the codebase. Hybrid-retrieves the top-K most relevant symbols (lexical + semantic match over LLM summaries), then asks the configured chat model. Use this for "how does X work?" questions; use codegraph_search for "what is the symbol named X" questions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          description: 'Natural-language question (e.g. "how does the file watcher decide when to sync?")',
+        },
+        retrieveK: {
+          type: 'number',
+          description: 'Number of candidate symbols to feed the model as context (default 12)',
+          default: 12,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'codegraph_similar',
+    description: 'Find symbols whose summary semantics are similar to a given symbol. Useful for "show me the other implementations of this concept", including across languages in polyglot repos. Requires the source symbol to already have an embedding.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'Source symbol name to find similar items for',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum results (default: 10)',
+          default: 10,
+        },
+        sameLanguage: {
+          type: 'boolean',
+          description: 'Restrict to the same language as the source symbol',
+          default: false,
+        },
+        differentLanguage: {
+          type: 'boolean',
+          description: 'Restrict to a different language from the source (cross-language matching)',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['symbol'],
     },
   },
   {
@@ -411,6 +467,10 @@ export class ToolHandler {
       switch (toolName) {
         case 'codegraph_search':
           return await this.handleSearch(args);
+        case 'codegraph_ask':
+          return await this.handleAsk(args);
+        case 'codegraph_similar':
+          return await this.handleSimilar(args);
         case 'codegraph_context':
           return await this.handleContext(args);
         case 'codegraph_callers':
@@ -436,7 +496,12 @@ export class ToolHandler {
   }
 
   /**
-   * Handle codegraph_search
+   * Handle codegraph_search.
+   *
+   * `mode: 'hybrid'` (default) blends FTS + semantic via RRF when
+   * embeddings are available, otherwise falls back to pure FTS. Use
+   * `mode: 'fts'` to force lexical-only or `mode: 'semantic'` for
+   * embedding-only when you want predictable ordering.
    */
   private async handleSearch(args: Record<string, unknown>): Promise<ToolResult> {
     const query = this.validateString(args.query, 'query');
@@ -446,11 +511,17 @@ export class ToolHandler {
     const kind = args.kind as string | undefined;
     const rawLimit = Number(args.limit) || 10;
     const limit = clamp(rawLimit, 1, 100);
+    const mode = (args.mode as string | undefined) ?? 'hybrid';
 
-    const results = cg.searchNodes(query, {
-      limit,
-      kinds: kind ? [kind as NodeKind] : undefined,
-    });
+    const opts = { limit, kinds: kind ? [kind as NodeKind] : undefined };
+    let results: SearchResult[];
+    if (mode === 'fts') {
+      results = cg.searchNodes(query, opts);
+    } else {
+      // hybrid (default) — searchHybrid silently falls back to FTS
+      // when embeddings aren't available, so it's a safe default.
+      results = await cg.searchHybrid(query, opts);
+    }
 
     if (results.length === 0) {
       return this.textResult(`No results found for "${query}"`);
@@ -458,6 +529,101 @@ export class ToolHandler {
 
     const formatted = this.formatSearchResults(results, cg);
     return this.textResult(this.truncateOutput(formatted));
+  }
+
+  /**
+   * Handle codegraph_ask — natural-language Q&A grounded in the
+   * indexed codebase. Hybrid-retrieves relevant symbols, then asks
+   * the configured chat model to synthesise an answer.
+   */
+  private async handleAsk(args: Record<string, unknown>): Promise<ToolResult> {
+    const question = this.validateString(args.question, 'question');
+    if (typeof question !== 'string') return question;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const llmConfig = await cg.getEffectiveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      return this.errorResult(
+        'No LLM available for codegraph_ask. Configure config.llm or run a local Ollama server.'
+      );
+    }
+
+    const retrieveK = clamp(Number(args.retrieveK) || 12, 4, 30);
+    try {
+      const result = await cg.ask(question, { retrieveK });
+      const lines: string[] = [
+        '## Answer',
+        '',
+        result.answer,
+        '',
+        '## Sources',
+        '',
+      ];
+      for (const c of result.citations) {
+        const loc = c.node.startLine ? `:${c.node.startLine}` : '';
+        lines.push(`- **${c.node.name}** (${c.node.kind}) — ${c.node.filePath}${loc}`);
+        if (c.summary) lines.push(`  ${c.summary}`);
+      }
+      lines.push('');
+      lines.push(
+        `_Retrieved ${result.citations.length} symbols in ${result.retrieveMs}ms; chat ${result.chatMs}ms._`
+      );
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    } catch (err) {
+      return this.errorResult(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Handle codegraph_similar — find symbols whose summary embeddings
+   * are nearest to the given symbol's. Useful for semantic
+   * "show me other things like this" queries and cross-language
+   * matching in polyglot repos.
+   */
+  private async handleSimilar(args: Record<string, unknown>): Promise<ToolResult> {
+    const symbol = this.validateString(args.symbol, 'symbol');
+    if (typeof symbol !== 'string') return symbol;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const limit = clamp(Number(args.limit) || 10, 1, 100);
+    const sameLanguage = args.sameLanguage === true;
+    const differentLanguage = args.differentLanguage === true;
+
+    const match = this.findSymbol(cg, symbol);
+    if (!match) {
+      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+    }
+
+    const results = await cg.findSimilar(match.node.id, {
+      limit,
+      sameLanguage,
+      differentLanguage,
+    });
+
+    if (results.length === 0) {
+      const llmConfig = await cg.getEffectiveLlmConfig();
+      const reason = llmConfig?.embeddingModel
+        ? 'No similar symbols above the threshold (the source symbol may not have an embedding yet — try again after the background pass completes).'
+        : 'No embedding model configured. Configure config.llm.embeddingModel or pull a known embedding model into Ollama (e.g. nomic-embed-text).';
+      return this.textResult(reason);
+    }
+
+    const lines: string[] = [
+      `## Similar to ${match.node.name} (${match.node.kind}) — ${match.node.filePath}:${match.node.startLine}`,
+      '',
+    ];
+    const summaries = cg.getSymbolSummaries(results.map((r) => r.node.id));
+    for (const r of results) {
+      const loc = r.node.startLine ? `:${r.node.startLine}` : '';
+      lines.push(
+        `### ${r.node.name} (${r.node.kind})  [score ${r.score.toFixed(3)}, lang ${r.node.language}]`
+      );
+      lines.push(`${r.node.filePath}${loc}`);
+      const summary = summaries.get(r.node.id);
+      if (summary) lines.push(`> ${summary}`);
+      lines.push('');
+    }
+    return this.textResult(this.truncateOutput(lines.join('\n')));
   }
 
   /**

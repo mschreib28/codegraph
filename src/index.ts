@@ -51,6 +51,8 @@ import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
 import { LlmClient, LlmEndpointConfig } from './llm/client';
 import { summarizeAll, SUMMARIZABLE_KINDS } from './llm/summarizer';
+import { embedAllSummaries } from './llm/embeddings';
+import { askWithCandidates, AskOptions, AskResult } from './llm/ask';
 import { detectLocalLlm, detectionToConfig } from './llm/detect';
 import { logDebug, logWarn } from './errors';
 
@@ -687,6 +689,23 @@ export class CodeGraph {
           errors: result.errors,
           durationMs: result.durationMs,
         });
+
+        // Phase-2: embed the summaries so semantic search has data.
+        // Only runs when an embedding model is configured/auto-detected.
+        if (llmConfig.embeddingModel && !controller.signal.aborted) {
+          const eResult = await embedAllSummaries(
+            this.queries,
+            client,
+            llmConfig.embeddingModel,
+            { signal: controller.signal, concurrency: 2 }
+          );
+          logDebug('Background embedding complete', {
+            candidates: eResult.candidates,
+            generated: eResult.generated,
+            errors: eResult.errors,
+            durationMs: eResult.durationMs,
+          });
+        }
       } catch (err) {
         // Background work must not crash the host process. Worst case
         // is no summaries — the rest of codegraph still works.
@@ -747,6 +766,39 @@ export class CodeGraph {
   getSymbolSummaries(nodeIds: string[]): Map<string, string> {
     if (nodeIds.length === 0) return new Map();
     return this.queries.getSymbolSummaries(nodeIds);
+  }
+
+  /**
+   * Natural-language Q&A over the codebase. Hybrid-retrieves the
+   * top-K most relevant symbols, builds a context prompt, and asks
+   * the configured/auto-detected chat model.
+   *
+   * Throws if no LLM is reachable. Use {@link getEffectiveLlmConfig}
+   * to check before calling for a graceful UX.
+   */
+  async ask(question: string, options: AskOptions = {}): Promise<AskResult> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      throw new Error(
+        'No LLM available for codegraph_ask. Configure config.llm or run a local Ollama server with a chat model installed.'
+      );
+    }
+    const client = new LlmClient(llmConfig);
+    if (!(await client.isReachable())) {
+      throw new Error(`LLM endpoint not reachable at ${llmConfig.endpoint}`);
+    }
+
+    const k = options.retrieveK ?? 12;
+    const candidates = await this.searchHybrid(question, { limit: k });
+    return askWithCandidates(
+      this.projectRoot,
+      question,
+      candidates,
+      this.queries,
+      client,
+      llmConfig.chatModel,
+      options
+    );
   }
 
   // ===========================================================================
@@ -894,6 +946,118 @@ export class CodeGraph {
    */
   searchNodes(query: string, options?: SearchOptions): SearchResult[] {
     return this.queries.searchNodes(query, options);
+  }
+
+  /**
+   * Hybrid search: blends FTS5 lexical results with cosine semantic
+   * results via Reciprocal Rank Fusion. Falls back to FTS-only when
+   * no embedding model is configured/auto-detected, so callers can
+   * always use this — it just gets smarter as enrichment lands.
+   *
+   * The semantic ranking comes from the LLM-generated symbol summaries
+   * (PR #111) embedded with the auto-detected embedding model
+   * (PR #112 / Phase 0). Cold codebases without summaries fall through
+   * to FTS-only with no quality regression.
+   */
+  async searchHybrid(query: string, options?: SearchOptions): Promise<SearchResult[]> {
+    const limit = options?.limit ?? 20;
+    // Pull a deeper FTS slice than the user wants because RRF blending
+    // needs candidates beyond the first cut.
+    const ftsResults = this.queries.searchNodes(query, { ...options, limit: Math.max(50, limit * 3) });
+
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.embeddingModel) {
+      return ftsResults.slice(0, limit);
+    }
+
+    // Cheap reachability check — if the endpoint is gone we still
+    // have valid FTS results to return rather than failing the call.
+    const client = new LlmClient(llmConfig);
+    if (!(await client.isReachable())) {
+      return ftsResults.slice(0, limit);
+    }
+
+    let queryVec: Float32Array;
+    try {
+      const vecs = await client.embed([query]);
+      if (vecs.length === 0 || !vecs[0]) return ftsResults.slice(0, limit);
+      queryVec = vecs[0];
+    } catch (err) {
+      logDebug('Hybrid search: query embed failed, falling back to FTS', { error: String(err) });
+      return ftsResults.slice(0, limit);
+    }
+
+    const allEmbeddings = this.queries.getAllEmbeddings(llmConfig.embeddingModel);
+    if (allEmbeddings.length === 0) {
+      return ftsResults.slice(0, limit);
+    }
+
+    const { topKByCosine, reciprocalRankFusion } = await import('./llm/embeddings');
+    const semanticHits = topKByCosine(queryVec, allEmbeddings, Math.max(50, limit * 3));
+
+    // Build the two ranking lists for RRF, both keyed by node id.
+    const ftsRanked = ftsResults.map((r) => ({ id: r.node.id }));
+    const semRanked = semanticHits.map((h) => ({ id: h.nodeId }));
+    const fused = reciprocalRankFusion([ftsRanked, semRanked]);
+
+    // Map every id we know about back to a SearchResult. FTS results
+    // already carry node objects; semantic-only hits need a lookup.
+    const known = new Map<string, SearchResult>();
+    for (const r of ftsResults) known.set(r.node.id, r);
+
+    const orderedIds = [...fused.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+    const out: SearchResult[] = [];
+    for (const id of orderedIds) {
+      if (out.length >= limit) break;
+      let result = known.get(id);
+      if (!result) {
+        const node = this.queries.getNodeById(id);
+        if (!node) continue;
+        result = { node, score: fused.get(id) ?? 0 };
+      }
+      out.push(result);
+    }
+    return out;
+  }
+
+  /**
+   * Find symbols whose meaning is similar to a given node, via
+   * embedding cosine. Useful for "show me the other functions doing
+   * the same thing" — including across languages, since summaries
+   * are language-agnostic.
+   */
+  async findSimilar(
+    nodeId: string,
+    options: { limit?: number; sameLanguage?: boolean; differentLanguage?: boolean } = {}
+  ): Promise<SearchResult[]> {
+    const limit = options.limit ?? 10;
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.embeddingModel) return [];
+
+    // Need the source node + its own embedding to compare against.
+    const sourceNode = this.queries.getNodeById(nodeId);
+    if (!sourceNode) return [];
+
+    const all = this.queries.getAllEmbeddings(llmConfig.embeddingModel);
+    const sourceRow = all.find((r) => r.nodeId === nodeId);
+    if (!sourceRow) return [];
+
+    const { bytesToVector, topKByCosine } = await import('./llm/embeddings');
+    const sourceVec = bytesToVector(sourceRow.embedding);
+    // Skip the source itself by filtering after top-k (cheap with a
+    // small post-filter; a larger k+1 lets us guarantee `limit` survivors).
+    const hits = topKByCosine(sourceVec, all, limit + 1).filter((h) => h.nodeId !== nodeId);
+
+    const out: SearchResult[] = [];
+    for (const hit of hits) {
+      if (out.length >= limit) break;
+      const node = this.queries.getNodeById(hit.nodeId);
+      if (!node) continue;
+      if (options.sameLanguage && node.language !== sourceNode.language) continue;
+      if (options.differentLanguage && node.language === sourceNode.language) continue;
+      out.push({ node, score: hit.score });
+    }
+    return out;
   }
 
   // ===========================================================================

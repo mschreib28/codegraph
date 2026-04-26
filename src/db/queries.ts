@@ -1376,6 +1376,71 @@ export class QueryBuilder {
   }
 
   /**
+   * Summaries that are missing an embedding for the given embedding
+   * model (or have one keyed to a different model). These are the
+   * candidates the embedder should run on.
+   *
+   * Joins to nodes only to surface name/signature, which we feed into
+   * the embedding text so search hits match by name + intent.
+   */
+  getEmbeddableSummaries(
+    embeddingModel: string
+  ): Array<{ nodeId: string; name: string; signature: string | null; summary: string }> {
+    const rows = this.db
+      .prepare(
+        `SELECT s.node_id AS node_id, n.name AS name, n.signature AS signature, s.summary AS summary
+         FROM symbol_summaries s
+         JOIN nodes n ON n.id = s.node_id
+         WHERE s.embedding IS NULL
+            OR s.embedding_model IS NULL
+            OR s.embedding_model != ?`
+      )
+      .all(embeddingModel) as Array<{
+      node_id: string;
+      name: string;
+      signature: string | null;
+      summary: string;
+    }>;
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      name: r.name,
+      signature: r.signature,
+      summary: r.summary,
+    }));
+  }
+
+  /**
+   * Bulk fetch every summary's embedding for the active model. Used by
+   * the in-process semantic search scan. Cheap because BLOBs are
+   * already byte-aligned in SQLite.
+   */
+  getAllEmbeddings(
+    embeddingModel: string
+  ): Array<{ nodeId: string; embedding: Buffer }> {
+    const rows = this.db
+      .prepare(
+        `SELECT node_id, embedding FROM symbol_summaries
+         WHERE embedding IS NOT NULL AND embedding_model = ?`
+      )
+      .all(embeddingModel) as Array<{ node_id: string; embedding: Buffer }>;
+    return rows.map((r) => ({ nodeId: r.node_id, embedding: r.embedding }));
+  }
+
+  /**
+   * Persist an embedding for a previously-summarised symbol. The
+   * caller passes raw Float32 bytes (already L2-normalised).
+   */
+  upsertSymbolEmbedding(nodeId: string, embedding: Buffer | Uint8Array, model: string): void {
+    this.db
+      .prepare(
+        `UPDATE symbol_summaries
+         SET embedding = ?, embedding_model = ?
+         WHERE node_id = ?`
+      )
+      .run(embedding, model, nodeId);
+  }
+
+  /**
    * Stats for `codegraph status`: how much of the index has summaries.
    * `total` counts only nodes that are *eligible* for summarisation —
    * counting parameters/imports/files in the denominator would

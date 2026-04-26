@@ -720,6 +720,51 @@ program
   });
 
 /**
+ * codegraph ask <question> [path]
+ *
+ * Natural-language Q&A over the indexed codebase. Hybrid-retrieves
+ * relevant symbols via FTS+semantic, then asks the configured chat
+ * model. Requires LLM (config.llm or auto-detected Ollama).
+ */
+program
+  .command('ask <question> [path]')
+  .description('Ask a natural-language question about the codebase (requires LLM)')
+  .option('-k, --retrieve-k <n>', 'Number of candidates to feed the model', '12')
+  .option('-q, --quiet', 'Print only the answer (no sources block)')
+  .action(async (question: string, pathArg: string | undefined, options: { retrieveK?: string; quiet?: boolean }) => {
+    const projectPath = resolveProjectPath(pathArg);
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+      const llmConfig = await cg.getEffectiveLlmConfig();
+      if (!llmConfig?.chatModel) {
+        error('No LLM available. Configure config.llm or run a local Ollama server with a chat model installed.');
+        cg.destroy();
+        process.exit(1);
+      }
+      const retrieveK = Math.max(4, Math.min(30, parseInt(options.retrieveK || '12', 10) || 12));
+      const result = await cg.ask(question, { retrieveK });
+      console.log(result.answer);
+      if (!options.quiet) {
+        console.log('\n' + chalk.dim('Sources:'));
+        for (const c of result.citations) {
+          const loc = c.node.startLine ? `:${c.node.startLine}` : '';
+          console.log(chalk.dim(`  • ${c.node.name} (${c.node.kind}) ${c.node.filePath}${loc}`));
+        }
+        console.log(chalk.dim(`\n  retrieve ${result.retrieveMs}ms · chat ${result.chatMs}ms · model ${llmConfig.chatModel}`));
+      }
+      cg.destroy();
+    } catch (err) {
+      error(`Failed to answer: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * codegraph status [path]
  */
 program

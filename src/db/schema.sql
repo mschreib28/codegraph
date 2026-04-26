@@ -157,6 +157,12 @@ CREATE TABLE IF NOT EXISTS symbol_summaries (
     summary TEXT NOT NULL,
     model TEXT NOT NULL,
     generated_at INTEGER NOT NULL,
+    -- Embeddings of the summary text for semantic search. Float32Array
+    -- bytes (LE), L2-normalised so dot product == cosine similarity.
+    -- NULL until the embedding model is configured/auto-detected.
+    embedding BLOB,
+    embedding_model TEXT,
     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_summaries_model ON symbol_summaries(model);
+CREATE INDEX IF NOT EXISTS idx_summaries_embedding_model ON symbol_summaries(embedding_model);
