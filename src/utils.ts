@@ -175,6 +175,36 @@ export function normalizePath(filePath: string): string {
 }
 
 /**
+ * Split an identifier on camelCase, snake_case, kebab-case, dots, and slashes.
+ * Lowercased; empty tokens dropped. Used to expand identifiers into
+ * searchable subword tokens at FTS index time.
+ *
+ * Examples:
+ *   getParser           -> ['get', 'parser']
+ *   XMLHttpRequest      -> ['xml', 'http', 'request']
+ *   database_connection -> ['database', 'connection']
+ */
+export function splitIdentifierTokens(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')      // camelCase boundary
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')   // XMLHttp -> XML Http
+    .split(/[\s_\-.\/:]+/)
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * Build the value stored in the `name_subwords` FTS column. Includes the
+ * original identifier (preserving exact-match capability via the simple
+ * tokenizer) followed by its split subword tokens, deduped so a
+ * single-word identifier doesn't store the same token twice.
+ */
+export function buildNameSubwords(name: string): string {
+  const tokens = splitIdentifierTokens(name);
+  return [...new Set([name, ...tokens])].join(' ');
+}
+
+/**
  * Cross-process file lock using a lock file with PID tracking.
  *
  * Prevents multiple processes (e.g., git hooks, CLI, MCP server) from

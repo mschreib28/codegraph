@@ -17,8 +17,8 @@ import {
   SearchOptions,
   SearchResult,
 } from '../types';
-import { safeJsonParse } from '../utils';
-import { kindBonus, nameMatchBonus, scorePathRelevance } from '../search/query-utils';
+import { safeJsonParse, buildNameSubwords } from '../utils';
+import { kindBonus, nameMatchBonus, scorePathRelevance, filterStopwords } from '../search/query-utils';
 
 /**
  * Database row types (snake_case from SQLite)
@@ -200,13 +200,13 @@ export class QueryBuilder {
           start_line, end_line, start_column, end_column,
           docstring, signature, visibility,
           is_exported, is_async, is_static, is_abstract,
-          decorators, type_parameters, updated_at
+          decorators, type_parameters, updated_at, name_subwords
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
           @docstring, @signature, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
-          @decorators, @typeParameters, @updatedAt
+          @decorators, @typeParameters, @updatedAt, @nameSubwords
         )
       `);
     }
@@ -245,6 +245,7 @@ export class QueryBuilder {
         decorators: node.decorators ? JSON.stringify(node.decorators) : null,
         typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
         updatedAt: node.updatedAt ?? Date.now(),
+        nameSubwords: buildNameSubwords(node.name),
       });
     } catch (error) {
       throw error;
@@ -287,7 +288,8 @@ export class QueryBuilder {
           is_abstract = @isAbstract,
           decorators = @decorators,
           type_parameters = @typeParameters,
-          updated_at = @updatedAt
+          updated_at = @updatedAt,
+          name_subwords = @nameSubwords
         WHERE id = @id
       `);
     }
@@ -322,6 +324,7 @@ export class QueryBuilder {
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
       updatedAt: node.updatedAt ?? Date.now(),
+      nameSubwords: buildNameSubwords(node.name),
     });
   }
 
@@ -545,30 +548,38 @@ export class QueryBuilder {
   private searchNodesFTS(query: string, options: SearchOptions): SearchResult[] {
     const { kinds, languages, limit = 100, offset = 0 } = options;
 
-    // Add prefix wildcard for better matching (e.g., "auth" matches "AuthService", "authenticate")
-    // Escape special FTS5 characters and add prefix wildcard
-    const ftsQuery = query
-      .replace(/['"*():^]/g, '') // Remove FTS5 special chars
+    // Build the FTS query in three steps:
+    //   1. Strip characters with special meaning to FTS5 and split on whitespace.
+    //   2. Drop FTS5 boolean operators (AND/OR/NOT/NEAR) — prevents user input
+    //      from injecting boolean structure into the OR-join below.
+    //   3. Drop English stopwords for natural-language queries — words like
+    //      "how" / "the" otherwise become OR'd hits against any prose-bearing
+    //      docstring and crowd out the actually-relevant identifier tokens.
+    const rawTerms = query
+      .replace(/['"*():^]/g, '')
       .split(/\s+/)
-      .filter(term => term.length > 0)
-      // Strip FTS5 boolean operators to prevent query manipulation
-      .filter(term => !/^(AND|OR|NOT|NEAR)$/i.test(term))
-      .map(term => `"${term}"*`) // Prefix match each term
+      .filter((term) => term.length > 0)
+      .filter((term) => !/^(AND|OR|NOT|NEAR)$/i.test(term));
+
+    const filteredTerms = filterStopwords(rawTerms);
+
+    const ftsQuery = filteredTerms
+      .map((term) => `"${term}"*`) // Prefix match each term
       .join(' OR ');
 
     if (!ftsQuery) {
       return [];
     }
 
-    // BM25 column weights: id=0, name=20, qualified_name=5, docstring=1, signature=2
-    // Heavy name weight ensures exact/prefix name matches rank above incidental
-    // mentions in long docstrings or qualified names of nested symbols.
-    // Fetch 5x requested limit so post-hoc rescoring (kindBonus, pathRelevance,
-    // nameMatchBonus) can promote results that BM25 alone undervalues.
+    // BM25 column weights: id=0, name=20, qualified_name=5, docstring=1,
+    // signature=2, name_subwords=10. Heavy name weight keeps exact and prefix
+    // name matches above incidental mentions in long docstrings; the new
+    // name_subwords column at 10× lets queries hit subword tokens like
+    // `parser` against `getParser` without burying full-name matches.
     const ftsLimit = Math.max(limit * 5, 100);
 
     let sql = `
-      SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2) as score
+      SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2, 10) as score
       FROM nodes_fts
       JOIN nodes ON nodes_fts.id = nodes.id
       WHERE nodes_fts MATCH ?

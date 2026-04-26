@@ -37,7 +37,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     is_abstract INTEGER DEFAULT 0,
     decorators TEXT, -- JSON array
     type_parameters TEXT, -- JSON array
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    -- Camel/snake-split tokens of `name`, joined by spaces. The default
+    -- FTS5 tokenizer indexes each as a separate term, so a query for
+    -- `parser` finds `getParser` etc. Populated by buildNameSubwords()
+    -- in src/utils.ts on every insert/update.
+    name_subwords TEXT
 );
 
 -- Edges: Relationships between nodes
@@ -94,32 +99,39 @@ CREATE INDEX IF NOT EXISTS idx_nodes_file_line ON nodes(file_path, start_line);
 CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
 
 -- Full-text search index on node names, docstrings, and signatures
+-- The Porter stemmer collapses morphological variants so a query for
+-- `parsing` matches a docstring or subword containing `parser`/`parse`.
+-- This is the largest single quality lift for natural-language queries
+-- (verified empirically: targets that ranked #18-#19 or weren't in the
+-- top 20 jump to the top 5 — see __tests__/search-quality.test.ts).
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     id,
     name,
     qualified_name,
     docstring,
     signature,
+    name_subwords,
     content='nodes',
-    content_rowid='rowid'
+    content_rowid='rowid',
+    tokenize="porter unicode61"
 );
 
 -- Triggers to keep FTS index in sync
 CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature)
-    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, name_subwords)
+    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.name_subwords);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature)
-    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, name_subwords)
+    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.name_subwords);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature)
-    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
-    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature)
-    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, name_subwords)
+    VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.name_subwords);
+    INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, name_subwords)
+    VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.name_subwords);
 END;
 
 -- Edge indexes

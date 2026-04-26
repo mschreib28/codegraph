@@ -5,11 +5,12 @@
  */
 
 import { SqliteDatabase } from './sqlite-adapter';
+import { buildNameSubwords } from '../utils';
 
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * Migration definition
@@ -51,6 +52,77 @@ const migrations: Migration[] = [
     up: (db) => {
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
+      `);
+    },
+  },
+  {
+    version: 4,
+    description: 'Add name_subwords + Porter stemmer to FTS so natural-language and partial-identifier queries work',
+    up: (db) => {
+      // 1. Add the synthetic subwords column to nodes — idempotent so a
+      //    re-run after a partial DDL failure (SQLite auto-commits DDL,
+      //    so only some of these statements may have landed) doesn't fail
+      //    with "duplicate column name".
+      const cols = db.prepare(`PRAGMA table_info(nodes);`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'name_subwords')) {
+        db.exec(`ALTER TABLE nodes ADD COLUMN name_subwords TEXT;`);
+      }
+
+      // 2. Drop the existing FTS table + triggers. We can't ALTER the
+      //    FTS5 tokenizer in place; recreating is the supported path.
+      db.exec(`
+        DROP TRIGGER IF EXISTS nodes_ai;
+        DROP TRIGGER IF EXISTS nodes_ad;
+        DROP TRIGGER IF EXISTS nodes_au;
+        DROP TABLE IF EXISTS nodes_fts;
+      `);
+
+      // 3. Recreate the FTS table — but DO NOT recreate the triggers yet.
+      //    We backfill name_subwords first so the trigger isn't firing on
+      //    UPDATEs against a half-populated FTS shadow table.
+      db.exec(`
+        CREATE VIRTUAL TABLE nodes_fts USING fts5(
+          id, name, qualified_name, docstring, signature, name_subwords,
+          content='nodes',
+          content_rowid='rowid',
+          tokenize="porter unicode61"
+        );
+      `);
+
+      // 4. Backfill name_subwords. Triggers are absent so the UPDATE
+      //    only writes to the nodes table — the FTS index is repopulated
+      //    in one shot below via the FTS5 'rebuild' command.
+      const rows = db
+        .prepare('SELECT id, name FROM nodes')
+        .all() as Array<{ id: string; name: string }>;
+      const update = db.prepare('UPDATE nodes SET name_subwords = ? WHERE id = ?');
+      for (const row of rows) {
+        update.run(buildNameSubwords(row.name), row.id);
+      }
+
+      // 5. Tell the contentless FTS to rebuild its index from the content
+      //    table (nodes). Reads all rows once with the new tokenizer.
+      db.exec(`INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild');`);
+
+      // 6. Now safe to attach the triggers — they'll fire on subsequent
+      //    application writes, not on the backfill we just performed.
+      db.exec(`
+        CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+          INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, name_subwords)
+          VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.name_subwords);
+        END;
+
+        CREATE TRIGGER nodes_ad AFTER DELETE ON nodes BEGIN
+          INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, name_subwords)
+          VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.name_subwords);
+        END;
+
+        CREATE TRIGGER nodes_au AFTER UPDATE ON nodes BEGIN
+          INSERT INTO nodes_fts(nodes_fts, rowid, id, name, qualified_name, docstring, signature, name_subwords)
+          VALUES ('delete', OLD.rowid, OLD.id, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.name_subwords);
+          INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature, name_subwords)
+          VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.name_subwords);
+        END;
       `);
     },
   },
