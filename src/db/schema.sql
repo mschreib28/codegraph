@@ -146,3 +146,17 @@ CREATE TABLE IF NOT EXISTS project_metadata (
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+-- Symbol summaries: one-line LLM-generated descriptions for symbols that
+-- lack docstrings (or whose existing docstring is uninformative).
+-- content_hash invalidates the summary when the symbol body changes,
+-- so a re-index regenerates only what actually changed.
+CREATE TABLE IF NOT EXISTS symbol_summaries (
+    node_id TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    model TEXT NOT NULL,
+    generated_at INTEGER NOT NULL,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_summaries_model ON symbol_summaries(model);

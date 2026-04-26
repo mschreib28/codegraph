@@ -465,6 +465,31 @@ export interface CodeGraphConfig {
   /** Whether to track call sites */
   trackCallSites: boolean;
 
+  /**
+   * Optional local LLM endpoint for value-add features (symbol
+   * summarisation, future Q&A and review-synthesis tools).
+   *
+   * Off by default — codegraph remains FTS-only and zero-dependency
+   * when this is absent. Configure to opt in. Compatible with any
+   * OpenAI-compatible HTTP server: Ollama, llama.cpp, LM Studio, vLLM.
+   *
+   * @example
+   *   "llm": {
+   *     "endpoint": "http://localhost:11434/v1",
+   *     "chatModel": "qwen2.5-coder:32b"
+   *   }
+   */
+  llm?: {
+    endpoint: string;
+    chatModel?: string;
+    embeddingModel?: string;
+    apiKey?: string;
+    /** Per-request timeout in ms. Defaults to 60000. */
+    timeoutMs?: number;
+    /** Auto-summarise indexed symbols in a background pass. Default true when llm is configured. */
+    summarize?: boolean;
+  };
+
   /** Custom symbol patterns to extract */
   customPatterns?: {
     /** Name for this pattern group */

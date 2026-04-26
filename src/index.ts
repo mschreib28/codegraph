@@ -49,6 +49,10 @@ import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
+import { LlmClient, LlmEndpointConfig } from './llm/client';
+import { summarizeAll, SUMMARIZABLE_KINDS } from './llm/summarizer';
+import { detectLocalLlm, detectionToConfig } from './llm/detect';
+import { logDebug, logWarn } from './errors';
 
 // Re-export types for consumers
 export * from './types';
@@ -118,6 +122,14 @@ export interface IndexOptions {
 
   /** Enable verbose logging (worker lifecycle, memory, timeouts) */
   verbose?: boolean;
+
+  /**
+   * After indexing/syncing, kick off LLM symbol summarisation in the
+   * background if a local LLM is configured or auto-detectable.
+   * Defaults to true. Set false in scripts / git hooks where the
+   * caller doesn't want a long-running side effect.
+   */
+  summarize?: boolean;
 }
 
 /**
@@ -144,6 +156,19 @@ export class CodeGraph {
 
   // File watcher for auto-sync on file changes
   private watcher: FileWatcher | null = null;
+
+  // Background LLM summarisation lifecycle
+  private bgSummaryAbort: AbortController | null = null;
+  private bgSummaryPromise: Promise<void> | null = null;
+  // Set when an index/sync completes while a pass is already running.
+  // The active pass checks this on completion and re-queues itself so
+  // newly indexed symbols don't have to wait for the next sync to be
+  // summarised.
+  private bgSummaryDirty: boolean = false;
+  // Auto-detected LLM config (populated lazily on first index/sync when
+  // config.llm is absent). Cached per CodeGraph instance to avoid
+  // probing localhost on every sync.
+  private detectedLlmConfig: LlmEndpointConfig | null | undefined = undefined;
 
   private constructor(
     db: DatabaseConnection,
@@ -325,6 +350,17 @@ export class CodeGraph {
    */
   close(): void {
     this.unwatch();
+    // Cancel any in-flight background summarisation. The signal is
+    // checked between LLM requests; the in-flight HTTP call will
+    // continue running but its result is dropped. Clear our promise
+    // ref synchronously so isSummarizing() reflects cancellation
+    // intent immediately.
+    if (this.bgSummaryAbort) {
+      this.bgSummaryAbort.abort();
+      this.bgSummaryAbort = null;
+    }
+    this.bgSummaryPromise = null;
+    this.bgSummaryDirty = false;
     // Release file lock if held
     this.fileLock.release();
     this.db.close();
@@ -373,7 +409,7 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
-    return this.indexMutex.withLock(async () => {
+    const result = await this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
       } catch {
@@ -407,6 +443,13 @@ export class CodeGraph {
         this.fileLock.release();
       }
     });
+
+    // Fire-and-forget background summarisation. Skipped silently when
+    // no LLM is configured AND none is auto-detectable on localhost.
+    if (result.success && result.filesIndexed > 0 && options.summarize !== false) {
+      void this.startBackgroundSummarization();
+    }
+    return result;
   }
 
   /**
@@ -435,7 +478,7 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
-    return this.indexMutex.withLock(async () => {
+    const result = await this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
       } catch {
@@ -488,6 +531,13 @@ export class CodeGraph {
         this.fileLock.release();
       }
     });
+
+    // Fire-and-forget background summarisation when files actually
+    // changed. No-op on cold sync where nothing was added/modified.
+    if ((result.filesAdded > 0 || result.filesModified > 0) && options.summarize !== false) {
+      void this.startBackgroundSummarization();
+    }
+    return result;
   }
 
   /**
@@ -495,6 +545,208 @@ export class CodeGraph {
    */
   isIndexing(): boolean {
     return this.indexMutex.isLocked();
+  }
+
+  // ===========================================================================
+  // LLM-driven enrichment
+  // ===========================================================================
+
+  /**
+   * Resolve the LLM config to use: explicit config.llm wins; otherwise
+   * probe the conventional Ollama endpoint and cache the result. The
+   * probe is run once per CodeGraph instance — `null` is cached too, so
+   * users without Ollama don't pay the localhost roundtrip on every
+   * sync.
+   *
+   * Pass `forceRedetect: true` when the user has just installed Ollama
+   * and wants codegraph to pick it up without restarting the process.
+   */
+  private async resolveLlmConfig(forceRedetect = false): Promise<LlmEndpointConfig | null> {
+    if (this.config.llm?.endpoint && this.config.llm.chatModel) {
+      return this.config.llm;
+    }
+    if (this.detectedLlmConfig !== undefined && !forceRedetect) {
+      return this.detectedLlmConfig;
+    }
+    try {
+      const detected = await detectLocalLlm();
+      this.detectedLlmConfig = detected ? detectionToConfig(detected) : null;
+      if (detected) {
+        logDebug('Auto-detected local LLM', {
+          endpoint: detected.endpoint,
+          chatModel: detected.chatModel,
+          embeddingModel: detected.embeddingModel,
+        });
+      }
+    } catch (err) {
+      // Detection must never throw into callers — treat any failure as
+      // "no LLM available".
+      this.detectedLlmConfig = null;
+      logDebug('LLM auto-detect failed', { error: String(err) });
+    }
+    return this.detectedLlmConfig;
+  }
+
+  /**
+   * Run a full symbol-summarisation pass over the indexed nodes via the
+   * configured (or auto-detected) local LLM endpoint. Cached per node
+   * by content_hash, so repeated calls only generate new/changed
+   * summaries — first run is the slow one.
+   *
+   * Throws if no LLM is reachable. Use {@link hasLlm} (sync, config
+   * only) or await {@link getEffectiveLlmConfig} (async, includes
+   * auto-detect) before calling.
+   */
+  async summarizeAll(options: {
+    onProgress?: (done: number, total: number) => void;
+    signal?: AbortSignal;
+    concurrency?: number;
+  } = {}): Promise<{ candidates: number; generated: number; cacheHits: number; errors: number; durationMs: number }> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig) {
+      throw new Error(
+        'No LLM available. Configure config.llm.endpoint or run a local Ollama server with a chat model installed.'
+      );
+    }
+    const client = new LlmClient(llmConfig);
+    const reachable = await client.isReachable();
+    if (!reachable) {
+      throw new Error(`LLM endpoint not reachable at ${llmConfig.endpoint}. Is your local server running?`);
+    }
+    return summarizeAll(this.projectRoot, this.queries, client, llmConfig.chatModel!, options);
+  }
+
+  /**
+   * Whether an LLM endpoint is configured in `config.llm`. This is the
+   * synchronous check — it does NOT trigger auto-detection. Callers
+   * that want to know whether summaries are *possible* (config OR
+   * auto-detect) should `await getEffectiveLlmConfig()` instead.
+   */
+  hasLlm(): boolean {
+    return Boolean(this.config.llm?.endpoint && this.config.llm.chatModel);
+  }
+
+  /**
+   * Returns the LLM config that will be used, including auto-detection.
+   * Callers can use this to decide whether to surface LLM-dependent UI
+   * without writing it to disk.
+   */
+  async getEffectiveLlmConfig(): Promise<LlmEndpointConfig | null> {
+    return this.resolveLlmConfig();
+  }
+
+  /**
+   * Kick off a summarisation pass in the background. Returns
+   * immediately — does NOT block the caller. Subsequent calls while
+   * one is already running are no-ops (returns the existing promise).
+   *
+   * The pass is best-effort: errors are logged, never thrown. The
+   * promise resolves either when work completes or when {@link close}
+   * cancels via AbortController.
+   *
+   * Called automatically after `indexAll` and `sync` so the user gets
+   * summaries without having to invoke a CLI command.
+   */
+  startBackgroundSummarization(): Promise<void> {
+    if (this.bgSummaryPromise) {
+      // Mark dirty so the running pass re-queues itself once it
+      // finishes — newly indexed symbols will be picked up without
+      // needing another sync to land.
+      this.bgSummaryDirty = true;
+      return this.bgSummaryPromise;
+    }
+
+    const controller = new AbortController();
+    this.bgSummaryAbort = controller;
+    this.bgSummaryDirty = false;
+
+    const run = async (): Promise<void> => {
+      try {
+        const llmConfig = await this.resolveLlmConfig();
+        if (!llmConfig || controller.signal.aborted) return;
+
+        const client = new LlmClient(llmConfig);
+        if (!(await client.isReachable())) {
+          logDebug('Background summarisation: endpoint went away', {
+            endpoint: llmConfig.endpoint,
+          });
+          return;
+        }
+
+        const result = await summarizeAll(
+          this.projectRoot,
+          this.queries,
+          client,
+          llmConfig.chatModel!,
+          { signal: controller.signal, concurrency: 2 }
+        );
+        logDebug('Background summarisation complete', {
+          candidates: result.candidates,
+          generated: result.generated,
+          cacheHits: result.cacheHits,
+          errors: result.errors,
+          durationMs: result.durationMs,
+        });
+      } catch (err) {
+        // Background work must not crash the host process. Worst case
+        // is no summaries — the rest of codegraph still works.
+        logWarn('Background summarisation failed', { error: String(err) });
+      } finally {
+        // Only clear our refs if we still own them. close() may have
+        // already cancelled and a fresh pass may have been started in
+        // the interim — don't clobber its bookkeeping.
+        if (this.bgSummaryAbort === controller) {
+          this.bgSummaryAbort = null;
+        }
+        if (this.bgSummaryPromise === pending) {
+          this.bgSummaryPromise = null;
+          // Re-queue if more work landed during the pass and we
+          // weren't aborted — gives newly indexed symbols a fast
+          // path without waiting for the next sync.
+          if (this.bgSummaryDirty && !controller.signal.aborted) {
+            this.bgSummaryDirty = false;
+            void this.startBackgroundSummarization();
+          }
+        }
+      }
+    };
+
+    const pending = run();
+    this.bgSummaryPromise = pending;
+    return pending;
+  }
+
+  /** Whether a background summarisation pass is currently running. */
+  isSummarizing(): boolean {
+    return this.bgSummaryPromise !== null;
+  }
+
+  /**
+   * Wait for any background summarisation to finish. Useful in tests
+   * and short-lived CLI invocations that want summaries persisted
+   * before exit.
+   */
+  async awaitBackgroundSummarization(): Promise<void> {
+    if (this.bgSummaryPromise) await this.bgSummaryPromise;
+  }
+
+  /**
+   * Coverage stats: how many indexed symbols have a cached LLM summary.
+   * Surfaces in `codegraph status` and helps users understand why some
+   * tool outputs include summaries and others don't.
+   */
+  getSummaryCoverage(): { total: number; summarised: number } {
+    return this.queries.getSummaryCoverage(SUMMARIZABLE_KINDS);
+  }
+
+  /**
+   * Bulk-fetch cached summaries for a set of node ids. Used by MCP
+   * tools and the CLI to enrich result lists with one-line descriptions
+   * without exposing the database layer.
+   */
+  getSymbolSummaries(nodeIds: string[]): Map<string, string> {
+    if (nodeIds.length === 0) return new Map();
+    return this.queries.getSymbolSummaries(nodeIds);
   }
 
   // ===========================================================================

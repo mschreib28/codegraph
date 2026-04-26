@@ -456,7 +456,7 @@ export class ToolHandler {
       return this.textResult(`No results found for "${query}"`);
     }
 
-    const formatted = this.formatSearchResults(results);
+    const formatted = this.formatSearchResults(results, cg);
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -955,7 +955,7 @@ export class ToolHandler {
       code = await cg.getCode(match.node.id);
     }
 
-    const formatted = this.formatNodeDetails(match.node, code) + match.note;
+    const formatted = this.formatNodeDetails(match.node, code, cg) + match.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -1280,8 +1280,16 @@ export class ToolHandler {
   // Formatting helpers (compact by default to reduce context usage)
   // =========================================================================
 
-  private formatSearchResults(results: SearchResult[]): string {
+  private formatSearchResults(results: SearchResult[], cg?: CodeGraph): string {
     const lines: string[] = [`## Search Results (${results.length} found)`, ''];
+
+    // Bulk-fetch LLM summaries (PR #111) for the result set, against
+    // the *per-request* CodeGraph instance — not `this.cg`, which is
+    // the default project and would surface summaries from the wrong
+    // graph when callers pass `projectPath`.
+    const summaries = cg
+      ? cg.getSymbolSummaries(results.map((r) => r.node.id))
+      : new Map<string, string>();
 
     for (const result of results) {
       const { node } = result;
@@ -1290,6 +1298,8 @@ export class ToolHandler {
       lines.push(`### ${node.name} (${node.kind})`);
       lines.push(`${node.filePath}${location}`);
       if (node.signature) lines.push(`\`${node.signature}\``);
+      const summary = summaries.get(node.id);
+      if (summary) lines.push(`> ${summary}`);
       lines.push('');
     }
 
@@ -1336,7 +1346,7 @@ export class ToolHandler {
     return lines.join('\n');
   }
 
-  private formatNodeDetails(node: Node, code: string | null): string {
+  private formatNodeDetails(node: Node, code: string | null, cg?: CodeGraph): string {
     const location = node.startLine ? `:${node.startLine}` : '';
     const lines: string[] = [
       `## ${node.name} (${node.kind})`,
@@ -1346,6 +1356,15 @@ export class ToolHandler {
 
     if (node.signature) {
       lines.push(`**Signature:** \`${node.signature}\``);
+    }
+
+    // LLM-generated one-liner (PR #111). Falls through silently when
+    // no summary exists for this node. Pulled from the per-request
+    // CodeGraph so cross-project queries return summaries from the
+    // right graph.
+    const summary = cg?.getSymbolSummaries([node.id]).get(node.id);
+    if (summary) {
+      lines.push(`**Summary:** ${summary}`);
     }
 
     // Only include docstring if it's short and useful

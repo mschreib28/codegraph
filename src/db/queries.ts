@@ -1293,6 +1293,107 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM edges');
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
+      this.db.exec('DELETE FROM symbol_summaries');
     })();
+  }
+
+  // ==========================================================================
+  // Symbol Summaries (LLM-generated one-liners; populated by background pass)
+  // ==========================================================================
+
+  /**
+   * Get every symbol whose body is meaningful enough to summarise and
+   * whose existing docstring (if any) is shorter than `docThreshold`
+   * chars. Sorted by file_path so callers iterating in order can warm
+   * the file-content cache.
+   */
+  getSummarizableNodes(
+    kinds: ReadonlySet<string>,
+    minBodyLines: number,
+    docCharThreshold: number
+  ): Node[] {
+    if (kinds.size === 0) return [];
+    const placeholders = [...kinds].map(() => '?').join(',');
+    const sql = `
+      SELECT * FROM nodes
+      WHERE kind IN (${placeholders})
+        AND (end_line - start_line) >= ?
+        AND (docstring IS NULL OR length(docstring) < ?)
+      ORDER BY file_path, start_line
+    `;
+    const params: (string | number)[] = [...kinds, minBodyLines, docCharThreshold];
+    const rows = this.db.prepare(sql).all(...params) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Read a single symbol's cached summary, or null if none exists.
+   */
+  getSymbolSummary(nodeId: string): { summary: string; contentHash: string; model: string } | null {
+    const row = this.db
+      .prepare('SELECT summary, content_hash, model FROM symbol_summaries WHERE node_id = ?')
+      .get(nodeId) as { summary: string; content_hash: string; model: string } | undefined;
+    if (!row) return null;
+    return { summary: row.summary, contentHash: row.content_hash, model: row.model };
+  }
+
+  /**
+   * Bulk fetch summaries for a set of node IDs. Returns a Map keyed by id;
+   * absent entries are nodes without a cached summary.
+   */
+  getSymbolSummaries(nodeIds: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (nodeIds.length === 0) return out;
+    const CHUNK = 500;
+    for (let i = 0; i < nodeIds.length; i += CHUNK) {
+      const chunk = nodeIds.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT node_id, summary FROM symbol_summaries WHERE node_id IN (${placeholders})`)
+        .all(...chunk) as Array<{ node_id: string; summary: string }>;
+      for (const r of rows) out.set(r.node_id, r.summary);
+    }
+    return out;
+  }
+
+  /**
+   * Insert or replace a summary. The unique key is `node_id`; the
+   * content_hash is the consistency anchor that lets the next pass
+   * detect a stale entry and regenerate.
+   */
+  upsertSymbolSummary(nodeId: string, contentHash: string, summary: string, model: string): void {
+    this.db
+      .prepare(`
+        INSERT INTO symbol_summaries (node_id, content_hash, summary, model, generated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET
+          content_hash = excluded.content_hash,
+          summary = excluded.summary,
+          model = excluded.model,
+          generated_at = excluded.generated_at
+      `)
+      .run(nodeId, contentHash, summary, model, Date.now());
+  }
+
+  /**
+   * Stats for `codegraph status`: how much of the index has summaries.
+   * `total` counts only nodes that are *eligible* for summarisation —
+   * counting parameters/imports/files in the denominator would
+   * understate coverage and confuse the user.
+   */
+  getSummaryCoverage(kinds?: ReadonlySet<string>): { total: number; summarised: number } {
+    let total: number;
+    if (kinds && kinds.size > 0) {
+      const placeholders = [...kinds].map(() => '?').join(',');
+      total = (
+        this.db
+          .prepare(`SELECT COUNT(*) AS n FROM nodes WHERE kind IN (${placeholders})`)
+          .get(...kinds) as { n: number }
+      ).n;
+    } else {
+      total = (this.db.prepare('SELECT COUNT(*) AS n FROM nodes').get() as { n: number }).n;
+    }
+    const summarised = (this.db.prepare('SELECT COUNT(*) AS n FROM symbol_summaries').get() as { n: number }).n;
+    return { total, summarised };
   }
 }

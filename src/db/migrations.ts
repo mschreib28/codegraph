@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * Migration definition
@@ -51,6 +51,23 @@ const migrations: Migration[] = [
     up: (db) => {
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
+      `);
+    },
+  },
+  {
+    version: 4,
+    description: 'Add symbol_summaries table for LLM-generated one-line descriptions',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS symbol_summaries (
+          node_id TEXT PRIMARY KEY,
+          content_hash TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          model TEXT NOT NULL,
+          generated_at INTEGER NOT NULL,
+          FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_summaries_model ON symbol_summaries(model);
       `);
     },
   },
