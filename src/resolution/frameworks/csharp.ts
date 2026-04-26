@@ -194,9 +194,9 @@ export const aspnetResolver: FrameworkResolver = {
     const minimalApiPattern = /\.Map(Get|Post|Put|Patch|Delete)\s*\(\s*["']([^"']+)["']/g;
 
     let match;
-    while ((match = minimalApiPattern.exec(content)) !== null) {
+    while ((match = minimalApiPattern.exec(safe)) !== null) {
       const [, method, path] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `route:${filePath}:${method!.toUpperCase()}:${path}:${line}`,

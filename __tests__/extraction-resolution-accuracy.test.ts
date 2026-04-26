@@ -231,6 +231,24 @@ describe('Framework regex no longer matches docstrings/comments (bug #4)', () =>
       expect(names.some((n) => n.includes('/real'))).toBe(true);
       expect(names.some((n) => n.includes('/docfake'))).toBe(false);
     });
+
+    it('skips minimal-API MapGet/MapPost calls inside comments', () => {
+      // Regression: the minimalApiPattern loop below the routePatterns
+      // loop was initially missed when applying the strip helper, leaving
+      // commented-out `app.MapGet("/x")` calls extracted as real routes.
+      const content = [
+        '// app.MapGet("/linefake", h);',
+        '/*',
+        ' * app.MapPost("/blockfake", h);',
+        ' */',
+        'app.MapGet("/real", h);',
+      ].join('\n');
+      const nodes = aspnetResolver.extractNodes!('Program.cs', content);
+      const names = nodes.map((n) => n.name);
+      expect(names.some((n) => n.includes('/real'))).toBe(true);
+      expect(names.some((n) => n.includes('/linefake'))).toBe(false);
+      expect(names.some((n) => n.includes('/blockfake'))).toBe(false);
+    });
   });
 });
 
