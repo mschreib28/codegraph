@@ -465,6 +465,14 @@ export interface CodeGraphConfig {
   /** Whether to track call sites */
   trackCallSites: boolean;
 
+  /**
+   * Mine the file-level co-change graph from git history. Surfaces
+   * coupling between files that change together (sibling extractors,
+   * tests asserting schema state, config-and-consumer pairs) which is
+   * invisible to static analysis. No-op outside git repos. Default true.
+   */
+  enableCoChange?: boolean;
+
   /** Custom symbol patterns to extract */
   customPatterns?: {
     /** Name for this pattern group */
@@ -675,6 +683,7 @@ export const DEFAULT_CONFIG: CodeGraphConfig = {
   maxFileSize: 1024 * 1024, // 1MB
   extractDocstrings: true,
   trackCallSites: true,
+  enableCoChange: true,
 };
 
 // =============================================================================

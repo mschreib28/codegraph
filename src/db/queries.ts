@@ -1293,6 +1293,106 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM edges');
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
+      this.db.exec('DELETE FROM co_changes');
     })();
+  }
+
+  // ===========================================================================
+  // Co-Change (file-level coupling derived from git history)
+  // ===========================================================================
+
+  /**
+   * Apply a batch of mined co-change deltas. Adds `delta` to the existing
+   * count for each pair (UPSERT) and to the `commit_count` for each file.
+   *
+   * Pairs are stored canonically with `file_a < file_b`; callers are
+   * expected to have normalised already, but we sort defensively here too.
+   *
+   * Both updates run inside a single transaction so a partial failure
+   * leaves the totals consistent.
+   */
+  applyCoChangeDeltas(
+    pairDeltas: Iterable<[string, string, number]>,
+    fileCommitDeltas: Iterable<[string, number]>
+  ): void {
+    const upsertPair = this.db.prepare(`
+      INSERT INTO co_changes (file_a, file_b, count) VALUES (?, ?, ?)
+      ON CONFLICT(file_a, file_b) DO UPDATE SET count = count + excluded.count
+    `);
+    const incFileCommit = this.db.prepare(`
+      UPDATE files SET commit_count = commit_count + ? WHERE path = ?
+    `);
+    this.db.transaction(() => {
+      for (const [a, b, delta] of pairDeltas) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        if (lo === hi) continue;
+        upsertPair.run(lo, hi, delta);
+      }
+      for (const [path, delta] of fileCommitDeltas) {
+        incFileCommit.run(delta, path);
+      }
+    })();
+  }
+
+  /**
+   * Drop all co-change rows and zero out per-file commit counts. Called
+   * when the previously-mined HEAD is unreachable (force-push, gc) and
+   * we need to re-mine from scratch.
+   */
+  clearCoChanges(): void {
+    this.db.transaction(() => {
+      this.db.exec('DELETE FROM co_changes');
+      this.db.exec('UPDATE files SET commit_count = 0');
+    })();
+  }
+
+  /**
+   * Get files that historically change together with `filePath`, ranked
+   * by Jaccard coefficient (count / (commits(a) + commits(b) - count)).
+   *
+   * Jaccard normalises away the bias toward frequently-edited files —
+   * a file that changes in every commit (e.g. CHANGELOG) would otherwise
+   * appear coupled to everything.
+   */
+  getCoChangedFiles(
+    filePath: string,
+    options: { limit?: number; minCount?: number; minJaccard?: number } = {}
+  ): Array<{ path: string; count: number; jaccard: number }> {
+    const limit = options.limit ?? 10;
+    const minCount = options.minCount ?? 2;
+    const minJaccard = options.minJaccard ?? 0;
+    // Single SQL query unions both directions of the symmetric pair table,
+    // joins each partner to its own commit_count for Jaccard, then filters
+    // and limits in SQL — minJaccard must be applied before the LIMIT so
+    // we don't silently drop high-Jaccard pairs ranked beyond limit*N.
+    const sql = `
+      WITH partners AS (
+        SELECT file_b AS path, count FROM co_changes WHERE file_a = ?
+        UNION ALL
+        SELECT file_a AS path, count FROM co_changes WHERE file_b = ?
+      ),
+      anchor AS (SELECT commit_count AS c FROM files WHERE path = ?),
+      scored AS (
+        SELECT
+          p.path AS path,
+          p.count AS count,
+          CAST(p.count AS REAL) / NULLIF((SELECT c FROM anchor) + f.commit_count - p.count, 0) AS jaccard
+        FROM partners p
+        JOIN files f ON f.path = p.path
+        WHERE p.count >= ?
+      )
+      SELECT path, count, jaccard FROM scored
+      WHERE COALESCE(jaccard, 0) >= ?
+      ORDER BY jaccard DESC, count DESC
+      LIMIT ?
+    `;
+    const rows = this.db
+      .prepare(sql)
+      .all(filePath, filePath, filePath, minCount, minJaccard, limit) as Array<{
+        path: string;
+        count: number;
+        jaccard: number | null;
+      }>;
+    return rows.map((r) => ({ path: r.path, count: r.count, jaccard: r.jaccard ?? 0 }));
   }
 }

@@ -49,6 +49,7 @@ import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
+import { mineCoChanges, LAST_MINED_HEAD_KEY } from './cochange';
 
 // Re-export types for consumers
 export * from './types';
@@ -402,6 +403,12 @@ export class CodeGraph {
           });
         }
 
+        // Mine the file-level co-change graph from git history. Full scan
+        // (sinceSha = null) on indexAll establishes the baseline.
+        if (result.success && this.config.enableCoChange !== false) {
+          this.mineCoChanges(null);
+        }
+
         return result;
       } finally {
         this.fileLock.release();
@@ -483,11 +490,73 @@ export class CodeGraph {
           }
         }
 
+        // Mine new co-changes since the last anchor. Cheap incremental.
+        if (this.config.enableCoChange !== false) {
+          this.mineCoChanges(this.queries.getMetadata(LAST_MINED_HEAD_KEY));
+        }
+
         return result;
       } finally {
         this.fileLock.release();
       }
     });
+  }
+
+  /**
+   * Mine co-change pairs from git history and persist deltas. No-op when
+   * not in a git repo or when there's nothing new since the last anchor.
+   *
+   * Caller is responsible for the surrounding mutex; this is invoked from
+   * within `indexAll` and `sync` which already hold `indexMutex`.
+   */
+  private mineCoChanges(sinceSha: string | null): void {
+    const indexedFiles = new Set(this.queries.getAllFiles().map((f) => f.path));
+    if (indexedFiles.size === 0) return;
+    const result = mineCoChanges(this.projectRoot, indexedFiles, sinceSha);
+    if (!result.currentHead) return; // not a git repo
+
+    if (result.needsFullRescan) {
+      // Last anchor is gone (force-push, gc). Wipe co-change state and
+      // re-mine from the beginning of history so we don't carry stale counts.
+      this.queries.clearCoChanges();
+      const fresh = mineCoChanges(this.projectRoot, indexedFiles, null);
+      if (fresh.pairs.size === 0 && fresh.fileCommits.size === 0) {
+        if (fresh.currentHead) this.queries.setMetadata(LAST_MINED_HEAD_KEY, fresh.currentHead);
+        return;
+      }
+      this.applyMinedCoChanges(fresh);
+      if (fresh.currentHead) this.queries.setMetadata(LAST_MINED_HEAD_KEY, fresh.currentHead);
+      return;
+    }
+
+    if (result.pairs.size > 0 || result.fileCommits.size > 0) {
+      this.applyMinedCoChanges(result);
+    }
+    this.queries.setMetadata(LAST_MINED_HEAD_KEY, result.currentHead);
+  }
+
+  private applyMinedCoChanges(result: { pairs: Map<string, number>; fileCommits: Map<string, number> }): void {
+    const pairDeltas: Array<[string, string, number]> = [];
+    for (const [key, count] of result.pairs) {
+      const [a, b] = key.split('\0');
+      if (a && b) pairDeltas.push([a, b, count]);
+    }
+    const fileCommitDeltas: Array<[string, number]> = [...result.fileCommits.entries()];
+    this.queries.applyCoChangeDeltas(pairDeltas, fileCommitDeltas);
+  }
+
+  /**
+   * Get files coupled to `filePath` via shared git commit history.
+   * Surfaces hidden coupling that static analysis can't see.
+   *
+   * @param filePath  Anchor file (relative to project root, forward slashes).
+   * @param options   See {@link QueryBuilder.getCoChangedFiles}.
+   */
+  getCoChangedFiles(
+    filePath: string,
+    options: { limit?: number; minCount?: number; minJaccard?: number } = {}
+  ): Array<{ path: string; count: number; jaccard: number }> {
+    return this.queries.getCoChangedFiles(filePath, options);
   }
 
   /**

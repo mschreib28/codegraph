@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * Migration definition
@@ -52,6 +52,34 @@ const migrations: Migration[] = [
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
       `);
+    },
+  },
+  {
+    version: 4,
+    description: 'Add co-change graph: per-file commit_count + co_changes table',
+    up: (db) => {
+      // Idempotent guard: re-running after a partial DDL failure (SQLite
+      // auto-commits DDL even inside a JS transaction wrapper) must not
+      // fail with "duplicate column name".
+      const cols = db.prepare(`PRAGMA table_info(files);`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'commit_count')) {
+        db.exec(`ALTER TABLE files ADD COLUMN commit_count INTEGER NOT NULL DEFAULT 0;`);
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS co_changes (
+          file_a TEXT NOT NULL,
+          file_b TEXT NOT NULL,
+          count INTEGER NOT NULL,
+          PRIMARY KEY (file_a, file_b),
+          CHECK (file_a < file_b)
+        );
+        CREATE INDEX IF NOT EXISTS idx_co_changes_a ON co_changes(file_a);
+        CREATE INDEX IF NOT EXISTS idx_co_changes_b ON co_changes(file_b);
+      `);
+      // Per-file commit_count and the co_changes rows are populated by the
+      // co-change miner on next indexAll/sync. No backfill at migration
+      // time (would require shelling out to git from inside a SQLite
+      // transaction, which we deliberately avoid).
     },
   },
 ];
