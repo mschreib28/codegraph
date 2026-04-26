@@ -34,8 +34,10 @@ function fileUriToPath(uri: string): string {
     }
     return path.resolve(filePath);
   } catch {
-    // Fallback for non-standard URIs
-    return uri.replace(/^file:\/\/\/?/, '');
+    // Fallback for non-standard URIs — still resolve through path.resolve
+    // so a malformed `file:///../etc/passwd` is normalized rather than
+    // returned raw to downstream filesystem code.
+    return path.resolve(uri.replace(/^file:\/\/\/?/, ''));
   }
 }
 

@@ -123,6 +123,36 @@ export function isPathWithinRoot(filePath: string, rootDir: string): boolean {
 }
 
 /**
+ * Like validatePathWithinRoot but also resolves symlinks via fs.realpathSync,
+ * so a regular-looking path that is actually a symlink to outside the root
+ * is rejected. Returns the resolved real path, or null if the file escapes
+ * the root or can't be reached.
+ *
+ * Costs an extra realpath syscall vs. the lexical-only check, so prefer
+ * validatePathWithinRoot for hot paths where symlink TOCTOU isn't relevant.
+ */
+export function validatePathWithinRootReal(projectRoot: string, filePath: string): string | null {
+  const resolved = path.resolve(projectRoot, filePath);
+  const normalizedRoot = path.resolve(projectRoot);
+  if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
+    return null;
+  }
+  try {
+    const realPath = fs.realpathSync(resolved);
+    const realRoot = fs.realpathSync(normalizedRoot);
+    if (!realPath.startsWith(realRoot + path.sep) && realPath !== realRoot) {
+      return null;
+    }
+    return realPath;
+  } catch {
+    // realpath failures (broken symlink, permissions) — return the lexically-
+    // resolved path. The downstream readFileSync will fail naturally and the
+    // caller already handles read errors.
+    return resolved;
+  }
+}
+
+/**
  * Like isPathWithinRoot but also resolves symlinks via fs.realpathSync.
  *
  * This catches symlink escapes where the logical path appears to be within
@@ -172,6 +202,43 @@ export function clamp(value: number, min: number, max: number): number {
  */
 export function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, '/');
+}
+
+/**
+ * Convert a simple `*` / `?` / `**` glob to a safe regex source string.
+ *
+ * Hardens against catastrophic backtracking: consecutive `*` are coalesced
+ * to a single wildcard so a hostile input like `*****` doesn't become
+ * `.*.*.*.*.*` (nested quantifiers blow up on long inputs). Returns null
+ * if the input would produce a pathologically long pattern.
+ *
+ * The output is the *body* of the regex (no anchors); callers add `^` / `$`
+ * as appropriate for their use case.
+ */
+export function globToSafeRegex(glob: string): string | null {
+  if (glob.length > 1024) return null;
+  // Single pass: walk character-by-character. When we hit a `*` we look
+  // ahead to coalesce a run, so `**` (any-depth) maps to `.*` and `*` to
+  // `[^/]*` — and a hostile `*****` collapses to a single `.*` rather
+  // than five chained quantifiers (which would catastrophically
+  // backtrack on long inputs).
+  let out = '';
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === '*') {
+      let runLen = 1;
+      while (glob[i + runLen] === '*') runLen++;
+      out += runLen >= 2 ? '.*' : '[^/]*';
+      i += runLen - 1;
+    } else if (ch === '?') {
+      out += '[^/]';
+    } else if (ch && /[.+^${}()|[\]\\]/.test(ch)) {
+      out += '\\' + ch;
+    } else if (ch) {
+      out += ch;
+    }
+  }
+  return out;
 }
 
 /**
