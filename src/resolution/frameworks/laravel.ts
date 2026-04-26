@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../../utils';
 
 /**
  * Laravel facade mappings to underlying classes
@@ -93,6 +94,7 @@ export const laravelResolver: FrameworkResolver = {
   extractNodes(filePath: string, content: string): Node[] {
     const nodes: Node[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'php');
 
     // Extract route definitions
     const routePatterns = [
@@ -106,10 +108,10 @@ export const laravelResolver: FrameworkResolver = {
 
     for (const pattern of routePatterns) {
       let match;
-      while ((match = pattern.exec(content)) !== null) {
+      while ((match = pattern.exec(safe)) !== null) {
         if (pattern.source.includes('resource')) {
           const [, resourceName] = match;
-          const line = content.slice(0, match.index).split('\n').length;
+          const line = safe.slice(0, match.index).split('\n').length;
           nodes.push({
             id: `route:${filePath}:resource:${resourceName}:${line}`,
             kind: 'route',
@@ -125,7 +127,7 @@ export const laravelResolver: FrameworkResolver = {
           });
         } else {
           const [, method, path] = match;
-          const line = content.slice(0, match.index).split('\n').length;
+          const line = safe.slice(0, match.index).split('\n').length;
           nodes.push({
             id: `route:${filePath}:${method!.toUpperCase()}:${path}:${line}`,
             kind: 'route',

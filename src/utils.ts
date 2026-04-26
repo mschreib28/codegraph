@@ -175,6 +175,135 @@ export function normalizePath(filePath: string): string {
 }
 
 /**
+ * Strip a leading UTF-8 BOM (U+FEFF) if present.
+ *
+ * Editors disagree about whether to write the BOM. Without normalization
+ * the same logical content hashes to two different values depending on
+ * which editor last touched the file, producing spurious "modified"
+ * detections on every sync.
+ */
+export function stripBom(content: string): string {
+  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+}
+
+/**
+ * Replace every non-newline character in `text` with a space. Preserves
+ * line count and column offsets so subsequent regex matches against the
+ * processed content map back to the same line numbers in the original.
+ */
+function blankPreservingNewlines(text: string): string {
+  return text.replace(/[^\n]/g, ' ');
+}
+
+/**
+ * Comment / docstring patterns to neutralize before applying coarse-grained
+ * regex extraction (e.g., framework route decorators). The goal is to
+ * prevent commented-out examples and docstring snippets from being
+ * extracted as real code constructs, without rebuilding a full lexer.
+ *
+ * For each language we strip:
+ *   - Block comments (preserve newlines so line numbers stay correct).
+ *   - Whole-line single-line comments (only when the line contains nothing
+ *     but optional whitespace before the marker — this avoids corrupting
+ *     string literals on the same line).
+ *   - Python triple-quoted strings (the common docstring carrier).
+ *
+ * We deliberately do NOT strip arbitrary string literals — that risks
+ * removing legitimate route paths the regex needs to see.
+ */
+const BLOCK_COMMENT_LANGUAGES = new Set([
+  'javascript', 'typescript', 'tsx', 'jsx',
+  'java', 'csharp', 'cpp', 'c',
+  'go', 'rust', 'swift', 'kotlin', 'dart', 'scala',
+  'php',
+]);
+
+/**
+ * Per-language line-comment marker as a *line-anchored* prefix regex.
+ * Stateless (no `/g`, no `/m`) so it can be reused across many `.test`
+ * calls without regex-state pitfalls.
+ */
+const LINE_COMMENT_MARKER: Record<string, RegExp> = {
+  javascript: /^[ \t]*\/\//,
+  typescript: /^[ \t]*\/\//,
+  tsx: /^[ \t]*\/\//,
+  jsx: /^[ \t]*\/\//,
+  java: /^[ \t]*\/\//,
+  csharp: /^[ \t]*\/\//,
+  cpp: /^[ \t]*\/\//,
+  c: /^[ \t]*\/\//,
+  go: /^[ \t]*\/\//,
+  rust: /^[ \t]*\/\//,
+  swift: /^[ \t]*\/\//,
+  kotlin: /^[ \t]*\/\//,
+  dart: /^[ \t]*\/\//,
+  scala: /^[ \t]*\/\//,
+  pascal: /^[ \t]*\/\//,
+  python: /^[ \t]*#/,
+  ruby: /^[ \t]*#/,
+  php: /^[ \t]*(?:\/\/|#)/,
+};
+
+/**
+ * Best-effort comment stripper for use before coarse-grained regex
+ * extraction. Returns content with comments and (for Python) triple-quoted
+ * strings replaced by spaces — newlines preserved so line/column offsets
+ * derived from the result still map onto the original file.
+ *
+ * Languages without an entry are returned unchanged.
+ */
+export function stripCommentsForRegex(content: string, language: string): string {
+  let out = content;
+
+  if (BLOCK_COMMENT_LANGUAGES.has(language)) {
+    out = out.replace(/\/\*[\s\S]*?\*\//g, blankPreservingNewlines);
+  }
+  if (language === 'python') {
+    out = out.replace(/"""[\s\S]*?"""/g, blankPreservingNewlines);
+    out = out.replace(/'''[\s\S]*?'''/g, blankPreservingNewlines);
+  }
+  if (language === 'ruby') {
+    out = out.replace(/^=begin\b[\s\S]*?^=end\b[^\n]*/gm, blankPreservingNewlines);
+  }
+
+  const lineMarker = LINE_COMMENT_MARKER[language];
+  if (lineMarker) {
+    // Walk lines; replace any line that starts with optional whitespace
+    // then the marker. Done line-at-a-time so we never touch content
+    // inside string literals on other lines.
+    out = out
+      .split('\n')
+      .map((line) => (lineMarker.test(line) ? blankPreservingNewlines(line) : line))
+      .join('\n');
+  }
+
+  return out;
+}
+
+/**
+ * Strip lines that are entirely a single-line comment for the given
+ * language, replacing them with empty lines. Preserves line numbers so
+ * tree-sitter node positions stay correct.
+ *
+ * Used by the parser-retry "shrink the file" fallback. Unlike
+ * {@link stripCommentsForRegex} this does NOT strip block comments or
+ * docstrings — the goal is to remove the easiest dead weight (e.g.
+ * compiler test files dominated by `# CHECK:` / `// CHECK:` lines)
+ * without risking semantic changes.
+ *
+ * Returns content unchanged for languages without a known line-comment
+ * marker.
+ */
+export function stripCommentLinesForRetry(content: string, language: string): string {
+  const marker = LINE_COMMENT_MARKER[language];
+  if (!marker) return content;
+  return content
+    .split('\n')
+    .map((line) => (marker.test(line) ? '' : line))
+    .join('\n');
+}
+
+/**
  * Cross-process file lock using a lock file with PID tracking.
  *
  * Prevents multiple processes (e.g., git hooks, CLI, MCP server) from

@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../../utils';
 
 export const rustResolver: FrameworkResolver = {
   name: 'rust',
@@ -74,15 +75,18 @@ export const rustResolver: FrameworkResolver = {
   extractNodes(filePath: string, content: string): Node[] {
     const nodes: Node[] = [];
     const now = Date.now();
+    // Strip `//` and `/* */` comments so doc-comment examples like
+    // `/// #[get("/x")]` aren't treated as real route attributes.
+    const safe = stripCommentsForRegex(content, 'rust');
 
     // Extract Actix-web routes
     // #[get("/path")], #[post("/path")], etc.
     const actixRoutePattern = /#\[(get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']/g;
 
     let match;
-    while ((match = actixRoutePattern.exec(content)) !== null) {
+    while ((match = actixRoutePattern.exec(safe)) !== null) {
       const [, method, path] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `route:${filePath}:${method!.toUpperCase()}:${path}:${line}`,
@@ -103,9 +107,9 @@ export const rustResolver: FrameworkResolver = {
     // #[get("/path")], #[post("/path", ...)]
     const rocketRoutePattern = /#\[(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["']/g;
 
-    while ((match = rocketRoutePattern.exec(content)) !== null) {
+    while ((match = rocketRoutePattern.exec(safe)) !== null) {
       const [, method, path] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       // Avoid duplicates from actix pattern
       const routeId = `route:${filePath}:${method!.toUpperCase()}:${path}:${line}`;
@@ -130,9 +134,9 @@ export const rustResolver: FrameworkResolver = {
     // .route("/path", get(handler))
     const axumRoutePattern = /\.route\s*\(\s*["']([^"']+)["']\s*,\s*(get|post|put|patch|delete)/g;
 
-    while ((match = axumRoutePattern.exec(content)) !== null) {
+    while ((match = axumRoutePattern.exec(safe)) !== null) {
       const [, path, method] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `route:${filePath}:${method!.toUpperCase()}:${path}:${line}`,
