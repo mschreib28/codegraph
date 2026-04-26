@@ -49,6 +49,7 @@ import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
+import { isTestFile, findTestSubjects } from './tests-edges';
 
 // Re-export types for consumers
 export * from './types';
@@ -382,6 +383,13 @@ export class CodeGraph {
       try {
         const result = await this.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
 
+        // Build convention-based test→subject edges. Cheap (one pass over
+        // file list, no parsing) and gives `getTestsForFile` / `getSubjectsOfTest`
+        // a one-call lookup that previously required grepping the codebase.
+        if (result.success && result.filesIndexed > 0) {
+          this.rebuildTestEdges();
+        }
+
         // Resolve references to create call/import/extends edges
         if (result.success && result.filesIndexed > 0) {
           // Get count without loading all refs into memory
@@ -483,11 +491,113 @@ export class CodeGraph {
           }
         }
 
+        // Refresh test→subject edges. Cheap incremental: only test files
+        // among the changed set have their outgoing `tests` edges replaced.
+        // Subject-file content changes don't invalidate edges (they point
+        // by file path, not symbol). File deletions are handled by the
+        // FK CASCADE on the file node.
+        //
+        // Known limitation: a subject file added without its test file
+        // changing won't trigger re-resolution of an existing test that
+        // previously had no resolvable subject. The test will pick up the
+        // edge on the next full indexAll. Acceptable: the alternative
+        // (re-resolve every test on every sync) would defeat incremental.
+        if (result.changedFilePaths) {
+          // Filter out deleted test files — their nodes (and edges) are
+          // already gone via FK CASCADE; no point re-resolving them
+          // against an `allFiles` set that no longer contains them.
+          const stillTracked = new Set(this.queries.getAllFiles().map((f) => f.path));
+          const changedTests = result.changedFilePaths
+            .filter(isTestFile)
+            .filter((p) => stillTracked.has(p));
+          if (changedTests.length > 0) this.rebuildTestEdgesForFiles(changedTests);
+        } else if (result.filesAdded > 0 || result.filesModified > 0) {
+          // No git fast path — rebuild everything (matches the existing
+          // resolution path's fallback behavior in the same branch above).
+          this.rebuildTestEdges();
+        }
+
         return result;
       } finally {
         this.fileLock.release();
       }
     });
+  }
+
+  /**
+   * Rebuild every `tests` edge in the database from the current file set.
+   * Idempotent; safe to call any number of times.
+   */
+  private rebuildTestEdges(): void {
+    const allFiles = this.queries.getAllFiles();
+    const allFilePaths = new Set(allFiles.map((f) => f.path));
+    const testPaths = allFiles.map((f) => f.path).filter(isTestFile);
+    this.queries.deleteAllEdgesByKind('tests');
+    this.insertTestEdgesFor(testPaths, allFilePaths);
+  }
+
+  /**
+   * Refresh `tests` edges only for the given test files. Used by sync to
+   * avoid re-walking the entire file set when only a few tests changed.
+   */
+  private rebuildTestEdgesForFiles(testFilePaths: string[]): void {
+    const allFiles = this.queries.getAllFiles();
+    const allFilePaths = new Set(allFiles.map((f) => f.path));
+    for (const tf of testFilePaths) {
+      this.queries.deleteEdgesBySourceAndKind(`file:${tf}`, 'tests');
+    }
+    this.insertTestEdgesFor(testFilePaths, allFilePaths);
+  }
+
+  private insertTestEdgesFor(testFilePaths: string[], allFilePaths: Set<string>): void {
+    const edges: Edge[] = [];
+    for (const tf of testFilePaths) {
+      const subjects = findTestSubjects(tf, allFilePaths);
+      for (const subject of subjects) {
+        edges.push({
+          source: `file:${tf}`,
+          target: `file:${subject}`,
+          kind: 'tests',
+        });
+      }
+    }
+    if (edges.length > 0) this.queries.insertEdges(edges);
+  }
+
+  /**
+   * Get the test files that test `filePath` (incoming `tests` edges).
+   *
+   * Returns the file records of tests whose convention-based subject
+   * resolution pointed to `filePath`. Empty array if no tests cover it.
+   */
+  getTestsForFile(filePath: string): FileRecord[] {
+    const incoming = this.queries.getIncomingEdges(`file:${filePath}`, ['tests']);
+    const paths = incoming
+      .map((e) => e.source)
+      .filter((id): id is string => id.startsWith('file:'))
+      .map((id) => id.slice('file:'.length));
+    return paths
+      .map((p) => this.queries.getFileByPath(p))
+      .filter((f): f is FileRecord => f !== null);
+  }
+
+  /**
+   * Get the subject file(s) of a test file (outgoing `tests` edges).
+   *
+   * For a single-subject test file (`foo.test.ts` testing `foo.ts`) this
+   * returns one file. Feature-themed tests with no obvious subject return
+   * an empty array — convention-based resolution honestly declines to
+   * guess rather than picking one of many candidates.
+   */
+  getSubjectsOfTest(testFilePath: string): FileRecord[] {
+    const outgoing = this.queries.getOutgoingEdges(`file:${testFilePath}`, ['tests']);
+    const paths = outgoing
+      .map((e) => e.target)
+      .filter((id): id is string => id.startsWith('file:'))
+      .map((id) => id.slice('file:'.length));
+    return paths
+      .map((p) => this.queries.getFileByPath(p))
+      .filter((f): f is FileRecord => f !== null);
   }
 
   /**
