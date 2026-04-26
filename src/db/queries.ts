@@ -1658,7 +1658,7 @@ export class QueryBuilder {
            model = excluded.model,
            generated_at = excluded.generated_at`
       )
-      .run(dirPath, contentHash, summary, model, Date.now());
+      .run(dirPath, summary, contentHash, model, Date.now());
   }
 
   /**

@@ -169,6 +169,32 @@ export function debounce(fn: () => void, ms: number): () => void {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it('directory summary text round-trips correctly (column-order regression)', async () => {
+    // The fake server returns "Coordinates a small module..." for the
+    // dir-summarizer prompt. If the SQL bind order is wrong we'd see a
+    // hex content_hash come back instead of that paragraph.
+    const cg = await CodeGraph.init(tempDir, {
+      config: {
+        llm: { endpoint: fake.url, chatModel: 'qwen2.5-coder:7b' },
+      },
+    });
+    try {
+      await cg.indexAll();
+      await cg.awaitBackgroundSummarization();
+
+      const all = cg.getAllDirectorySummaries();
+      expect(all.length).toBeGreaterThan(0);
+      for (const { summary } of all) {
+        // Summaries must be prose, not 32-char hex (which would be
+        // a content_hash bleeding into the wrong column).
+        expect(summary).not.toMatch(/^[0-9a-f]{32}$/);
+        expect(summary.length).toBeGreaterThan(20);
+      }
+    } finally {
+      cg.close();
+    }
+  });
+
   it('background pass writes directory summaries and role labels', async () => {
     const cg = await CodeGraph.init(tempDir, {
       config: {
