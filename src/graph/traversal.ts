@@ -8,16 +8,29 @@ import { Node, Edge, Subgraph, TraversalOptions, EdgeKind } from '../types';
 import { QueryBuilder } from '../db/queries';
 
 /**
- * Default traversal options
+ * Default traversal options.
+ *
+ * `maxDepth` is bounded by default — an unbounded depth on a highly connected
+ * graph can grow `visited` and the BFS/DFS frontier well beyond `limit` before
+ * the limit cuts in. Callers who really want unlimited depth can pass
+ * `maxDepth: Infinity` explicitly.
  */
 const DEFAULT_OPTIONS: Required<TraversalOptions> = {
-  maxDepth: Infinity,
+  maxDepth: 10,
   edgeKinds: [],
   nodeKinds: [],
   direction: 'outgoing',
   limit: 1000,
   includeStart: true,
 };
+
+/**
+ * Hard cap on `findPath`'s BFS queue — each queue entry clones the full path
+ * array, so on a dense graph the queue can balloon into millions of entries
+ * before either finding a path or exhausting the search. This bounds the
+ * worst-case memory footprint of a single findPath call.
+ */
+const FIND_PATH_MAX_QUEUE = 100_000;
 
 /**
  * Result of a single traversal step
@@ -548,6 +561,12 @@ export class GraphTraverser {
     ];
 
     while (queue.length > 0) {
+      // Hard ceiling on memory: each queue entry holds a cloned path array,
+      // so a single dense node could push the queue well past nominal otherwise.
+      if (queue.length > FIND_PATH_MAX_QUEUE) {
+        return null;
+      }
+
       const { nodeId, path } = queue.shift()!;
 
       if (nodeId === toId) {

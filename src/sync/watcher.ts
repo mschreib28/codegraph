@@ -177,17 +177,27 @@ export class FileWatcher {
     this.hasChanges = false;
     this.syncing = true;
 
+    let syncFailed = false;
     try {
       const result = await this.syncFn();
       this.onSyncComplete?.(result);
     } catch (err) {
+      syncFailed = true;
       const error = err instanceof Error ? err : new Error(String(err));
       logWarn('Watch sync failed', { error: error.message });
       this.onSyncError?.(error);
     } finally {
       this.syncing = false;
 
-      // If new changes arrived during sync, schedule another
+      // Re-set hasChanges if the sync failed so the dropped batch isn't
+      // forgotten — without this, a transient sync failure leaves the index
+      // stale until a *new* file event happens to retrigger.
+      if (syncFailed) {
+        this.hasChanges = true;
+      }
+
+      // If we have pending changes (either from the failed sync or new
+      // events that arrived during it), schedule another flush.
       if (this.hasChanges && !this.stopped) {
         this.scheduleSync();
       }

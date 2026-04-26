@@ -210,6 +210,19 @@ export function validateEmail(email: string): boolean {
 
       expect(result.nodes.size).toBeLessThanOrEqual(5);
     });
+
+    it('should clamp absurd searchLimit/maxNodes values to safe upper bounds', async () => {
+      // Without clamping, the internal `findNodesByExactName` query would
+      // request `searchLimit * 5` rows — passing 1e9 here would blow out
+      // memory. The call should complete in normal time and not return more
+      // than the hard cap on maxNodes (1000).
+      const result = await cg.findRelevantContext('function', {
+        searchLimit: 1_000_000_000,
+        maxNodes: 1_000_000_000,
+        traversalDepth: 1_000,
+      });
+      expect(result.nodes.size).toBeLessThanOrEqual(1000);
+    });
   });
 
   describe('buildContext()', () => {

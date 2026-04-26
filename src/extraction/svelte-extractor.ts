@@ -135,13 +135,17 @@ export class SvelteExtractor {
       // Detect module script
       const isModule = /context\s*=\s*["']module["']/.test(attrs);
 
-      // Calculate start line of the script content (line after <script>)
+      // The content captured by the regex includes the leading newline that
+      // follows `>`, so the inner extractor sees that newline as line 1 of
+      // its (1-indexed) input and the first real code on line 2. Offset is
+      // therefore the line number where the opening `<script ...>` tag ends
+      // (0-indexed) — adding it to the inner extractor's 1-indexed lines
+      // yields correct 1-indexed positions in the .svelte file.
       const beforeScript = this.source.substring(0, match.index);
       const scriptTagLine = (beforeScript.match(/\n/g) || []).length;
-      // The content starts on the line after the opening <script> tag
       const openingTag = match[0].substring(0, match[0].indexOf('>') + 1);
       const openingTagLines = (openingTag.match(/\n/g) || []).length;
-      const contentStartLine = scriptTagLine + openingTagLines + 1; // 0-indexed line
+      const contentStartLine = scriptTagLine + openingTagLines;
 
       blocks.push({
         content,

@@ -3079,3 +3079,72 @@ describe('Directory Exclusion', () => {
     expect(files.every((f) => !f.includes('vendor'))).toBe(true);
   });
 });
+
+// =============================================================================
+// Svelte line-number regressions (audit fix)
+// =============================================================================
+
+describe('Svelte line numbering', () => {
+  it('reports symbol line numbers relative to the .svelte file, not the script content', () => {
+    // Line 1: <script>
+    // Line 2: function add(a, b) { return a + b; }
+    // Line 3: </script>
+    const code = `<script>\nfunction add(a, b) { return a + b; }\n</script>\n`;
+    const result = extractFromSource('Comp.svelte', code);
+    const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'add');
+    expect(fn).toBeDefined();
+    expect(fn?.startLine).toBe(2);
+  });
+
+  it('handles multi-line opening tags (script with attributes wrapped)', () => {
+    // Line 1: <script
+    // Line 2:   lang="ts">
+    // Line 3: function greet() { return "hi"; }
+    // Line 4: </script>
+    const code = `<script\n  lang="ts">\nfunction greet() { return "hi"; }\n</script>\n`;
+    const result = extractFromSource('Comp.svelte', code);
+    const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'greet');
+    expect(fn).toBeDefined();
+    expect(fn?.startLine).toBe(3);
+  });
+
+  it('preserves correct line numbers when the script block is offset by template lines', () => {
+    // Line 1: <h1>Hello</h1>
+    // Line 2:
+    // Line 3: <script>
+    // Line 4: function bottom() {}
+    // Line 5: </script>
+    const code = `<h1>Hello</h1>\n\n<script>\nfunction bottom() {}\n</script>\n`;
+    const result = extractFromSource('Comp.svelte', code);
+    const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'bottom');
+    expect(fn).toBeDefined();
+    expect(fn?.startLine).toBe(4);
+  });
+
+  it('handles a single-line script block with no internal newline', () => {
+    // Line 1: <script>function inline() { return 1; }</script>
+    const code = `<script>function inline() { return 1; }</script>\n`;
+    const result = extractFromSource('Comp.svelte', code);
+    const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'inline');
+    expect(fn).toBeDefined();
+    expect(fn?.startLine).toBe(1);
+  });
+
+  it('attributes each block correctly when a file has both module and instance scripts', () => {
+    // Line 1: <script context="module">
+    // Line 2: function moduleHelper() {}
+    // Line 3: </script>
+    // Line 4:
+    // Line 5: <script>
+    // Line 6: function instanceHelper() {}
+    // Line 7: </script>
+    const code =
+      `<script context="module">\nfunction moduleHelper() {}\n</script>\n` +
+      `\n<script>\nfunction instanceHelper() {}\n</script>\n`;
+    const result = extractFromSource('Comp.svelte', code);
+    const moduleFn = result.nodes.find((n) => n.kind === 'function' && n.name === 'moduleHelper');
+    const instanceFn = result.nodes.find((n) => n.kind === 'function' && n.name === 'instanceHelper');
+    expect(moduleFn?.startLine).toBe(2);
+    expect(instanceFn?.startLine).toBe(6);
+  });
+});
