@@ -283,6 +283,42 @@ export const tools: ToolDefinition[] = [
       },
     },
   },
+  {
+    name: 'codegraph_review_context',
+    description:
+      'PR REVIEW HELPER: Given a unified diff, return structured context an LLM reviewer needs. Maps each hunk to the symbols it touches and attaches per-symbol callers, callees, impact-radius count, and tests covering the file. Also surfaces co-change warnings — files that historically change together with a changed file but were NOT included in this PR (catches "you changed schema.sql but not migrations.ts" type coupling violations). Returns JSON; the caller does the synthesis.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        diff: {
+          type: 'string',
+          description: 'Unified-diff text (e.g., the output of `git diff`, `gh pr diff <n>`).',
+        },
+        maxCallersPerSymbol: {
+          type: 'number',
+          description: 'Cap callers shown per affected symbol. Default 5.',
+          default: 5,
+        },
+        maxCalleesPerSymbol: {
+          type: 'number',
+          description: 'Cap callees shown per affected symbol. Default 5.',
+          default: 5,
+        },
+        maxCoChangeWarnings: {
+          type: 'number',
+          description: 'Cap co-change warnings per changed file. 0 disables. Default 3.',
+          default: 3,
+        },
+        minCoChangeJaccard: {
+          type: 'number',
+          description: 'Minimum Jaccard for a co-change warning. 0.4 catches meaningful coupling without flooding noise. Default 0.4.',
+          default: 0.4,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['diff'],
+    },
+  },
 ];
 
 /**
@@ -427,6 +463,8 @@ export class ToolHandler {
           return await this.handleStatus(args);
         case 'codegraph_files':
           return await this.handleFiles(args);
+        case 'codegraph_review_context':
+          return await this.handleReviewContext(args);
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
@@ -1266,6 +1304,44 @@ export class ToolHandler {
   }
 
   /**
+   * Handle codegraph_review_context. Returns the review context as
+   * formatted JSON (LLMs parse JSON cleanly; markdown would be
+   * lossier here).
+   */
+  private async handleReviewContext(args: Record<string, unknown>): Promise<ToolResult> {
+    const diff = this.validateString(args.diff, 'diff');
+    if (typeof diff !== 'string') return diff;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const context = cg.buildReviewContext(diff, {
+      maxCallersPerSymbol: args.maxCallersPerSymbol != null
+        ? clamp(Number(args.maxCallersPerSymbol), 0, 50)
+        : undefined,
+      maxCalleesPerSymbol: args.maxCalleesPerSymbol != null
+        ? clamp(Number(args.maxCalleesPerSymbol), 0, 50)
+        : undefined,
+      maxCoChangeWarnings: args.maxCoChangeWarnings != null
+        ? clamp(Number(args.maxCoChangeWarnings), 0, 20)
+        : undefined,
+      minCoChangeJaccard: args.minCoChangeJaccard != null
+        ? clamp(Number(args.minCoChangeJaccard), 0, 1)
+        : undefined,
+    });
+
+    if (context.summary.symbolsAffected === 0 && context.files.length === 0) {
+      return this.textResult(
+        'No indexed symbols overlap the diff hunks. Either the affected files are not indexed, the diff is empty, or it touches files that were added/deleted entirely.'
+      );
+    }
+
+    // Serialize with progressive trimming so the result stays valid JSON
+    // when it would otherwise exceed MAX_OUTPUT_LENGTH. Mid-string slice
+    // would corrupt JSON; trim low-value fields instead.
+    return this.textResult(serializeReviewContextWithinCap(context, MAX_OUTPUT_LENGTH));
+  }
+
+  /**
    * Truncate output if it exceeds the maximum length
    */
   private truncateOutput(text: string): string {
@@ -1376,4 +1452,82 @@ export class ToolHandler {
       isError: true,
     };
   }
+}
+
+/**
+ * Serialize a ReviewContext to JSON within `cap` chars, dropping
+ * lowest-value fields first if needed so the output stays valid JSON
+ * (rather than mid-string-truncating which corrupts the tree).
+ *
+ * Trim order, in escalating severity:
+ *   1. Drop `docstring` from every affected symbol (often the longest field)
+ *   2. Drop `signature`
+ *   3. Cap callers/callees to 2 each
+ *   4. Drop `callers` and `callees` arrays entirely
+ *   5. Truncate the `files` array (oldest first) and add a `_truncated` flag
+ *
+ * If even step 5 doesn't fit, return summary + warnings only.
+ */
+function serializeReviewContextWithinCap(context: unknown, cap: number): string {
+  // Defensively clone so we don't mutate the caller's object.
+  const ctx = JSON.parse(JSON.stringify(context)) as {
+    summary: Record<string, number>;
+    files: Array<{
+      affectedSymbols: Array<{
+        docstring?: string;
+        signature?: string;
+        callers?: unknown[];
+        callees?: unknown[];
+      }>;
+      _truncated?: boolean;
+    }>;
+    coChangeWarnings: unknown[];
+    _truncated?: boolean;
+  };
+
+  const fits = (s: string) => s.length <= cap;
+
+  let json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  // Step 1: drop docstrings.
+  for (const f of ctx.files) for (const s of f.affectedSymbols) delete s.docstring;
+  json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  // Step 2: drop signatures.
+  for (const f of ctx.files) for (const s of f.affectedSymbols) delete s.signature;
+  json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  // Step 3: cap callers/callees to 2.
+  for (const f of ctx.files) for (const s of f.affectedSymbols) {
+    if (Array.isArray(s.callers)) s.callers = s.callers.slice(0, 2);
+    if (Array.isArray(s.callees)) s.callees = s.callees.slice(0, 2);
+  }
+  json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  // Step 4: drop callers/callees entirely.
+  for (const f of ctx.files) for (const s of f.affectedSymbols) {
+    delete s.callers;
+    delete s.callees;
+  }
+  json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  // Step 5: drop files from the end until fits, then mark truncated.
+  while (ctx.files.length > 1) {
+    ctx.files.pop();
+    ctx._truncated = true;
+    json = JSON.stringify(ctx, null, 2);
+    if (fits(json)) return json;
+  }
+
+  // Last resort: summary + warnings only.
+  return JSON.stringify(
+    { summary: ctx.summary, coChangeWarnings: ctx.coChangeWarnings, _truncated: true },
+    null,
+    2
+  );
 }
