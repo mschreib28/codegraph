@@ -340,6 +340,17 @@ export interface SearchOptions {
 
   /** Whether search is case-sensitive */
   caseSensitive?: boolean;
+
+  /**
+   * Cap the number of results from any single file before returning.
+   * Default 3. Set to 0 to disable diversification (return raw ranked
+   * results, even if 10 of them come from the same class). The class /
+   * function / interface members of the same file are usually less
+   * informative as multiple distinct results than as "this file plus
+   * representative members" — diversification surfaces context across
+   * the codebase rather than burying the user in one file's internals.
+   */
+  perFileCap?: number;
 }
 
 /**
