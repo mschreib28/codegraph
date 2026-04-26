@@ -129,6 +129,15 @@ CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
 
+-- Uniqueness for (source, target, kind, line, col). The id column is an
+-- AUTOINCREMENT primary key, so without this index `INSERT OR IGNORE`
+-- would never see a conflict — duplicate edges would silently accumulate
+-- on every re-resolution / re-emission. COALESCE keeps two NULL line/col
+-- values comparable as equal (SQLite treats raw NULLs in a UNIQUE index
+-- as distinct).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique
+  ON edges(source, target, kind, COALESCE(line, -1), COALESCE(col, -1));
+
 -- File indexes
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
