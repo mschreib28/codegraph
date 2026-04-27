@@ -1,60 +1,26 @@
 /**
- * Database Migrations
+ * Database Migrations — runner + backward-compat surface.
  *
- * Schema versioning and migration support.
+ * The migration definitions themselves live in
+ * `./migrations/<NNN>-<name>.ts`, one file per migration, with
+ * version derived from the filename prefix. This file is the
+ * runner (read schema_versions, apply pending in order) and the
+ * stable API surface that the rest of the codebase imports.
+ *
+ * Adding a migration: see `./migrations/index.ts`.
  */
 
 import { SqliteDatabase } from './sqlite-adapter';
+import { ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION as REGISTRY_CURRENT } from './migrations/index';
+import type { Migration } from './migrations/types';
 
 /**
- * Current schema version
+ * Highest registered migration version. Derived from the
+ * registry; re-exported here unchanged so existing consumers
+ * (`import { CURRENT_SCHEMA_VERSION } from './migrations'`) keep
+ * working.
  */
-export const CURRENT_SCHEMA_VERSION = 3;
-
-/**
- * Migration definition
- */
-interface Migration {
-  version: number;
-  description: string;
-  up: (db: SqliteDatabase) => void;
-}
-
-/**
- * All migrations in order
- *
- * Note: Version 1 is the initial schema, handled by schema.sql
- * Future migrations go here.
- */
-const migrations: Migration[] = [
-  {
-    version: 2,
-    description: 'Add project metadata, provenance tracking, and unresolved ref context',
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS project_metadata (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at INTEGER NOT NULL
-        );
-        ALTER TABLE unresolved_refs ADD COLUMN file_path TEXT NOT NULL DEFAULT '';
-        ALTER TABLE unresolved_refs ADD COLUMN language TEXT NOT NULL DEFAULT 'unknown';
-        ALTER TABLE edges ADD COLUMN provenance TEXT DEFAULT NULL;
-        CREATE INDEX IF NOT EXISTS idx_unresolved_file_path ON unresolved_refs(file_path);
-        CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
-      `);
-    },
-  },
-  {
-    version: 3,
-    description: 'Add lower(name) expression index for memory-efficient case-insensitive lookups',
-    up: (db) => {
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
-      `);
-    },
-  },
-];
+export const CURRENT_SCHEMA_VERSION: number = REGISTRY_CURRENT;
 
 /**
  * Get the current schema version from the database
@@ -84,17 +50,14 @@ function recordMigration(db: SqliteDatabase, version: number, description: strin
  * Run all pending migrations
  */
 export function runMigrations(db: SqliteDatabase, fromVersion: number): void {
-  const pending = migrations.filter((m) => m.version > fromVersion);
+  const pending = ALL_MIGRATIONS.filter((m) => m.version > fromVersion);
+  if (pending.length === 0) return;
 
-  if (pending.length === 0) {
-    return;
-  }
+  // ALL_MIGRATIONS is already sorted by version, but filtering can
+  // be cheap to re-confirm.
+  const ordered = [...pending].sort((a, b) => a.version - b.version);
 
-  // Sort by version
-  pending.sort((a, b) => a.version - b.version);
-
-  // Run each migration in a transaction
-  for (const migration of pending) {
+  for (const migration of ordered) {
     db.transaction(() => {
       migration.up(db);
       recordMigration(db, migration.version, migration.description);
@@ -111,13 +74,15 @@ export function needsMigration(db: SqliteDatabase): boolean {
 }
 
 /**
- * Get list of pending migrations
+ * Get list of pending migrations.
+ *
+ * Returned as a fresh mutable array (not the underlying readonly
+ * registry) so callers that previously assigned the result to a
+ * `Migration[]`-typed variable keep working unchanged.
  */
 export function getPendingMigrations(db: SqliteDatabase): Migration[] {
   const current = getCurrentVersion(db);
-  return migrations
-    .filter((m) => m.version > current)
-    .sort((a, b) => a.version - b.version);
+  return ALL_MIGRATIONS.filter((m) => m.version > current).slice();
 }
 
 /**
@@ -136,3 +101,7 @@ export function getMigrationHistory(
     description: row.description,
   }));
 }
+
+// Re-export the registry surface for callers that want it.
+export { ALL_MIGRATIONS } from './migrations/index';
+export type { Migration, MigrationModule } from './migrations/types';
