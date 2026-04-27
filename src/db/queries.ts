@@ -180,7 +180,6 @@ export class QueryBuilder {
     getFileByPath?: SqliteStatement;
     getAllFiles?: SqliteStatement;
     insertUnresolved?: SqliteStatement;
-    deleteUnresolvedByNode?: SqliteStatement;
     getUnresolvedByName?: SqliteStatement;
     getNodesByName?: SqliteStatement;
     getNodesByQualifiedNameExact?: SqliteStatement;
@@ -193,6 +192,14 @@ export class QueryBuilder {
 
   constructor(db: SqliteDatabase) {
     this.db = db;
+  }
+
+  /**
+   * Execute a callback inside a single SQLite transaction. Useful when a
+   * caller needs several `QueryBuilder` operations to commit atomically.
+   */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
   }
 
   // ===========================================================================
@@ -1047,17 +1054,8 @@ export class QueryBuilder {
     insert();
   }
 
-  /**
-   * Delete unresolved references from a node
-   */
-  deleteUnresolvedByNode(nodeId: string): void {
-    if (!this.stmts.deleteUnresolvedByNode) {
-      this.stmts.deleteUnresolvedByNode = this.db.prepare(
-        'DELETE FROM unresolved_refs WHERE from_node_id = ?'
-      );
-    }
-    this.stmts.deleteUnresolvedByNode.run(nodeId);
-  }
+  // (deleteUnresolvedByNode removed — never called; FK cascade on
+  // nodes(id) → unresolved_refs.from_node_id handles cleanup automatically.)
 
   /**
    * Get unresolved references by name (for resolution)

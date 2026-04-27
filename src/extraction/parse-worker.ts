@@ -55,5 +55,29 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
     }
   } else if (msg.type === 'shutdown') {
     parentPort!.postMessage({ type: 'shutdown-ack' });
+  } else {
+    // Unknown message types: when an `id` is present, surface a structured
+    // error so the in-flight Promise on the main thread fails fast rather
+    // than blocking until the per-file timeout. Messages without an `id`
+    // have no pending promise to unblock and are silently ignored — no
+    // harm done.
+    const id = msg.id;
+    if (typeof id === 'number') {
+      parentPort!.postMessage({
+        type: 'parse-result',
+        id,
+        result: {
+          nodes: [],
+          edges: [],
+          unresolvedReferences: [],
+          errors: [{
+            message: `Parse worker received unknown message type: ${msg.type}`,
+            severity: 'error',
+            code: 'worker_protocol_error',
+          }],
+          durationMs: 0,
+        } satisfies ExtractionResult,
+      });
+    }
   }
 });

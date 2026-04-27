@@ -533,3 +533,36 @@ describe('Symlink Cycle Detection', () => {
     expect(files).toContain('src/valid.ts');
   });
 });
+
+describe('ReDoS-safe glob matching', () => {
+  it('coalesces runs of `*` so hostile inputs do not produce nested quantifiers', async () => {
+    const { globToSafeRegex } = await import('../src/utils');
+    // Two or more stars collapse to a single recursive wildcard. This is the
+    // ReDoS protection: `*****` doesn't expand to `[^/]*[^/]*[^/]*[^/]*[^/]*`,
+    // which on a long input could catastrophically backtrack.
+    expect(globToSafeRegex('*****')).toBe('.*');
+    expect(globToSafeRegex('**')).toBe('.*');
+
+    // Even a constructed-from-hostile-input regex matches in linear time.
+    const regex = new RegExp(`^${globToSafeRegex('*****')}foo$`);
+    const start = Date.now();
+    // 100k 'a's followed by something that doesn't end in 'foo'.
+    expect(regex.test('a'.repeat(100000) + 'bar')).toBe(false);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it('rejects pathologically long glob inputs', async () => {
+    const { globToSafeRegex } = await import('../src/utils');
+    expect(globToSafeRegex('*'.repeat(2000))).toBeNull();
+  });
+
+  it('preserves the standard glob semantics for common patterns', async () => {
+    const { globToSafeRegex } = await import('../src/utils');
+    const body = globToSafeRegex('src/**/*.test.ts');
+    expect(body).toBeDefined();
+    const regex = new RegExp(`^${body}$`);
+    expect(regex.test('src/lib/foo.test.ts')).toBe(true);
+    expect(regex.test('src/lib/foo.ts')).toBe(false);
+    expect(regex.test('other/src/foo.test.ts')).toBe(false);
+  });
+});

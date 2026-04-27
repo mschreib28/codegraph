@@ -7,6 +7,7 @@
 import { Node, Edge, Context, Subgraph, EdgeKind } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { GraphTraverser } from './traversal';
+import { globToSafeRegex } from '../utils';
 
 /**
  * Graph query manager for complex queries
@@ -194,13 +195,11 @@ export class GraphQueryManager {
    * @returns Array of matching nodes
    */
   findByQualifiedName(pattern: string): Node[] {
-    // Convert glob pattern to regex
-    const regexPattern = pattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*/g, '.*')
-      .replace(/\?/g, '.');
-
-    const regex = new RegExp(`^${regexPattern}$`);
+    // Convert glob pattern to regex (ReDoS-safe — consecutive wildcards are
+    // coalesced so hostile inputs can't produce nested quantifiers).
+    const regexBody = globToSafeRegex(pattern);
+    if (regexBody === null) return [];
+    const regex = new RegExp(`^${regexBody}$`);
 
     // This is inefficient for large graphs - would need FTS index on qualified_name
     // For now, use kind-based filtering if possible

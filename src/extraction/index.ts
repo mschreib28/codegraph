@@ -20,7 +20,7 @@ import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
 import { detectLanguage, isLanguageSupported, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { logDebug, logWarn } from '../errors';
-import { validatePathWithinRoot, normalizePath, stripBom, stripCommentLinesForRetry } from '../utils';
+import { validatePathWithinRoot, validatePathWithinRootReal, normalizePath, stripBom, stripCommentLinesForRetry } from '../utils';
 import picomatch from 'picomatch';
 
 /**
@@ -754,14 +754,29 @@ export class ExtractionOrchestrator {
      * Terminates the current worker and clears the reference so
      * ensureWorker() will spawn a fresh one on the next call.
      */
-    function recycleWorker(): void {
+    async function recycleWorker(): Promise<void> {
       if (!parseWorker) return;
       log(`Recycling worker after ${workerParseCount} parses (heap: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS)`);
       const w = parseWorker;
       parseWorker = null;
       workerParseCount = 0;
-      // Fire-and-forget: worker.terminate() can hang if WASM is stuck
-      w.terminate().catch(() => {});
+      // worker.terminate() can hang if WASM is stuck — bound the wait so we
+      // never block the caller's `await` on a wedged worker. The terminate
+      // promise keeps running in the background so the worker eventually gets
+      // reaped even if the timeout wins.
+      let timedOut = false;
+      try {
+        await Promise.race([
+          w.terminate(),
+          new Promise<void>((resolve) => setTimeout(() => { timedOut = true; resolve(); }, 1000)),
+        ]);
+      } catch {
+        // ignore — terminate() failing means the worker is already gone
+      }
+      if (timedOut) {
+        // Fire-and-forget: don't leak a zombie if terminate is still pending.
+        w.terminate().catch(() => {});
+      }
     }
 
     async function requestParse(filePath: string, content: string): Promise<ExtractionResult> {
@@ -1206,7 +1221,13 @@ export class ExtractionOrchestrator {
   }
 
   /**
-   * Store extraction result in database
+   * Store extraction result in database.
+   *
+   * The whole sequence (delete existing rows → insert nodes → insert edges →
+   * insert unresolved refs → upsert file record) runs in a single transaction
+   * so a process kill mid-write cannot leave the file's old data wiped while
+   * the new data is missing — either everything from this call commits or
+   * nothing does.
    */
   private storeExtractionResult(
     filePath: string,
@@ -1223,59 +1244,61 @@ export class ExtractionOrchestrator {
       return; // No changes
     }
 
-    // Delete existing data for this file
-    if (existingFile) {
-      this.queries.deleteFile(filePath);
-    }
-
     // Filter out nodes with missing required fields before insertion.
     // This prevents FK violations when edges reference nodes that would
     // be silently skipped by insertNode() (see issue #42).
     const validNodes = result.nodes.filter((n) => n.id && n.kind && n.name && n.filePath && n.language);
 
-    // Insert nodes
-    if (validNodes.length > 0) {
-      this.queries.insertNodes(validNodes);
-    }
-
-    // Filter edges to only reference nodes that were actually inserted
-    if (result.edges.length > 0) {
-      const insertedIds = new Set(validNodes.map((n) => n.id));
-      const validEdges = result.edges.filter(
-        (e) => insertedIds.has(e.source) && insertedIds.has(e.target)
-      );
-      if (validEdges.length > 0) {
-        this.queries.insertEdges(validEdges);
+    this.queries.transaction(() => {
+      // Delete existing data for this file
+      if (existingFile) {
+        this.queries.deleteFile(filePath);
       }
-    }
 
-    // Insert unresolved references in batch with denormalized filePath/language
-    if (result.unresolvedReferences.length > 0) {
-      const insertedIds = new Set(validNodes.map((n) => n.id));
-      const refsWithContext = result.unresolvedReferences
-        .filter((ref) => insertedIds.has(ref.fromNodeId))
-        .map((ref) => ({
-          ...ref,
-          filePath: ref.filePath ?? filePath,
-          language: ref.language ?? language,
-        }));
-      if (refsWithContext.length > 0) {
-        this.queries.insertUnresolvedRefsBatch(refsWithContext);
+      // Insert nodes
+      if (validNodes.length > 0) {
+        this.queries.insertNodes(validNodes);
       }
-    }
 
-    // Insert file record
-    const fileRecord: FileRecord = {
-      path: filePath,
-      contentHash,
-      language,
-      size: stats.size,
-      modifiedAt: stats.mtimeMs,
-      indexedAt: Date.now(),
-      nodeCount: result.nodes.length,
-      errors: result.errors.length > 0 ? result.errors : undefined,
-    };
-    this.queries.upsertFile(fileRecord);
+      // Filter edges to only reference nodes that were actually inserted
+      if (result.edges.length > 0) {
+        const insertedIds = new Set(validNodes.map((n) => n.id));
+        const validEdges = result.edges.filter(
+          (e) => insertedIds.has(e.source) && insertedIds.has(e.target)
+        );
+        if (validEdges.length > 0) {
+          this.queries.insertEdges(validEdges);
+        }
+      }
+
+      // Insert unresolved references in batch with denormalized filePath/language
+      if (result.unresolvedReferences.length > 0) {
+        const insertedIds = new Set(validNodes.map((n) => n.id));
+        const refsWithContext = result.unresolvedReferences
+          .filter((ref) => insertedIds.has(ref.fromNodeId))
+          .map((ref) => ({
+            ...ref,
+            filePath: ref.filePath ?? filePath,
+            language: ref.language ?? language,
+          }));
+        if (refsWithContext.length > 0) {
+          this.queries.insertUnresolvedRefsBatch(refsWithContext);
+        }
+      }
+
+      // Insert file record
+      const fileRecord: FileRecord = {
+        path: filePath,
+        contentHash,
+        language,
+        size: stats.size,
+        modifiedAt: stats.mtimeMs,
+        indexedAt: Date.now(),
+        nodeCount: result.nodes.length,
+        errors: result.errors.length > 0 ? result.errors : undefined,
+      };
+      this.queries.upsertFile(fileRecord);
+    });
   }
 
   /**
@@ -1320,9 +1343,16 @@ export class ExtractionOrchestrator {
         }
       }
 
-      // Handle modified files — read + hash only these files
+      // Handle modified files — read + hash only these files. Resolve
+      // symlinks (validatePathWithinRootReal) so a regular file swapped
+      // for a symlink to outside the project between scan and read is
+      // rejected, not followed.
       for (const filePath of gitChanges.modified) {
-        const fullPath = path.join(this.rootDir, filePath);
+        const fullPath = validatePathWithinRootReal(this.rootDir, filePath);
+        if (!fullPath) {
+          logWarn('Path traversal blocked during sync', { filePath });
+          continue;
+        }
         let content: string;
         try {
           content = fs.readFileSync(fullPath, 'utf-8');
@@ -1371,9 +1401,13 @@ export class ExtractionOrchestrator {
         }
       }
 
-      // Find files to add or update
+      // Find files to add or update (symlink-resistant validation)
       for (const filePath of currentFiles) {
-        const fullPath = path.join(this.rootDir, filePath);
+        const fullPath = validatePathWithinRootReal(this.rootDir, filePath);
+        if (!fullPath) {
+          logWarn('Path traversal blocked during sync', { filePath });
+          continue;
+        }
         let content: string;
         try {
           content = fs.readFileSync(fullPath, 'utf-8');
@@ -1466,8 +1500,13 @@ export class ExtractionOrchestrator {
       }
 
       // Modified files — read + hash only these, compare with DB
+      // (symlink-resistant validation)
       for (const filePath of gitChanges.modified) {
-        const fullPath = path.join(this.rootDir, filePath);
+        const fullPath = validatePathWithinRootReal(this.rootDir, filePath);
+        if (!fullPath) {
+          logWarn('Path traversal blocked while detecting changes', { filePath });
+          continue;
+        }
         let content: string;
         try {
           content = fs.readFileSync(fullPath, 'utf-8');
@@ -1515,9 +1554,13 @@ export class ExtractionOrchestrator {
       }
     }
 
-    // Find added and modified files
+    // Find added and modified files (symlink-resistant validation)
     for (const filePath of currentFiles) {
-      const fullPath = path.join(this.rootDir, filePath);
+      const fullPath = validatePathWithinRootReal(this.rootDir, filePath);
+      if (!fullPath) {
+        logWarn('Path traversal blocked while detecting changes', { filePath });
+        continue;
+      }
       let content: string;
       try {
         content = fs.readFileSync(fullPath, 'utf-8');

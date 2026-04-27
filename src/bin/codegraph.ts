@@ -23,6 +23,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getCodeGraphDir, isInitialized } from '../directory';
 import { createShimmerProgress } from '../ui/shimmer-progress';
+import { globToSafeRegex } from '../utils';
 
 // Lazy-load heavy modules (CodeGraph, runInstaller) to keep CLI startup fast.
 async function loadCodeGraph(): Promise<typeof import('../index')> {
@@ -1158,16 +1159,15 @@ program
         /\/spec\//,
       ];
 
-      // Custom filter pattern
+      // Custom filter pattern (ReDoS-safe — globToSafeRegex coalesces
+      // consecutive wildcards so hostile inputs can't produce nested
+      // quantifiers like `.+.+.+`).
       let customFilter: RegExp | null = null;
       if (options.filter) {
-        // Convert glob to regex: ** → .+, * → [^/]*, . → \.
-        const regex = options.filter
-          .replace(/[+[\]{}()^$|\\]/g, '\\$&')
-          .replace(/\./g, '\\.')
-          .replace(/\*\*/g, '.+')
-          .replace(/\*/g, '[^/]*');
-        customFilter = new RegExp(regex);
+        const regexBody = globToSafeRegex(options.filter);
+        if (regexBody !== null) {
+          customFilter = new RegExp(regexBody);
+        }
       }
 
       function isTestFile(filePath: string): boolean {

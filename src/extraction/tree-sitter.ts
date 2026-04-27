@@ -24,6 +24,27 @@ import { getLanguageDefByName } from './languages/registry';
 export { generateNodeId } from './tree-sitter-helpers';
 
 /**
+ * Deduplicate unresolved references by (fromNodeId, referenceName,
+ * referenceKind). A function calling `foo()` 100 times pushes 100 refs
+ * during extraction; the resolver collapses them to one edge eventually
+ * (edges are unique on `(source, target, kind, line)` and most resolvers
+ * skip duplicate work), but indexing time and DB churn scale with the
+ * raw count. Collapsing here keeps the first occurrence's line/column
+ * (which is typically what users want when "go to call site" surfaces).
+ */
+function dedupeReferences(refs: UnresolvedReference[]): UnresolvedReference[] {
+  const seen = new Set<string>();
+  const out: UnresolvedReference[] = [];
+  for (const ref of refs) {
+    const key = `${ref.fromNodeId}\0${ref.referenceKind}\0${ref.referenceName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ref);
+  }
+  return out;
+}
+
+/**
  * Extract the name from a node based on language
  */
 function extractName(node: SyntaxNode, source: string, extractor: LanguageExtractor): string {
@@ -216,7 +237,7 @@ export class TreeSitterExtractor {
     return {
       nodes: this.nodes,
       edges: this.edges,
-      unresolvedReferences: this.unresolvedReferences,
+      unresolvedReferences: dedupeReferences(this.unresolvedReferences),
       errors: this.errors,
       durationMs: Date.now() - startTime,
     };

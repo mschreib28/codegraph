@@ -123,6 +123,36 @@ export function isPathWithinRoot(filePath: string, rootDir: string): boolean {
 }
 
 /**
+ * Like validatePathWithinRoot but also resolves symlinks via fs.realpathSync,
+ * so a regular-looking path that is actually a symlink to outside the root
+ * is rejected. Returns the resolved real path, or null if the file escapes
+ * the root or can't be reached.
+ *
+ * Costs an extra realpath syscall vs. the lexical-only check, so prefer
+ * validatePathWithinRoot for hot paths where symlink TOCTOU isn't relevant.
+ */
+export function validatePathWithinRootReal(projectRoot: string, filePath: string): string | null {
+  const resolved = path.resolve(projectRoot, filePath);
+  const normalizedRoot = path.resolve(projectRoot);
+  if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
+    return null;
+  }
+  try {
+    const realPath = fs.realpathSync(resolved);
+    const realRoot = fs.realpathSync(normalizedRoot);
+    if (!realPath.startsWith(realRoot + path.sep) && realPath !== realRoot) {
+      return null;
+    }
+    return realPath;
+  } catch {
+    // realpath failures (broken symlink, permissions) — return the lexically-
+    // resolved path. The downstream readFileSync will fail naturally and the
+    // caller already handles read errors.
+    return resolved;
+  }
+}
+
+/**
  * Like isPathWithinRoot but also resolves symlinks via fs.realpathSync.
  *
  * This catches symlink escapes where the logical path appears to be within
@@ -176,41 +206,15 @@ export function normalizePath(filePath: string): string {
 
 /**
  * Strip a leading UTF-8 BOM (U+FEFF) if present.
- *
- * Editors disagree about whether to write the BOM. Without normalization
- * the same logical content hashes to two different values depending on
- * which editor last touched the file, producing spurious "modified"
- * detections on every sync.
  */
 export function stripBom(content: string): string {
   return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
 }
 
-/**
- * Replace every non-newline character in `text` with a space. Preserves
- * line count and column offsets so subsequent regex matches against the
- * processed content map back to the same line numbers in the original.
- */
 function blankPreservingNewlines(text: string): string {
   return text.replace(/[^\n]/g, ' ');
 }
 
-/**
- * Comment / docstring patterns to neutralize before applying coarse-grained
- * regex extraction (e.g., framework route decorators). The goal is to
- * prevent commented-out examples and docstring snippets from being
- * extracted as real code constructs, without rebuilding a full lexer.
- *
- * For each language we strip:
- *   - Block comments (preserve newlines so line numbers stay correct).
- *   - Whole-line single-line comments (only when the line contains nothing
- *     but optional whitespace before the marker — this avoids corrupting
- *     string literals on the same line).
- *   - Python triple-quoted strings (the common docstring carrier).
- *
- * We deliberately do NOT strip arbitrary string literals — that risks
- * removing legitimate route paths the regex needs to see.
- */
 const BLOCK_COMMENT_LANGUAGES = new Set([
   'javascript', 'typescript', 'tsx', 'jsx',
   'java', 'csharp', 'cpp', 'c',
@@ -218,11 +222,6 @@ const BLOCK_COMMENT_LANGUAGES = new Set([
   'php',
 ]);
 
-/**
- * Per-language line-comment marker as a *line-anchored* prefix regex.
- * Stateless (no `/g`, no `/m`) so it can be reused across many `.test`
- * calls without regex-state pitfalls.
- */
 const LINE_COMMENT_MARKER: Record<string, RegExp> = {
   javascript: /^[ \t]*\/\//,
   typescript: /^[ \t]*\/\//,
@@ -244,14 +243,6 @@ const LINE_COMMENT_MARKER: Record<string, RegExp> = {
   php: /^[ \t]*(?:\/\/|#)/,
 };
 
-/**
- * Best-effort comment stripper for use before coarse-grained regex
- * extraction. Returns content with comments and (for Python) triple-quoted
- * strings replaced by spaces — newlines preserved so line/column offsets
- * derived from the result still map onto the original file.
- *
- * Languages without an entry are returned unchanged.
- */
 export function stripCommentsForRegex(content: string, language: string): string {
   let out = content;
 
@@ -268,9 +259,6 @@ export function stripCommentsForRegex(content: string, language: string): string
 
   const lineMarker = LINE_COMMENT_MARKER[language];
   if (lineMarker) {
-    // Walk lines; replace any line that starts with optional whitespace
-    // then the marker. Done line-at-a-time so we never touch content
-    // inside string literals on other lines.
     out = out
       .split('\n')
       .map((line) => (lineMarker.test(line) ? blankPreservingNewlines(line) : line))
@@ -280,20 +268,6 @@ export function stripCommentsForRegex(content: string, language: string): string
   return out;
 }
 
-/**
- * Strip lines that are entirely a single-line comment for the given
- * language, replacing them with empty lines. Preserves line numbers so
- * tree-sitter node positions stay correct.
- *
- * Used by the parser-retry "shrink the file" fallback. Unlike
- * {@link stripCommentsForRegex} this does NOT strip block comments or
- * docstrings — the goal is to remove the easiest dead weight (e.g.
- * compiler test files dominated by `# CHECK:` / `// CHECK:` lines)
- * without risking semantic changes.
- *
- * Returns content unchanged for languages without a known line-comment
- * marker.
- */
 export function stripCommentLinesForRetry(content: string, language: string): string {
   const marker = LINE_COMMENT_MARKER[language];
   if (!marker) return content;
@@ -301,6 +275,31 @@ export function stripCommentLinesForRetry(content: string, language: string): st
     .split('\n')
     .map((line) => (marker.test(line) ? '' : line))
     .join('\n');
+}
+
+/**
+ * Convert a simple `*` / `?` / `**` glob to a safe regex source string.
+ * Hardens against catastrophic backtracking by coalescing runs of `*`.
+ */
+export function globToSafeRegex(glob: string): string | null {
+  if (glob.length > 1024) return null;
+  let out = '';
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === '*') {
+      let runLen = 1;
+      while (glob[i + runLen] === '*') runLen++;
+      out += runLen >= 2 ? '.*' : '[^/]*';
+      i += runLen - 1;
+    } else if (ch === '?') {
+      out += '[^/]';
+    } else if (ch && /[.+^${}()|[\]\\]/.test(ch)) {
+      out += '\\' + ch;
+    } else if (ch) {
+      out += ch;
+    }
+  }
+  return out;
 }
 
 /**
