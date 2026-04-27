@@ -44,6 +44,7 @@ interface NodeRow {
   decorators: string | null;
   type_parameters: string | null;
   updated_at: number;
+  centrality: number | null;
 }
 
 interface EdgeRow {
@@ -66,6 +67,10 @@ interface FileRow {
   indexed_at: number;
   node_count: number;
   errors: string | null;
+  commit_count: number | null;
+  loc: number | null;
+  first_seen_ts: number | null;
+  last_touched_ts: number | null;
 }
 
 interface UnresolvedRefRow {
@@ -105,6 +110,7 @@ function rowToNode(row: NodeRow): Node {
     decorators: row.decorators ? safeJsonParse(row.decorators, undefined) : undefined,
     typeParameters: row.type_parameters ? safeJsonParse(row.type_parameters, undefined) : undefined,
     updatedAt: row.updated_at,
+    centrality: row.centrality ?? undefined,
   };
 }
 
@@ -136,6 +142,10 @@ function rowToFileRecord(row: FileRow): FileRecord {
     indexedAt: row.indexed_at,
     nodeCount: row.node_count,
     errors: row.errors ? safeJsonParse(row.errors, undefined) : undefined,
+    commitCount: row.commit_count ?? 0,
+    loc: row.loc ?? 0,
+    firstSeenTs: row.first_seen_ts ?? null,
+    lastTouchedTs: row.last_touched_ts ?? null,
   };
 }
 
@@ -916,7 +926,12 @@ export class QueryBuilder {
   // ===========================================================================
 
   /**
-   * Insert or update a file record
+   * Insert or update a file record.
+   *
+   * Churn columns (commit_count, loc, first_seen_ts, last_touched_ts)
+   * are deliberately omitted from the ON CONFLICT update list — they
+   * are managed exclusively by `applyChurnDeltas` / `applyLocUpdates`.
+   * Adding them here would clobber mined git history on every re-index.
    */
   upsertFile(file: FileRecord): void {
     if (!this.stmts.upsertFile) {
@@ -1294,5 +1309,209 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
     })();
+  }
+
+  // ===========================================================================
+  // Centrality (PageRank scores on nodes)
+  // ===========================================================================
+
+  /**
+   * Apply PageRank scores to the nodes table in a single transaction.
+   * Existing scores for ids not in the map are NOT cleared — call
+   * `clearCentrality()` first for a from-scratch recompute.
+   */
+  applyCentralityScores(scores: Map<string, number>): void {
+    if (scores.size === 0) return;
+    const stmt = this.db.prepare('UPDATE nodes SET centrality = ? WHERE id = ?');
+    this.db.transaction(() => {
+      for (const [id, score] of scores) {
+        stmt.run(score, id);
+      }
+    })();
+    // Cached node objects now have stale centrality. Drop the cache;
+    // subsequent reads pull the fresh value.
+    this.nodeCache.clear();
+  }
+
+  /** Reset all centrality values to NULL (fresh-recompute path). */
+  clearCentrality(): void {
+    this.db.exec('UPDATE nodes SET centrality = NULL');
+    this.nodeCache.clear();
+  }
+
+  /**
+   * Get top-N nodes by centrality, descending. Filters out NULL
+   * centrality (= not yet computed). Optional `kind` filter narrows
+   * to one node kind; optional `minCentrality` filters out the long
+   * tail of essentially-zero ranks.
+   */
+  getTopNodesByCentrality(opts: {
+    limit?: number;
+    kind?: NodeKind;
+    minCentrality?: number;
+  } = {}): Node[] {
+    const limit = opts.limit ?? 25;
+    const minCentrality = opts.minCentrality ?? 0;
+    const where: string[] = ['centrality IS NOT NULL', 'centrality >= ?'];
+    const params: (string | number)[] = [minCentrality];
+    if (opts.kind) {
+      where.push('kind = ?');
+      params.push(opts.kind);
+    }
+    const sql = `SELECT * FROM nodes WHERE ${where.join(' AND ')}
+                 ORDER BY centrality DESC LIMIT ?`;
+    params.push(limit);
+    const rows = this.db.prepare(sql).all(...params) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Compute the rank (1-based) of a single node by centrality.
+   * Returns null if the node has no centrality yet.
+   */
+  getCentralityRank(nodeId: string): { rank: number; total: number } | null {
+    const row = this.db
+      .prepare('SELECT centrality FROM nodes WHERE id = ?')
+      .get(nodeId) as { centrality: number | null } | undefined;
+    if (!row || row.centrality === null) return null;
+    const above = this.db
+      .prepare('SELECT COUNT(*) AS c FROM nodes WHERE centrality > ?')
+      .get(row.centrality) as { c: number };
+    const total = this.db
+      .prepare('SELECT COUNT(*) AS c FROM nodes WHERE centrality IS NOT NULL')
+      .get() as { c: number };
+    return { rank: above.c + 1, total: total.c };
+  }
+
+  // ===========================================================================
+  // Per-file churn (mined from git log)
+  // ===========================================================================
+
+  /**
+   * Apply churn deltas to the files table. For each delta:
+   *   commit_count   += commitCountDelta
+   *   last_touched_ts = MAX(existing, lastTouchedTs)
+   *   first_seen_ts   = COALESCE(existing, firstSeenTs)   // sticky
+   *
+   * Files in the delta map but not in the files table (uncommon —
+   * they'd have to be mined-but-never-indexed) are silently skipped.
+   */
+  applyChurnDeltas(
+    deltas: Iterable<{
+      path: string;
+      commitCountDelta: number;
+      lastTouchedTs: number;
+      firstSeenTs: number;
+    }>
+  ): void {
+    const stmt = this.db.prepare(
+      `UPDATE files
+         SET commit_count    = commit_count + ?,
+             last_touched_ts = MAX(COALESCE(last_touched_ts, 0), ?),
+             first_seen_ts   = COALESCE(first_seen_ts, ?)
+       WHERE path = ?`
+    );
+    this.db.transaction(() => {
+      for (const d of deltas) {
+        stmt.run(d.commitCountDelta, d.lastTouchedTs, d.firstSeenTs, d.path);
+      }
+    })();
+  }
+
+  /** Reset all churn columns; used before a full re-mine. Does not touch `loc`. */
+  clearChurn(): void {
+    this.db.exec(
+      `UPDATE files SET commit_count = 0, last_touched_ts = NULL, first_seen_ts = NULL`
+    );
+  }
+
+  /** Update the on-disk LOC for a single file. Cheap; called per changed file. */
+  updateFileLoc(filePath: string, loc: number): void {
+    this.db.prepare('UPDATE files SET loc = ? WHERE path = ?').run(loc, filePath);
+  }
+
+  /** Bulk LOC update — used during indexAll to refresh LOC for every indexed file. */
+  applyLocUpdates(entries: Iterable<{ path: string; loc: number }>): void {
+    const stmt = this.db.prepare('UPDATE files SET loc = ? WHERE path = ?');
+    this.db.transaction(() => {
+      for (const e of entries) stmt.run(e.loc, e.path);
+    })();
+  }
+
+  getTopFilesByChurn(opts: { limit?: number; minCommits?: number } = {}): FileRecord[] {
+    const limit = opts.limit ?? 25;
+    const minCommits = opts.minCommits ?? 1;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM files WHERE commit_count >= ?
+         ORDER BY commit_count DESC LIMIT ?`
+      )
+      .all(minCommits, limit) as FileRow[];
+    return rows.map(rowToFileRecord);
+  }
+
+  /**
+   * Hotspots: files ranked by `risk = (Σ centrality of nodes in file) × commit_count`.
+   *
+   * Both inputs are optional in their own right; with neither computed,
+   * this returns []. Sorting modes:
+   *   - 'risk'        : the combined score (default; what "hotspot" means)
+   *   - 'centrality'  : pure structural importance
+   *   - 'churn'       : pure change frequency
+   */
+  getHotspots(opts: {
+    limit?: number;
+    minCommits?: number;
+    minCentrality?: number;
+    sortBy?: 'risk' | 'centrality' | 'churn';
+  } = {}): Array<{
+    filePath: string;
+    fileCentrality: number;
+    commitCount: number;
+    loc: number;
+    lastTouchedTs: number | null;
+    riskScore: number;
+  }> {
+    const limit = opts.limit ?? 15;
+    const minCommits = opts.minCommits ?? 0;
+    const minCentrality = opts.minCentrality ?? 0;
+    const sortBy = opts.sortBy ?? 'risk';
+
+    const orderBy =
+      sortBy === 'centrality'
+        ? 'fileCentrality DESC'
+        : sortBy === 'churn'
+          ? 'commitCount DESC'
+          : 'riskScore DESC';
+
+    // Aggregate centrality at file level. LEFT JOIN so files without any
+    // indexed nodes (rare — schema-only files) still surface if they have churn.
+    const sql = `
+      SELECT
+        f.path                                     AS filePath,
+        COALESCE(n_agg.fc, 0.0)                    AS fileCentrality,
+        f.commit_count                             AS commitCount,
+        f.loc                                      AS loc,
+        f.last_touched_ts                          AS lastTouchedTs,
+        COALESCE(n_agg.fc, 0.0) * f.commit_count   AS riskScore
+      FROM files f
+      LEFT JOIN (
+        SELECT file_path, SUM(centrality) AS fc
+        FROM nodes WHERE centrality IS NOT NULL
+        GROUP BY file_path
+      ) n_agg ON n_agg.file_path = f.path
+      WHERE f.commit_count >= ? AND COALESCE(n_agg.fc, 0.0) >= ?
+      ORDER BY ${orderBy}
+      LIMIT ?
+    `;
+    const rows = this.db.prepare(sql).all(minCommits, minCentrality, limit) as Array<{
+      filePath: string;
+      fileCentrality: number;
+      commitCount: number;
+      loc: number;
+      lastTouchedTs: number | null;
+      riskScore: number;
+    }>;
+    return rows;
   }
 }

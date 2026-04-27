@@ -527,6 +527,48 @@ export class CodeGraph {
   }
 
   // ===========================================================================
+  // Derived Signals (centrality, churn, hotspots)
+  // ===========================================================================
+
+  getCentrality(nodeId: string): number | null {
+    const node = this.queries.getNodeById(nodeId);
+    return node?.centrality ?? null;
+  }
+
+  getTopCentralNodes(opts: { limit?: number; kind?: import('./types').NodeKind } = {}): Node[] {
+    return this.queries.getTopNodesByCentrality(opts);
+  }
+
+  getCentralityRank(nodeId: string): { rank: number; total: number } | null {
+    return this.queries.getCentralityRank(nodeId);
+  }
+
+  getFileChurn(filePath: string): {
+    commitCount: number;
+    loc: number;
+    firstSeenTs: number | null;
+    lastTouchedTs: number | null;
+  } | null {
+    const f = this.queries.getFileByPath(filePath);
+    if (!f) return null;
+    return {
+      commitCount: f.commitCount ?? 0,
+      loc: f.loc ?? 0,
+      firstSeenTs: f.firstSeenTs ?? null,
+      lastTouchedTs: f.lastTouchedTs ?? null,
+    };
+  }
+
+  getHotspots(opts: {
+    limit?: number;
+    minCommits?: number;
+    minCentrality?: number;
+    sortBy?: 'risk' | 'centrality' | 'churn';
+  } = {}): ReturnType<QueryBuilder['getHotspots']> {
+    return this.queries.getHotspots(opts);
+  }
+
+  // ===========================================================================
   // File Watching
   // ===========================================================================
 

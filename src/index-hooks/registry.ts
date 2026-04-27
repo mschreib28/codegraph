@@ -22,6 +22,9 @@ import type { IndexHook, IndexHookContext, IndexHookOutcome } from './types';
 import type { SyncResult } from '../extraction';
 import { logDebug } from '../errors';
 
+import { HOOK as CENTRALITY_HOOK } from './centrality';
+import { HOOK as CHURN_HOOK } from './churn';
+
 /**
  * Static-import list of every registered hook.
  *
@@ -31,8 +34,8 @@ import { logDebug } from '../errors';
  * config flag inside its `afterIndexAll`/`afterSync`.
  */
 const REGISTERED_HOOKS: readonly IndexHook[] = [
-  // PRs adding hooks: append your `import { HOOK as <NAME>_HOOK } from './<name>';`
-  // above and your `<NAME>_HOOK` entry here, alphabetical by name.
+  CENTRALITY_HOOK,
+  CHURN_HOOK,
 ];
 
 /**

@@ -37,13 +37,14 @@ describe('MCP tool registry — single source of truth', () => {
     expect(fromExport).toEqual(fromRegistry);
   });
 
-  it('all 9 main-line tools are registered (regression guard)', () => {
+  it('all main-line tools are registered (regression guard)', () => {
     const expected = [
       'codegraph_callees',
       'codegraph_callers',
       'codegraph_context',
       'codegraph_explore',
       'codegraph_files',
+      'codegraph_hotspots',
       'codegraph_impact',
       'codegraph_node',
       'codegraph_search',

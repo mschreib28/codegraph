@@ -23,6 +23,7 @@ import { CALLERS_TOOL } from './callers';
 import { CONTEXT_TOOL } from './context';
 import { EXPLORE_TOOL } from './explore';
 import { FILES_TOOL } from './files';
+import { HOTSPOTS_TOOL } from './hotspots';
 import { IMPACT_TOOL } from './impact';
 import { NODE_TOOL } from './node';
 import { SEARCH_TOOL } from './search';
@@ -34,6 +35,7 @@ const ALL_TOOLS: readonly ToolModule[] = [
   CONTEXT_TOOL,
   EXPLORE_TOOL,
   FILES_TOOL,
+  HOTSPOTS_TOOL,
   IMPACT_TOOL,
   NODE_TOOL,
   SEARCH_TOOL,

@@ -144,6 +144,13 @@ export interface Node {
 
   /** When the node was last updated */
   updatedAt: number;
+
+  /**
+   * PageRank centrality score over calls+references edges, in (0, 1).
+   * NULL/undefined when not yet computed (fresh DB before first
+   * indexAll, or `enableCentrality: false`).
+   */
+  centrality?: number | null;
 }
 
 /**
@@ -199,6 +206,21 @@ export interface FileRecord {
 
   /** Any extraction errors */
   errors?: ExtractionError[];
+
+  /**
+   * Number of git commits touching this path. 0 when uncommitted or
+   * mining disabled. Lower bound on shallow clones.
+   */
+  commitCount?: number;
+
+  /** Current line count of the file on disk (newline-delimited). */
+  loc?: number;
+
+  /** Unix seconds, first commit timestamp touching this path. */
+  firstSeenTs?: number | null;
+
+  /** Unix seconds, most recent commit timestamp touching this path. */
+  lastTouchedTs?: number | null;
 }
 
 // =============================================================================
@@ -474,6 +496,21 @@ export interface CodeGraphConfig {
     /** Node kind to assign */
     kind: NodeKind;
   }[];
+
+  /**
+   * Compute PageRank centrality over calls+references after each
+   * indexAll/sync. Cheap (sub-second on realistic projects); enabled
+   * by default.
+   */
+  enableCentrality?: boolean;
+
+  /**
+   * Mine git log for per-file churn metrics (commit count, LOC,
+   * first-seen / last-touched timestamps). Set to false on shallow
+   * clones or non-git checkouts where the data would be misleading.
+   * Enabled by default.
+   */
+  enableChurn?: boolean;
 }
 
 // `DEFAULT_CONFIG` lives in `./default-config.ts` so its `include`

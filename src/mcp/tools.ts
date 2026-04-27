@@ -814,6 +814,57 @@ export class ToolHandler implements ToolHandlerLike {
   }
 
   /**
+   * Handle codegraph_hotspots — files ranked by risk = centrality × churn.
+   */
+  async handleHotspots(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const limit = args.limit != null ? clamp(args.limit as number, 1, 100) : 15;
+    const minCommits = args.minCommits != null ? Math.max(0, args.minCommits as number) : 3;
+    const minCentrality = args.minCentrality != null ? Math.max(0, args.minCentrality as number) : 0;
+    const sortBy = (args.sortBy as 'risk' | 'centrality' | 'churn' | undefined) ?? 'risk';
+
+    const rows = cg.getHotspots({ limit, minCommits, minCentrality, sortBy });
+    if (rows.length === 0) {
+      const lines = [
+        'No hotspots to report.',
+        '',
+        'This typically means one of:',
+        '- Index has not been built yet (`codegraph index`)',
+        '- Project is not a git repo (churn data unavailable)',
+        '- `enableCentrality` / `enableChurn` are disabled in config',
+        '- `minCommits` is set higher than any file in the project',
+      ];
+      return this.textResult(lines.join('\n'));
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const fmtAge = (ts: number | null) => {
+      if (!ts) return '—';
+      const days = Math.floor((now - ts) / 86400);
+      if (days <= 0) return 'today';
+      if (days === 1) return '1d ago';
+      if (days < 30) return `${days}d ago`;
+      const months = Math.floor(days / 30);
+      return months === 1 ? '1mo ago' : `${months}mo ago`;
+    };
+
+    const lines: string[] = [
+      `## Hotspots (sortBy=${sortBy}, top ${rows.length})`,
+      '',
+      'High-risk files = high structural centrality × high git churn. Review these first.',
+      '',
+      '| # | File | PR | Commits | LOC | Last touched | Risk |',
+      '|---|------|----:|--------:|----:|--------------|-----:|',
+    ];
+    rows.forEach((r, i) => {
+      lines.push(
+        `| ${i + 1} | \`${r.filePath}\` | ${r.fileCentrality.toFixed(4)} | ${r.commitCount} | ${r.loc} | ${fmtAge(r.lastTouchedTs)} | ${r.riskScore.toFixed(4)} |`
+      );
+    });
+    return this.textResult(this.truncateOutput(lines.join('\n')));
+  }
+
+  /**
    * Convert glob pattern to regex
    */
   private globToRegex(pattern: string): RegExp {
