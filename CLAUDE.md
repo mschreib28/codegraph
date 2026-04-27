@@ -100,6 +100,8 @@ SQLite database with:
 
 TypeScript, JavaScript, TSX, JSX, Svelte, Python, Go, Rust, Java, C, C++, C#, PHP, Ruby, Swift, Kotlin, Dart, Liquid, Pascal, R
 
+To add a new language, follow the cookbook at [`docs/ADDING-A-LANGUAGE.md`](docs/ADDING-A-LANGUAGE.md).
+
 ### Node and Edge Types
 
 **NodeKind**: `file`, `module`, `class`, `struct`, `interface`, `trait`, `protocol`, `function`, `method`, `property`, `field`, `variable`, `constant`, `enum`, `enum_member`, `type_alias`, `namespace`, `parameter`, `import`, `export`, `route`, `component`
