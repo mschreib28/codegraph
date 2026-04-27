@@ -3496,3 +3496,238 @@ describe('HCL / Terraform Extraction', () => {
     });
   });
 });
+
+
+// =============================================================================
+// SQL Extraction
+// =============================================================================
+
+describe('SQL Extraction', () => {
+  describe('Language detection', () => {
+    it('should detect SQL files', () => {
+      expect(detectLanguage('schema.sql')).toBe('sql');
+      expect(detectLanguage('migrations/001.ddl')).toBe('sql');
+      expect(detectLanguage('seed.dml')).toBe('sql');
+    });
+
+    it('should report SQL as supported', () => {
+      expect(isLanguageSupported('sql')).toBe(true);
+      expect(getSupportedLanguages()).toContain('sql');
+    });
+  });
+
+  describe('CREATE TABLE', () => {
+    it('should extract a table as a class node', () => {
+      const code = `CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255));`;
+      const result = extractFromSource('schema.sql', code);
+      const node = result.nodes.find((n) => n.kind === 'class' && n.name === 'users');
+      expect(node).toBeDefined();
+      expect(node?.signature).toBe('CREATE TABLE users');
+    });
+
+    it('should preserve schema-qualified table names', () => {
+      const code = `CREATE TABLE reporting.events (id INT);`;
+      const result = extractFromSource('schema.sql', code);
+      const node = result.nodes.find((n) => n.kind === 'class' && n.name === 'reporting.events');
+      expect(node).toBeDefined();
+    });
+
+    it('should extract inline foreign-key references', () => {
+      const code = `CREATE TABLE orders (id INT, user_id INT REFERENCES users(id));`;
+      const result = extractFromSource('schema.sql', code);
+      const orders = result.nodes.find((n) => n.name === 'orders')!;
+      const fk = result.unresolvedReferences.find(
+        (r) => r.fromNodeId === orders.id && r.referenceName === 'users' && r.referenceKind === 'references'
+      );
+      expect(fk).toBeDefined();
+    });
+
+    it('should extract CONSTRAINT-style foreign keys', () => {
+      const code = `CREATE TABLE orders (
+  id INT,
+  user_id INT,
+  CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);`;
+      const result = extractFromSource('schema.sql', code);
+      const orders = result.nodes.find((n) => n.name === 'orders')!;
+      const fk = result.unresolvedReferences.find(
+        (r) => r.fromNodeId === orders.id && r.referenceName === 'users'
+      );
+      expect(fk).toBeDefined();
+    });
+
+    it('should add a contains edge from the file to each table', () => {
+      const code = `CREATE TABLE a (id INT); CREATE TABLE b (id INT);`;
+      const result = extractFromSource('schema.sql', code);
+      const file = result.nodes.find((n) => n.kind === 'file')!;
+      const a = result.nodes.find((n) => n.name === 'a')!;
+      const b = result.nodes.find((n) => n.name === 'b')!;
+      expect(result.edges).toContainEqual(expect.objectContaining({ source: file.id, target: a.id, kind: 'contains' }));
+      expect(result.edges).toContainEqual(expect.objectContaining({ source: file.id, target: b.id, kind: 'contains' }));
+    });
+  });
+
+  describe('CREATE VIEW', () => {
+    it('should extract a view as a class node', () => {
+      const code = `CREATE VIEW active_users AS SELECT id FROM users;`;
+      const result = extractFromSource('views.sql', code);
+      const view = result.nodes.find((n) => n.kind === 'class' && n.name === 'active_users');
+      expect(view).toBeDefined();
+    });
+
+    it('should record references to source tables in the view query', () => {
+      const code = `CREATE VIEW user_orders AS
+  SELECT u.id, COUNT(o.id) AS n
+  FROM users u
+  LEFT JOIN orders o ON o.user_id = u.id;`;
+      const result = extractFromSource('views.sql', code);
+      const view = result.nodes.find((n) => n.name === 'user_orders')!;
+      const refs = result.unresolvedReferences
+        .filter((r) => r.fromNodeId === view.id)
+        .map((r) => r.referenceName);
+      expect(refs).toContain('users');
+      expect(refs).toContain('orders');
+    });
+
+    it('should de-duplicate identical references in the same scope', () => {
+      const code = `CREATE VIEW double_users AS
+  SELECT * FROM users JOIN users u2 ON u2.id = users.id;`;
+      const result = extractFromSource('views.sql', code);
+      const view = result.nodes.find((n) => n.name === 'double_users')!;
+      const usersRefs = result.unresolvedReferences.filter(
+        (r) => r.fromNodeId === view.id && r.referenceName === 'users'
+      );
+      expect(usersRefs.length).toBe(1);
+    });
+
+    it('should walk into derived-table subqueries to find inner table refs', () => {
+      const code = `CREATE VIEW v AS
+  SELECT * FROM (SELECT id FROM users) u JOIN orders o ON o.user_id = u.id;`;
+      const result = extractFromSource('views.sql', code);
+      const view = result.nodes.find((n) => n.name === 'v')!;
+      const refs = result.unresolvedReferences
+        .filter((r) => r.fromNodeId === view.id)
+        .map((r) => r.referenceName);
+      expect(refs).toContain('users');
+      expect(refs).toContain('orders');
+    });
+  });
+
+  describe('CREATE FUNCTION', () => {
+    it('should extract a function with signature', () => {
+      const code = `CREATE FUNCTION add(a INT, b INT) RETURNS INT AS 'SELECT a + b' LANGUAGE SQL;`;
+      const result = extractFromSource('fns.sql', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'add');
+      expect(fn).toBeDefined();
+      expect(fn?.signature).toContain('(a INT, b INT)');
+    });
+
+    it('should handle CREATE OR REPLACE FUNCTION', () => {
+      const code = `CREATE OR REPLACE FUNCTION calc(x INT) RETURNS INT AS 'SELECT x * 2' LANGUAGE SQL;`;
+      const result = extractFromSource('fns.sql', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'calc');
+      expect(fn).toBeDefined();
+    });
+
+    it('should label a CREATE FUNCTION signature with CREATE FUNCTION', () => {
+      const code = `CREATE FUNCTION add(a INT) RETURNS INT AS 'SELECT a + 1' LANGUAGE SQL;`;
+      const result = extractFromSource('fns.sql', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'add');
+      expect(fn?.signature).toContain('CREATE FUNCTION');
+      expect(fn?.signature).not.toContain('CREATE PROCEDURE');
+    });
+  });
+
+  describe('CREATE TRIGGER', () => {
+    it('should extract a trigger with target-table reference and called function', () => {
+      const code = `CREATE TRIGGER orders_audit
+AFTER INSERT ON orders
+FOR EACH ROW
+EXECUTE FUNCTION audit_orders();`;
+      const result = extractFromSource('triggers.sql', code);
+      const trigger = result.nodes.find((n) => n.kind === 'function' && n.name === 'orders_audit');
+      expect(trigger).toBeDefined();
+
+      const refs = result.unresolvedReferences.filter((r) => r.fromNodeId === trigger!.id);
+      const tableRef = refs.find((r) => r.referenceName === 'orders' && r.referenceKind === 'references');
+      const callRef = refs.find((r) => r.referenceName === 'audit_orders' && r.referenceKind === 'calls');
+      expect(tableRef).toBeDefined();
+      expect(callRef).toBeDefined();
+    });
+
+    it('should still locate target/function across an UPDATE OF column list', () => {
+      const code = `CREATE TRIGGER t
+BEFORE UPDATE OF col1, col2 ON orders
+FOR EACH ROW
+EXECUTE FUNCTION audit_cols();`;
+      const result = extractFromSource('triggers.sql', code);
+      const trigger = result.nodes.find((n) => n.name === 't')!;
+      const refs = result.unresolvedReferences.filter((r) => r.fromNodeId === trigger.id);
+      expect(refs.find((r) => r.referenceName === 'orders' && r.referenceKind === 'references')).toBeDefined();
+      expect(refs.find((r) => r.referenceName === 'audit_cols' && r.referenceKind === 'calls')).toBeDefined();
+    });
+  });
+
+  describe('CREATE TYPE', () => {
+    it('should extract an enum type as an enum node', () => {
+      const code = `CREATE TYPE order_status AS ENUM ('pending', 'shipped', 'cancelled');`;
+      const result = extractFromSource('types.sql', code);
+      const node = result.nodes.find((n) => n.name === 'order_status');
+      expect(node?.kind).toBe('enum');
+    });
+
+    it('should extract a non-enum CREATE TYPE as a type_alias', () => {
+      const code = `CREATE TYPE point AS (x FLOAT, y FLOAT);`;
+      const result = extractFromSource('types.sql', code);
+      const node = result.nodes.find((n) => n.name === 'point');
+      expect(node?.kind).toBe('type_alias');
+    });
+  });
+
+  describe('CREATE SCHEMA', () => {
+    it('should extract a schema as a namespace node', () => {
+      const code = `CREATE SCHEMA reporting;`;
+      const result = extractFromSource('schemas.sql', code);
+      const node = result.nodes.find((n) => n.name === 'reporting');
+      expect(node?.kind).toBe('namespace');
+    });
+  });
+
+  describe('Robustness', () => {
+    it('should not error on plain SELECT/INSERT/UPDATE statements', () => {
+      const code = `SELECT * FROM users;
+INSERT INTO orders (id) VALUES (1);
+UPDATE users SET email = 'x';`;
+      const result = extractFromSource('queries.sql', code);
+      expect(result.errors.filter((e) => e.severity === 'error').length).toBe(0);
+      const nonFile = result.nodes.filter((n) => n.kind !== 'file');
+      expect(nonFile.length).toBe(0);
+    });
+
+    it('should not emit nodes for CREATE INDEX', () => {
+      const code = `CREATE INDEX idx_users_email ON users(email);`;
+      const result = extractFromSource('idx.sql', code);
+      const nonFile = result.nodes.filter((n) => n.kind !== 'file');
+      expect(nonFile.length).toBe(0);
+    });
+
+    it('should handle multiple statements without leaking state', () => {
+      const code = `CREATE TABLE a (id INT);
+CREATE TABLE b (id INT, a_id INT REFERENCES a(id));
+CREATE VIEW c AS SELECT * FROM a JOIN b ON b.a_id = a.id;`;
+      const result = extractFromSource('multi.sql', code);
+      const a = result.nodes.find((n) => n.name === 'a');
+      const b = result.nodes.find((n) => n.name === 'b');
+      const c = result.nodes.find((n) => n.name === 'c');
+      expect(a).toBeDefined();
+      expect(b).toBeDefined();
+      expect(c).toBeDefined();
+
+      const bRefs = result.unresolvedReferences.filter((r) => r.fromNodeId === b!.id);
+      const cRefs = result.unresolvedReferences.filter((r) => r.fromNodeId === c!.id);
+      expect(bRefs.map((r) => r.referenceName)).toContain('a');
+      expect(cRefs.map((r) => r.referenceName)).toContain('a');
+      expect(cRefs.map((r) => r.referenceName)).toContain('b');
+    });
+  });
+});
