@@ -11,6 +11,25 @@ import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { clamp, validatePathWithinRoot } from '../utils';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { ToolDefinition, ToolResult } from './tool-types';
+import type { ToolHandlerLike } from './tools/types';
+import { getToolModule, tools as registryTools } from './tools/registry';
+
+// Re-export shared types so existing consumers (`import { ToolDefinition,
+// ToolResult } from './tools'`) keep working unchanged.
+export type { ToolDefinition, ToolResult } from './tool-types';
+
+/**
+ * The MCP `list_tools` array, derived from the per-tool registry
+ * (`./tools/<name>.ts`). Adding a new tool no longer touches this
+ * array — drop a file in `./tools/` and add it to
+ * `./tools/registry.ts`.
+ *
+ * Typed as a mutable array (matching the original export shape)
+ * even though the underlying registry produces a readonly value;
+ * we slice() to materialize a fresh, mutable copy at module load.
+ */
+export const tools: ToolDefinition[] = registryTools.slice();
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
@@ -42,248 +61,6 @@ function markSessionConsulted(sessionId: string): void {
   }
 }
 
-/**
- * MCP Tool definition
- */
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: {
-    type: 'object';
-    properties: Record<string, PropertySchema>;
-    required?: string[];
-  };
-}
-
-interface PropertySchema {
-  type: string;
-  description: string;
-  enum?: string[];
-  default?: unknown;
-}
-
-/**
- * Tool execution result
- */
-export interface ToolResult {
-  content: Array<{
-    type: 'text';
-    text: string;
-  }>;
-  isError?: boolean;
-}
-
-/**
- * Common projectPath property for cross-project queries
- */
-const projectPathProperty: PropertySchema = {
-  type: 'string',
-  description: 'Path to a different project with .codegraph/ initialized. If omitted, uses current project. Use this to query other codebases.',
-};
-
-/**
- * All CodeGraph MCP tools
- *
- * Designed for minimal context usage - use codegraph_context as the primary tool,
- * and only use other tools for targeted follow-up queries.
- *
- * All tools support cross-project queries via the optional `projectPath` parameter.
- */
-export const tools: ToolDefinition[] = [
-  {
-    name: 'codegraph_search',
-    description: 'Quick symbol search by name. Returns locations only (no code). Use codegraph_context instead for comprehensive task context.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'Symbol name or partial name (e.g., "auth", "signIn", "UserService")',
-        },
-        kind: {
-          type: 'string',
-          description: 'Filter by node kind',
-          enum: ['function', 'method', 'class', 'interface', 'type', 'variable', 'route', 'component'],
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum results (default: 10)',
-          default: 10,
-        },
-        projectPath: projectPathProperty,
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'codegraph_context',
-    description: 'PRIMARY TOOL: Build comprehensive context for a task. Returns entry points, related symbols, and key code - often enough to understand the codebase without additional tool calls. NOTE: This provides CODE context, not product requirements. For new features, still clarify UX/behavior questions with the user before implementing.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        task: {
-          type: 'string',
-          description: 'Description of the task, bug, or feature to build context for',
-        },
-        maxNodes: {
-          type: 'number',
-          description: 'Maximum symbols to include (default: 20)',
-          default: 20,
-        },
-        includeCode: {
-          type: 'boolean',
-          description: 'Include code snippets for key symbols (default: true)',
-          default: true,
-        },
-        projectPath: projectPathProperty,
-      },
-      required: ['task'],
-    },
-  },
-  {
-    name: 'codegraph_callers',
-    description: 'Find all functions/methods that call a specific symbol. Useful for understanding usage patterns and impact of changes.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        symbol: {
-          type: 'string',
-          description: 'Name of the function, method, or class to find callers for',
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum number of callers to return (default: 20)',
-          default: 20,
-        },
-        projectPath: projectPathProperty,
-      },
-      required: ['symbol'],
-    },
-  },
-  {
-    name: 'codegraph_callees',
-    description: 'Find all functions/methods that a specific symbol calls. Useful for understanding dependencies and code flow.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        symbol: {
-          type: 'string',
-          description: 'Name of the function, method, or class to find callees for',
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum number of callees to return (default: 20)',
-          default: 20,
-        },
-        projectPath: projectPathProperty,
-      },
-      required: ['symbol'],
-    },
-  },
-  {
-    name: 'codegraph_impact',
-    description: 'Analyze the impact radius of changing a symbol. Shows what code could be affected by modifications.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        symbol: {
-          type: 'string',
-          description: 'Name of the symbol to analyze impact for',
-        },
-        depth: {
-          type: 'number',
-          description: 'How many levels of dependencies to traverse (default: 2)',
-          default: 2,
-        },
-        projectPath: projectPathProperty,
-      },
-      required: ['symbol'],
-    },
-  },
-  {
-    name: 'codegraph_node',
-    description: 'Get detailed information about a specific code symbol. Use includeCode=true only when you need the full source code - otherwise just get location and signature to minimize context usage.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        symbol: {
-          type: 'string',
-          description: 'Name of the symbol to get details for',
-        },
-        includeCode: {
-          type: 'boolean',
-          description: 'Include full source code (default: false to minimize context)',
-          default: false,
-        },
-        projectPath: projectPathProperty,
-      },
-      required: ['symbol'],
-    },
-  },
-  {
-    name: 'codegraph_explore',
-    description: 'Deep exploration tool — returns comprehensive context for a topic in a SINGLE call. Groups all relevant source code by file (contiguous sections, not snippets), includes a relationship map, and uses deeper graph traversal. Designed to replace multiple codegraph_node + file Read calls. Use this instead of codegraph_context when you need thorough understanding. IMPORTANT: Use specific symbol names, file names, or short code terms in your query — NOT natural language sentences. Before calling this, use codegraph_search to discover relevant symbol names, then include those names in your query. Bad: "how are agent prompts loaded and passed to the CLI". Good: "readAgentsFromDirectory createClaudeSession chat-manager agents.ts".',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'Symbol names, file names, or short code terms to explore (e.g., "AuthService loginUser session-manager", "GraphTraverser BFS impact traversal.ts"). Use codegraph_search first to find relevant names.',
-        },
-        maxFiles: {
-          type: 'number',
-          description: 'Maximum number of files to include source code from (default: 12)',
-          default: 12,
-        },
-        projectPath: projectPathProperty,
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'codegraph_status',
-    description: 'Get the status of the CodeGraph index, including statistics about indexed files, nodes, and edges.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        projectPath: projectPathProperty,
-      },
-    },
-  },
-  {
-    name: 'codegraph_files',
-    description: 'REQUIRED for file/folder exploration. Get the project file structure from the CodeGraph index. Returns a tree view of all indexed files with metadata (language, symbol count). Much faster than Glob/filesystem scanning. Use this FIRST when exploring project structure, finding files, or understanding codebase organization.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'Filter to files under this directory path (e.g., "src/components"). Returns all files if not specified.',
-        },
-        pattern: {
-          type: 'string',
-          description: 'Filter files matching this glob pattern (e.g., "*.tsx", "**/*.test.ts")',
-        },
-        format: {
-          type: 'string',
-          description: 'Output format: "tree" (hierarchical, default), "flat" (simple list), "grouped" (by language)',
-          enum: ['tree', 'flat', 'grouped'],
-          default: 'tree',
-        },
-        includeMetadata: {
-          type: 'boolean',
-          description: 'Include file metadata like language and symbol count (default: true)',
-          default: true,
-        },
-        maxDepth: {
-          type: 'number',
-          description: 'Maximum directory depth to show (default: unlimited)',
-        },
-        projectPath: projectPathProperty,
-      },
-    },
-  },
-];
 
 /**
  * Tool handler that executes tools against a CodeGraph instance
@@ -291,7 +68,7 @@ export const tools: ToolDefinition[] = [
  * Supports cross-project queries via the projectPath parameter.
  * Other projects are opened on-demand and cached for performance.
  */
-export class ToolHandler {
+export class ToolHandler implements ToolHandlerLike {
   // Cache of opened CodeGraph instances for cross-project queries
   private projectCache: Map<string, CodeGraph> = new Map();
 
@@ -404,32 +181,24 @@ export class ToolHandler {
   }
 
   /**
-   * Execute a tool by name
+   * Execute a tool by name.
+   *
+   * The dispatch table lives in `./tools/registry.ts` — this method
+   * just looks up the tool's `handlerKey` and invokes the matching
+   * `handle<Name>` method on this class. Adding a new tool means
+   * registering a `ToolModule` (one new file under `./tools/`,
+   * one entry in the registry) plus implementing
+   * `handle<Name>(args)` here.
    */
   async execute(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
     try {
-      switch (toolName) {
-        case 'codegraph_search':
-          return await this.handleSearch(args);
-        case 'codegraph_context':
-          return await this.handleContext(args);
-        case 'codegraph_callers':
-          return await this.handleCallers(args);
-        case 'codegraph_callees':
-          return await this.handleCallees(args);
-        case 'codegraph_impact':
-          return await this.handleImpact(args);
-        case 'codegraph_explore':
-          return await this.handleExplore(args);
-        case 'codegraph_node':
-          return await this.handleNode(args);
-        case 'codegraph_status':
-          return await this.handleStatus(args);
-        case 'codegraph_files':
-          return await this.handleFiles(args);
-        default:
-          return this.errorResult(`Unknown tool: ${toolName}`);
-      }
+      const mod = getToolModule(toolName);
+      if (!mod) return this.errorResult(`Unknown tool: ${toolName}`);
+      // `implements ToolHandlerLike` makes this lookup type-safe:
+      // `mod.handlerKey` is constrained to `HandlerKey`, and every
+      // member of that union maps to an `(args) => Promise<ToolResult>`
+      // method on `this` (verified at compile time, not at runtime).
+      return await this[mod.handlerKey](args);
     } catch (err) {
       return this.errorResult(`Tool execution failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -438,7 +207,7 @@ export class ToolHandler {
   /**
    * Handle codegraph_search
    */
-  private async handleSearch(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleSearch(args: Record<string, unknown>): Promise<ToolResult> {
     const query = this.validateString(args.query, 'query');
     if (typeof query !== 'string') return query;
 
@@ -463,7 +232,7 @@ export class ToolHandler {
   /**
    * Handle codegraph_context
    */
-  private async handleContext(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleContext(args: Record<string, unknown>): Promise<ToolResult> {
     const task = this.validateString(args.task, 'task');
     if (typeof task !== 'string') return task;
 
@@ -529,7 +298,7 @@ export class ToolHandler {
   /**
    * Handle codegraph_callers
    */
-  private async handleCallers(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleCallers(args: Record<string, unknown>): Promise<ToolResult> {
     const symbol = this.validateString(args.symbol, 'symbol');
     if (typeof symbol !== 'string') return symbol;
 
@@ -564,7 +333,7 @@ export class ToolHandler {
   /**
    * Handle codegraph_callees
    */
-  private async handleCallees(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleCallees(args: Record<string, unknown>): Promise<ToolResult> {
     const symbol = this.validateString(args.symbol, 'symbol');
     if (typeof symbol !== 'string') return symbol;
 
@@ -599,7 +368,7 @@ export class ToolHandler {
   /**
    * Handle codegraph_impact
    */
-  private async handleImpact(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleImpact(args: Record<string, unknown>): Promise<ToolResult> {
     const symbol = this.validateString(args.symbol, 'symbol');
     if (typeof symbol !== 'string') return symbol;
 
@@ -650,7 +419,7 @@ export class ToolHandler {
    * then read contiguous file sections covering all symbols per file.
    * This replaces multiple codegraph_node + Read calls.
    */
-  private async handleExplore(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleExplore(args: Record<string, unknown>): Promise<ToolResult> {
     const query = this.validateString(args.query, 'query');
     if (typeof query !== 'string') return query;
 
@@ -936,7 +705,7 @@ export class ToolHandler {
   /**
    * Handle codegraph_node
    */
-  private async handleNode(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleNode(args: Record<string, unknown>): Promise<ToolResult> {
     const symbol = this.validateString(args.symbol, 'symbol');
     if (typeof symbol !== 'string') return symbol;
 
@@ -962,7 +731,7 @@ export class ToolHandler {
   /**
    * Handle codegraph_status
    */
-  private async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const stats = cg.getStats();
 
@@ -996,7 +765,7 @@ export class ToolHandler {
   /**
    * Handle codegraph_files - get project file structure from the index
    */
-  private async handleFiles(args: Record<string, unknown>): Promise<ToolResult> {
+  async handleFiles(args: Record<string, unknown>): Promise<ToolResult> {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const pathFilter = args.path as string | undefined;
     const pattern = args.pattern as string | undefined;
@@ -1364,13 +1133,13 @@ export class ToolHandler {
     return context.summary || 'No context found';
   }
 
-  private textResult(text: string): ToolResult {
+  textResult(text: string): ToolResult {
     return {
       content: [{ type: 'text', text }],
     };
   }
 
-  private errorResult(message: string): ToolResult {
+  errorResult(message: string): ToolResult {
     return {
       content: [{ type: 'text', text: `Error: ${message}` }],
       isError: true,
