@@ -30,6 +30,7 @@ import { MIGRATION as MIG_004 } from './004-centrality-churn';
 import { MIGRATION as MIG_005 } from './005-symbol-issues';
 import { MIGRATION as MIG_006 } from './006-config-refs';
 import { MIGRATION as MIG_007 } from './007-sql-refs';
+import { MIGRATION as MIG_008 } from './008-edges-unique';
 
 interface ModuleRef {
   /**
@@ -56,6 +57,7 @@ const REGISTERED_MODULES: readonly ModuleRef[] = [
   { filename: '005-symbol-issues.ts', module: MIG_005 },
   { filename: '006-config-refs.ts', module: MIG_006 },
   { filename: '007-sql-refs.ts', module: MIG_007 },
+  { filename: '008-edges-unique.ts', module: MIG_008 },
 ];
 
 /** Strict 3-digit prefix on each migration filename. */
