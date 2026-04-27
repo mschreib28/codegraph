@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../../utils';
 
 export const djangoResolver: FrameworkResolver = {
   name: 'django',
@@ -77,6 +78,10 @@ export const djangoResolver: FrameworkResolver = {
   extractNodes(filePath: string, content: string): Node[] {
     const nodes: Node[] = [];
     const now = Date.now();
+    // Neutralize comments and docstrings so a `path('/x', view)` example in
+    // a docstring isn't extracted as a real route. Newlines preserved so
+    // line numbers stay correct.
+    const safe = stripCommentsForRegex(content, 'python');
 
     // Extract URL patterns
     // path('route/', view, name='name')
@@ -87,9 +92,9 @@ export const djangoResolver: FrameworkResolver = {
 
     for (const pattern of urlPatterns) {
       let match;
-      while ((match = pattern.exec(content)) !== null) {
+      while ((match = pattern.exec(safe)) !== null) {
         const [, urlPath] = match;
-        const line = content.slice(0, match.index).split('\n').length;
+        const line = safe.slice(0, match.index).split('\n').length;
 
         nodes.push({
           id: `route:${filePath}:${urlPath}:${line}`,
@@ -157,15 +162,16 @@ export const flaskResolver: FrameworkResolver = {
   extractNodes(filePath: string, content: string): Node[] {
     const nodes: Node[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'python');
 
     // Extract Flask route decorators
     // @app.route('/path') or @blueprint.route('/path')
     const routePattern = /@(\w+)\.route\s*\(\s*['"]([^'"]+)['"]/g;
 
     let match;
-    while ((match = routePattern.exec(content)) !== null) {
+    while ((match = routePattern.exec(safe)) !== null) {
       const [, _appOrBp, routePath] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `route:${filePath}:${routePath}:${line}`,
@@ -245,15 +251,16 @@ export const fastapiResolver: FrameworkResolver = {
   extractNodes(filePath: string, content: string): Node[] {
     const nodes: Node[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'python');
 
     // Extract FastAPI route decorators
     // @app.get('/path') or @router.post('/path')
     const routePattern = /@(\w+)\.(get|post|put|patch|delete|options|head)\s*\(\s*['"]([^'"]+)['"]/g;
 
     let match;
-    while ((match = routePattern.exec(content)) !== null) {
+    while ((match = routePattern.exec(safe)) !== null) {
       const [, _appOrRouter, method, routePath] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `route:${filePath}:${method!.toUpperCase()}:${routePath}:${line}`,

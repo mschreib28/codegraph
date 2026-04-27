@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../../utils';
 
 export const expressResolver: FrameworkResolver = {
   name: 'express',
@@ -93,6 +94,9 @@ export const expressResolver: FrameworkResolver = {
   extractNodes(filePath: string, content: string): Node[] {
     const nodes: Node[] = [];
     const now = Date.now();
+    // Neutralize comments and JSDoc blocks so a `app.get('/x')` example in
+    // a comment isn't extracted as a real route.
+    const safe = stripCommentsForRegex(content, 'javascript');
 
     // Extract route definitions
     // app.get('/path', handler) or router.get('/path', handler)
@@ -102,9 +106,9 @@ export const expressResolver: FrameworkResolver = {
 
     for (const pattern of routePatterns) {
       let match;
-      while ((match = pattern.exec(content)) !== null) {
+      while ((match = pattern.exec(safe)) !== null) {
         const [, _obj, method, path] = match;
-        const line = content.slice(0, match.index).split('\n').length;
+        const line = safe.slice(0, match.index).split('\n').length;
 
         // Skip middleware use() without paths
         if (method === 'use' && !path?.startsWith('/')) {

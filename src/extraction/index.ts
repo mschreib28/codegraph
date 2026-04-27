@@ -20,7 +20,7 @@ import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
 import { detectLanguage, isLanguageSupported, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { logDebug, logWarn } from '../errors';
-import { validatePathWithinRoot, normalizePath } from '../utils';
+import { validatePathWithinRoot, normalizePath, stripBom, stripCommentLinesForRetry } from '../utils';
 import picomatch from 'picomatch';
 
 /**
@@ -85,10 +85,15 @@ export interface SyncResult {
 }
 
 /**
- * Calculate SHA256 hash of file contents
+ * Calculate SHA256 hash of file contents.
+ *
+ * A leading UTF-8 BOM is stripped before hashing so files round-tripped
+ * through editors that disagree about BOM handling (VSCode strips by
+ * default; some Windows editors preserve it) hash identically and don't
+ * appear "modified" on every sync.
  */
 export function hashContent(content: string): string {
-  return crypto.createHash('sha256').update(content).digest('hex');
+  return crypto.createHash('sha256').update(stripBom(content)).digest('hex');
 }
 
 /**
@@ -998,11 +1003,12 @@ export class ExtractionOrchestrator {
           }
 
           // Strip lines that are entirely comments (preserving line numbers
-          // by replacing with empty lines so node positions stay correct)
-          const stripped = fullContent
-            .split('\n')
-            .map(line => /^\s*\/\//.test(line) ? '' : line)
-            .join('\n');
+          // by replacing with empty lines so node positions stay correct).
+          // The marker is language-specific — the previous hardcoded `//`
+          // was a no-op for Python (`#`), Ruby (`#`), etc., so those files
+          // would silently keep failing on the retry.
+          const language = detectLanguage(filePath, fullContent);
+          const stripped = stripCommentLinesForRetry(fullContent, language);
 
           let result: ExtractionResult;
           try {
@@ -1012,7 +1018,6 @@ export class ExtractionOrchestrator {
           }
 
           if (result.nodes.length > 0 || result.errors.length === 0) {
-            const language = detectLanguage(filePath, fullContent);
             const stats = await fsp.stat(path.join(this.rootDir, filePath));
             this.storeExtractionResult(filePath, fullContent, language, stats, result);
 
