@@ -24,6 +24,7 @@ import { logDebug } from '../errors';
 
 import { HOOK as CENTRALITY_HOOK } from './centrality';
 import { HOOK as CHURN_HOOK } from './churn';
+import { HOOK as ISSUE_HISTORY_HOOK } from './issue-history';
 
 /**
  * Static-import list of every registered hook.
@@ -36,6 +37,7 @@ import { HOOK as CHURN_HOOK } from './churn';
 const REGISTERED_HOOKS: readonly IndexHook[] = [
   CENTRALITY_HOOK,
   CHURN_HOOK,
+  ISSUE_HISTORY_HOOK,
 ];
 
 /**

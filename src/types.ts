@@ -511,6 +511,13 @@ export interface CodeGraphConfig {
    * Enabled by default.
    */
   enableChurn?: boolean;
+
+  /**
+   * Mine `Fixes/Closes/Resolves #N` commits and attribute issues to
+   * symbols touched by their hunks. Enabled by default; turn off on
+   * non-GitHub repos or where issue refs are noisy.
+   */
+  enableIssueHistory?: boolean;
 }
 
 // `DEFAULT_CONFIG` lives in `./default-config.ts` so its `include`

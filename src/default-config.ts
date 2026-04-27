@@ -185,6 +185,7 @@ const baseConfig: CodeGraphConfig = {
   trackCallSites: true,
   enableCentrality: true,
   enableChurn: true,
+  enableIssueHistory: true,
 };
 
 Object.defineProperty(baseConfig, 'include', {

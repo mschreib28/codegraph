@@ -1514,4 +1514,69 @@ export class QueryBuilder {
     }>;
     return rows;
   }
+
+  // ===========================================================================
+  // Symbol-issue attributions (mined from git history)
+  // ===========================================================================
+
+  applyIssueAttributions(
+    rows: Iterable<{
+      nodeId: string;
+      issueNumber: number;
+      commitSha: string;
+      kind: 'modified' | 'added' | 'removed';
+    }>
+  ): void {
+    const stmt = this.db.prepare(
+      `INSERT OR IGNORE INTO symbol_issues (node_id, issue_number, commit_sha, kind)
+       VALUES (?, ?, ?, ?)`
+    );
+    this.db.transaction(() => {
+      for (const r of rows) {
+        stmt.run(r.nodeId, r.issueNumber, r.commitSha, r.kind);
+      }
+    })();
+  }
+
+  clearIssueAttributions(): void {
+    this.db.exec('DELETE FROM symbol_issues');
+  }
+
+  getIssuesForNode(nodeId: string): Array<{
+    issueNumber: number;
+    kind: 'modified' | 'added' | 'removed';
+    commitSha: string;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT issue_number AS issueNumber, kind, commit_sha AS commitSha
+         FROM symbol_issues
+         WHERE node_id = ?
+         ORDER BY issue_number ASC, kind ASC`
+      )
+      .all(nodeId) as Array<{
+      issueNumber: number;
+      kind: 'modified' | 'added' | 'removed';
+      commitSha: string;
+    }>;
+  }
+
+  getNodesForIssue(issueNumber: number): Array<{
+    nodeId: string;
+    kind: 'modified' | 'added' | 'removed';
+    commitSha: string;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT node_id AS nodeId, kind, commit_sha AS commitSha
+         FROM symbol_issues
+         WHERE issue_number = ?
+         ORDER BY node_id ASC`
+      )
+      .all(issueNumber) as Array<{
+      nodeId: string;
+      kind: 'modified' | 'added' | 'removed';
+      commitSha: string;
+    }>;
+  }
 }

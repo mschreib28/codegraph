@@ -724,7 +724,10 @@ export class ToolHandler implements ToolHandlerLike {
       code = await cg.getCode(match.node.id);
     }
 
-    const formatted = this.formatNodeDetails(match.node, code) + match.note;
+    // Surface issue history (mined from `Fixes #N` commits).
+    const issues = cg.getIssuesForNode(match.node.id);
+
+    const formatted = this.formatNodeDetails(match.node, code, issues) + match.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -1156,7 +1159,15 @@ export class ToolHandler implements ToolHandlerLike {
     return lines.join('\n');
   }
 
-  private formatNodeDetails(node: Node, code: string | null): string {
+  private formatNodeDetails(
+    node: Node,
+    code: string | null,
+    issues: Array<{
+      issueNumber: number;
+      kind: 'modified' | 'added' | 'removed';
+      commitSha: string;
+    }> = []
+  ): string {
     const location = node.startLine ? `:${node.startLine}` : '';
     const lines: string[] = [
       `## ${node.name} (${node.kind})`,
@@ -1166,6 +1177,25 @@ export class ToolHandler implements ToolHandlerLike {
 
     if (node.signature) {
       lines.push(`**Signature:** \`${node.signature}\``);
+    }
+
+    if (issues.length > 0) {
+      const byKind: Record<'modified' | 'added' | 'removed', Set<number>> = {
+        modified: new Set(),
+        added: new Set(),
+        removed: new Set(),
+      };
+      for (const i of issues) byKind[i.kind].add(i.issueNumber);
+      const parts: string[] = [];
+      for (const k of ['modified', 'added', 'removed'] as const) {
+        const set = byKind[k];
+        if (set.size === 0) continue;
+        const sorted = [...set].sort((a, b) => a - b);
+        parts.push(`#${sorted.join(', #')} (${k})`);
+      }
+      if (parts.length > 0) {
+        lines.push(`**Issues:** ${parts.join(' — ')}`);
+      }
     }
 
     // Only include docstring if it's short and useful

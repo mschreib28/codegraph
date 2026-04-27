@@ -568,6 +568,14 @@ export class CodeGraph {
     return this.queries.getHotspots(opts);
   }
 
+  getIssuesForNode(nodeId: string): Array<{
+    issueNumber: number;
+    kind: 'modified' | 'added' | 'removed';
+    commitSha: string;
+  }> {
+    return this.queries.getIssuesForNode(nodeId);
+  }
+
   // ===========================================================================
   // File Watching
   // ===========================================================================

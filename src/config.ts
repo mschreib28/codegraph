@@ -130,6 +130,7 @@ function mergeConfig(
     customPatterns: overrides.customPatterns ?? defaults.customPatterns,
     enableCentrality: overrides.enableCentrality ?? defaults.enableCentrality,
     enableChurn: overrides.enableChurn ?? defaults.enableChurn,
+    enableIssueHistory: overrides.enableIssueHistory ?? defaults.enableIssueHistory,
   };
 }
 

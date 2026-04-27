@@ -155,3 +155,19 @@ CREATE TABLE IF NOT EXISTS project_metadata (
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+-- Issue → symbol attribution mined from git history.
+-- One row per (node, issue, commit, kind) tuple; kind is 'modified'
+-- (enclosing function changed by hunk), 'added' (declaration on a +
+-- line), or 'removed' (declaration on a - line, dropped at lookup
+-- time when no current node matches).
+CREATE TABLE IF NOT EXISTS symbol_issues (
+    node_id TEXT NOT NULL,
+    issue_number INTEGER NOT NULL,
+    commit_sha TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('modified','added','removed')),
+    PRIMARY KEY (node_id, issue_number, commit_sha, kind),
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_symbol_issues_node ON symbol_issues(node_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_issues_issue ON symbol_issues(issue_number);
