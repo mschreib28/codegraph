@@ -188,6 +188,7 @@ const baseConfig: CodeGraphConfig = {
   enableIssueHistory: true,
   enableConfigRefs: true,
   enableSqlRefs: true,
+  indexSubmodules: true,
 };
 
 Object.defineProperty(baseConfig, 'include', {

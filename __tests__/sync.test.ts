@@ -281,8 +281,6 @@ describe('Sync Module', () => {
       git('init');
       git('config', 'user.email', 'test@test.com');
       git('config', 'user.name', 'Test');
-      // Pin initial branch name so subsequent checkouts are deterministic
-      // across git versions that default to master vs main.
       git('symbolic-ref', 'HEAD', 'refs/heads/main');
 
       const srcDir = path.join(testDir, 'src');
@@ -309,7 +307,6 @@ describe('Sync Module', () => {
     });
 
     it('should detect changes brought in by `git merge`', async () => {
-      // Branch off, modify on the branch, commit, switch back, merge.
       git('checkout', '-b', 'feature');
       fs.writeFileSync(
         path.join(testDir, 'src', 'index.ts'),
@@ -324,7 +321,6 @@ describe('Sync Module', () => {
       git('checkout', 'main');
       git('merge', '--no-ff', 'feature', '-m', 'merge feature');
 
-      // Working tree is clean post-merge — `git status` shows nothing.
       const result = await cg.sync();
 
       expect(result.filesModified + result.filesAdded).toBeGreaterThanOrEqual(2);
@@ -342,11 +338,6 @@ describe('Sync Module', () => {
       git('add', '-A');
       git('commit', '-m', 'other work');
       git('checkout', 'main');
-      // We're back on main, where `hello` exists. Before the fix, sync
-      // here would no-op because the working tree matches HEAD (= main).
-      // But the index was last synced against `other`, so we expect the
-      // diff main..other to flow through and bring the index in line
-      // with the current branch.
       git('checkout', 'other');
 
       const result = await cg.sync();
@@ -367,18 +358,12 @@ describe('Sync Module', () => {
     });
 
     it('should fall back to full scan when last-synced HEAD is unreachable', async () => {
-      // Modify and commit, then rewrite history so the previously-synced
-      // HEAD (recorded by indexAll in beforeEach) is no longer reachable.
       fs.writeFileSync(
         path.join(testDir, 'src', 'index.ts'),
         `export function rewritten() { return 'rewritten'; }`
       );
       git('add', '-A');
       git('commit', '--amend', '-m', 'rewritten');
-      // `git gc --prune=now` would sever the orphaned commit, but amending
-      // already moves HEAD to a new SHA the index has never seen and the
-      // OLD SHA may or may not be reachable. We verify behavior is correct
-      // either way: sync brings the index in line with current state.
       const result = await cg.sync();
 
       expect(result.filesModified + result.filesAdded).toBeGreaterThanOrEqual(1);
@@ -387,12 +372,129 @@ describe('Sync Module', () => {
     });
 
     it('should still no-op when HEAD has not moved and tree is clean', async () => {
-      // Sanity: the new HEAD-tracking code must not introduce spurious work.
       const result = await cg.sync();
 
       expect(result.filesAdded).toBe(0);
       expect(result.filesModified).toBe(0);
       expect(result.filesRemoved).toBe(0);
+    });
+  });
+
+  describe('Git submodule support', () => {
+    let parentDir: string;
+    let submoduleSrc: string;
+    let cg: CodeGraph;
+
+    function git(cwd: string, ...args: string[]) {
+      execFileSync('git', args, { cwd, stdio: 'pipe' });
+    }
+
+    beforeEach(async () => {
+      parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-submod-parent-'));
+      submoduleSrc = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-submod-src-'));
+
+      git(submoduleSrc, 'init');
+      git(submoduleSrc, 'config', 'user.email', 'test@test.com');
+      git(submoduleSrc, 'config', 'user.name', 'Test');
+      fs.writeFileSync(
+        path.join(submoduleSrc, 'lib.ts'),
+        `export function fromSubmodule() { return 'sub'; }`
+      );
+      git(submoduleSrc, 'add', '-A');
+      git(submoduleSrc, 'commit', '-m', 'submodule initial');
+
+      git(parentDir, 'init');
+      git(parentDir, 'config', 'user.email', 'test@test.com');
+      git(parentDir, 'config', 'user.name', 'Test');
+
+      const parentSrc = path.join(parentDir, 'src');
+      fs.mkdirSync(parentSrc);
+      fs.writeFileSync(
+        path.join(parentSrc, 'main.ts'),
+        `export function fromParent() { return 'parent'; }`
+      );
+
+      git(parentDir, '-c', 'protocol.file.allow=always', 'submodule', 'add', submoduleSrc, 'vendor/sub');
+      git(parentDir, 'add', '-A');
+      git(parentDir, 'commit', '-m', 'parent initial with submodule');
+
+      cg = CodeGraph.initSync(parentDir, {
+        config: {
+          include: ['**/*.ts'],
+          exclude: [],
+        },
+      });
+    });
+
+    afterEach(() => {
+      if (cg) cg.destroy();
+      if (fs.existsSync(parentDir)) fs.rmSync(parentDir, { recursive: true, force: true });
+      if (fs.existsSync(submoduleSrc)) fs.rmSync(submoduleSrc, { recursive: true, force: true });
+    });
+
+    it('should index files inside a submodule on full index', async () => {
+      const result = await cg.indexAll();
+
+      expect(result.filesIndexed).toBeGreaterThanOrEqual(2);
+      const subNodes = cg.searchNodes('fromSubmodule');
+      const parentNodes = cg.searchNodes('fromParent');
+      expect(subNodes.length).toBeGreaterThan(0);
+      expect(parentNodes.length).toBeGreaterThan(0);
+      expect(subNodes.some((r) => r.node.filePath.startsWith('vendor/sub/'))).toBe(true);
+    });
+
+    it('should detect modifications to files inside a submodule via sync', async () => {
+      await cg.indexAll();
+
+      fs.writeFileSync(
+        path.join(parentDir, 'vendor/sub/lib.ts'),
+        `export function fromSubmodule() { return 'changed'; }`
+      );
+
+      const result = await cg.sync();
+
+      expect(result.filesModified).toBe(1);
+      expect(result.changedFilePaths).toContain('vendor/sub/lib.ts');
+    });
+
+    it('should detect new untracked files inside a submodule via sync', async () => {
+      await cg.indexAll();
+
+      fs.writeFileSync(
+        path.join(parentDir, 'vendor/sub/newfile.ts'),
+        `export function added() { return 1; }`
+      );
+
+      const result = await cg.sync();
+
+      expect(result.filesAdded).toBe(1);
+      expect(result.changedFilePaths).toContain('vendor/sub/newfile.ts');
+    });
+
+    it('should not break when a submodule directory is missing or empty', async () => {
+      fs.rmSync(path.join(parentDir, 'vendor/sub'), { recursive: true, force: true });
+      fs.mkdirSync(path.join(parentDir, 'vendor/sub'));
+
+      const result = await cg.indexAll();
+      expect(result.errors.filter((e) => e.severity === 'error').length).toBe(0);
+      expect(cg.searchNodes('fromParent').length).toBeGreaterThan(0);
+    });
+
+    it('should skip submodule contents when indexSubmodules is false', async () => {
+      cg.destroy();
+      fs.rmSync(path.join(parentDir, '.codegraph'), { recursive: true, force: true });
+      cg = CodeGraph.initSync(parentDir, {
+        config: {
+          include: ['**/*.ts'],
+          exclude: [],
+          indexSubmodules: false,
+        },
+      });
+
+      const result = await cg.indexAll();
+      expect(cg.searchNodes('fromParent').length).toBeGreaterThan(0);
+      expect(cg.searchNodes('fromSubmodule').length).toBe(0);
+      expect(result.filesIndexed).toBe(1);
     });
   });
 });

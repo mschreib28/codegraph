@@ -506,6 +506,14 @@ export interface CodeGraphConfig {
   /** Whether to track call sites */
   trackCallSites: boolean;
 
+  /**
+   * Whether to recurse into git submodules during indexing and sync.
+   * Default: true. Set to false to skip submodule contents (useful when
+   * a submodule pulls in a large vendor tree you don't want indexed —
+   * adding the path to `exclude` also works).
+   */
+  indexSubmodules?: boolean;
+
   /** Custom symbol patterns to extract */
   customPatterns?: {
     /** Name for this pattern group */
@@ -556,6 +564,7 @@ export interface CodeGraphConfig {
 // cycles. Re-exported here for backward compat with consumers that
 // already import it from `'./types'`.
 export { DEFAULT_CONFIG } from './default-config';
+
 
 // =============================================================================
 // Database Types
