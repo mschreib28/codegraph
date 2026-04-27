@@ -42,18 +42,39 @@ const fakeSyncResult: SyncResult = {
 };
 
 describe('index-hooks registry — runner', () => {
-  it('main ships with no registered hooks', () => {
-    expect(getRegisteredHooks().length).toBe(0);
+  it('registered hooks expose stable {name, afterIndexAll|afterSync} shape', () => {
+    const hooks = getRegisteredHooks();
+    expect(hooks.length).toBeGreaterThanOrEqual(0);
+    for (const h of hooks) {
+      expect(typeof h.name).toBe('string');
+      expect(h.afterIndexAll === undefined || typeof h.afterIndexAll === 'function').toBe(true);
+      expect(h.afterSync === undefined || typeof h.afterSync === 'function').toBe(true);
+    }
   });
 
-  it('runAfterIndexAll on an empty registry returns an empty outcome list', async () => {
+  it('runAfterIndexAll returns one outcome per registered hook, swallowing per-hook errors', async () => {
+    // Registered hooks will throw on the fake `{} as any` ctx; the
+    // runner contract is to catch + report each error so one bad
+    // hook never fails the whole pass.
     const outcomes = await runAfterIndexAll(makeFakeContext());
-    expect(outcomes).toEqual([]);
+    const expectedCount = getRegisteredHooks().filter((h) => h.afterIndexAll).length;
+    expect(outcomes.length).toBe(expectedCount);
+    for (const o of outcomes) {
+      expect(typeof o.name).toBe('string');
+      expect(o.phase).toBe('indexAll');
+      expect(typeof o.durationMs).toBe('number');
+    }
   });
 
-  it('runAfterSync on an empty registry returns an empty outcome list', async () => {
+  it('runAfterSync returns one outcome per registered hook, swallowing per-hook errors', async () => {
     const outcomes = await runAfterSync(makeFakeContext(), fakeSyncResult);
-    expect(outcomes).toEqual([]);
+    const expectedCount = getRegisteredHooks().filter((h) => h.afterSync).length;
+    expect(outcomes.length).toBe(expectedCount);
+    for (const o of outcomes) {
+      expect(typeof o.name).toBe('string');
+      expect(o.phase).toBe('sync');
+      expect(typeof o.durationMs).toBe('number');
+    }
   });
 });
 

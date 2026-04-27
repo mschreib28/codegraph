@@ -31,7 +31,8 @@ export type HandlerKey =
   | 'handleExplore'
   | 'handleNode'
   | 'handleStatus'
-  | 'handleFiles';
+  | 'handleFiles'
+  | 'handleHotspots';
 
 /**
  * The minimum surface a `ToolHandler`-shaped object exposes for

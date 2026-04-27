@@ -128,6 +128,8 @@ function mergeConfig(
     extractDocstrings: overrides.extractDocstrings ?? defaults.extractDocstrings,
     trackCallSites: overrides.trackCallSites ?? defaults.trackCallSites,
     customPatterns: overrides.customPatterns ?? defaults.customPatterns,
+    enableCentrality: overrides.enableCentrality ?? defaults.enableCentrality,
+    enableChurn: overrides.enableChurn ?? defaults.enableChurn,
   };
 }
 

@@ -183,6 +183,8 @@ const baseConfig: CodeGraphConfig = {
   maxFileSize: 1024 * 1024, // 1MB
   extractDocstrings: true,
   trackCallSites: true,
+  enableCentrality: true,
+  enableChurn: true,
 };
 
 Object.defineProperty(baseConfig, 'include', {

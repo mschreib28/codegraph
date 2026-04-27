@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     is_abstract INTEGER DEFAULT 0,
     decorators TEXT, -- JSON array
     type_parameters TEXT, -- JSON array
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    centrality REAL DEFAULT NULL -- PageRank over calls+references; NULL until first compute
 );
 
 -- Edges: Relationships between nodes
@@ -63,7 +64,12 @@ CREATE TABLE IF NOT EXISTS files (
     modified_at INTEGER NOT NULL,
     indexed_at INTEGER NOT NULL,
     node_count INTEGER DEFAULT 0,
-    errors TEXT -- JSON array
+    errors TEXT, -- JSON array
+    -- Churn signals (mined from git log)
+    commit_count INTEGER NOT NULL DEFAULT 0,
+    loc INTEGER NOT NULL DEFAULT 0,
+    first_seen_ts INTEGER DEFAULT NULL, -- unix seconds
+    last_touched_ts INTEGER DEFAULT NULL -- unix seconds
 );
 
 -- Unresolved References: References that need resolution after full indexing
@@ -92,6 +98,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_language ON nodes(language);
 CREATE INDEX IF NOT EXISTS idx_nodes_file_line ON nodes(file_path, start_line);
 CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
+CREATE INDEX IF NOT EXISTS idx_nodes_centrality ON nodes(centrality DESC);
 
 -- Full-text search index on node names, docstrings, and signatures
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
@@ -132,6 +139,8 @@ CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
 -- File indexes
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
+CREATE INDEX IF NOT EXISTS idx_files_commit_count ON files(commit_count DESC);
+CREATE INDEX IF NOT EXISTS idx_files_last_touched ON files(last_touched_ts DESC);
 
 -- Unresolved refs indexes
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_node ON unresolved_refs(from_node_id);
