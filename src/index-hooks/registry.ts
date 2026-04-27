@@ -24,6 +24,7 @@ import { logDebug } from '../errors';
 
 import { HOOK as CENTRALITY_HOOK } from './centrality';
 import { HOOK as CHURN_HOOK } from './churn';
+import { HOOK as CONFIG_REFS_HOOK } from './config-refs';
 import { HOOK as ISSUE_HISTORY_HOOK } from './issue-history';
 
 /**
@@ -37,6 +38,7 @@ import { HOOK as ISSUE_HISTORY_HOOK } from './issue-history';
 const REGISTERED_HOOKS: readonly IndexHook[] = [
   CENTRALITY_HOOK,
   CHURN_HOOK,
+  CONFIG_REFS_HOOK,
   ISSUE_HISTORY_HOOK,
 ];
 

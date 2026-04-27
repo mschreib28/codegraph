@@ -1579,4 +1579,114 @@ export class QueryBuilder {
       commitSha: string;
     }>;
   }
+
+  // ===========================================================================
+  // Config references (env vars / feature flags read sites)
+  // ===========================================================================
+
+  applyConfigRefs(
+    rows: Array<{
+      configKind: 'env';
+      configKey: string;
+      sourceNodeId: string | null;
+      filePath: string;
+      line: number;
+    }>
+  ): void {
+    if (rows.length === 0) return;
+    const distinctFiles = new Set(rows.map((r) => r.filePath));
+    const deleteStmt = this.db.prepare('DELETE FROM config_refs WHERE file_path = ?');
+    const insertStmt = this.db.prepare(
+      `INSERT INTO config_refs (config_kind, config_key, source_node_id, file_path, line)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+    this.db.transaction(() => {
+      for (const f of distinctFiles) deleteStmt.run(f);
+      for (const r of rows) {
+        insertStmt.run(r.configKind, r.configKey, r.sourceNodeId, r.filePath, r.line);
+      }
+    })();
+  }
+
+  clearConfigRefs(): void {
+    this.db.exec('DELETE FROM config_refs');
+  }
+
+  deleteConfigRefsForPaths(filePaths: Iterable<string>): void {
+    const stmt = this.db.prepare('DELETE FROM config_refs WHERE file_path = ?');
+    this.db.transaction(() => {
+      for (const p of filePaths) stmt.run(p);
+    })();
+  }
+
+  pruneOrphanedConfigRefs(): void {
+    this.db.exec(
+      `DELETE FROM config_refs WHERE file_path NOT IN (SELECT path FROM files)`
+    );
+  }
+
+  getConfigKeys(opts: { configKind?: 'env'; limit?: number } = {}): Array<{
+    configKey: string;
+    reads: number;
+    distinctFiles: number;
+  }> {
+    const limit = opts.limit ?? 200;
+    const where = opts.configKind ? 'WHERE config_kind = ?' : '';
+    const params = opts.configKind ? [opts.configKind, limit] : [limit];
+    return this.db
+      .prepare(
+        `SELECT config_key AS configKey,
+                COUNT(*) AS reads,
+                COUNT(DISTINCT file_path) AS distinctFiles
+         FROM config_refs
+         ${where}
+         GROUP BY config_key
+         ORDER BY reads DESC, config_key ASC
+         LIMIT ?`
+      )
+      .all(...params) as Array<{ configKey: string; reads: number; distinctFiles: number }>;
+  }
+
+  getConfigRefsByKey(
+    configKey: string,
+    opts: { configKind?: 'env' } = {}
+  ): Array<{
+    filePath: string;
+    line: number;
+    sourceNodeId: string | null;
+    sourceName: string | null;
+    sourceKind: string | null;
+  }> {
+    const kind = opts.configKind ?? 'env';
+    return this.db
+      .prepare(
+        `SELECT cr.file_path AS filePath,
+                cr.line AS line,
+                cr.source_node_id AS sourceNodeId,
+                n.name AS sourceName,
+                n.kind AS sourceKind
+         FROM config_refs cr
+         LEFT JOIN nodes n ON n.id = cr.source_node_id
+         WHERE cr.config_kind = ? AND cr.config_key = ?
+         ORDER BY cr.file_path ASC, cr.line ASC`
+      )
+      .all(kind, configKey) as Array<{
+      filePath: string;
+      line: number;
+      sourceNodeId: string | null;
+      sourceName: string | null;
+      sourceKind: string | null;
+    }>;
+  }
+
+  getConfigKeysForNode(nodeId: string): Array<{ configKey: string; line: number }> {
+    return this.db
+      .prepare(
+        `SELECT config_key AS configKey, line
+         FROM config_refs
+         WHERE source_node_id = ?
+         ORDER BY config_key ASC, line ASC`
+      )
+      .all(nodeId) as Array<{ configKey: string; line: number }>;
+  }
 }

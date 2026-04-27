@@ -518,6 +518,12 @@ export interface CodeGraphConfig {
    * non-GitHub repos or where issue refs are noisy.
    */
   enableIssueHistory?: boolean;
+
+  /**
+   * Extract env-var / feature-flag read sites into config_refs.
+   * Enabled by default.
+   */
+  enableConfigRefs?: boolean;
 }
 
 // `DEFAULT_CONFIG` lives in `./default-config.ts` so its `include`

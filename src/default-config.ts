@@ -186,6 +186,7 @@ const baseConfig: CodeGraphConfig = {
   enableCentrality: true,
   enableChurn: true,
   enableIssueHistory: true,
+  enableConfigRefs: true,
 };
 
 Object.defineProperty(baseConfig, 'include', {

@@ -41,6 +41,7 @@ describe('MCP tool registry — single source of truth', () => {
     const expected = [
       'codegraph_callees',
       'codegraph_callers',
+      'codegraph_config',
       'codegraph_context',
       'codegraph_explore',
       'codegraph_files',

@@ -817,6 +817,51 @@ export class ToolHandler implements ToolHandlerLike {
   }
 
   /**
+   * Handle codegraph_config — env-var / config read-site queries.
+   */
+  async handleConfig(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const key = typeof args.key === 'string' ? args.key.trim() : '';
+
+    if (!key) {
+      const limit = args.limit != null ? clamp(args.limit as number, 1, 500) : 30;
+      const rows = cg.getConfigKeys({ configKind: 'env', limit });
+      if (rows.length === 0) {
+        return this.textResult(
+          'No config reads found. Either the index has no env-var read sites, or `enableConfigRefs` is disabled in config.'
+        );
+      }
+      const lines: string[] = [
+        `## Config keys read in this project (top ${rows.length})`,
+        '',
+        '| # | Key | Reads | Files |',
+        '|---|-----|------:|------:|',
+      ];
+      rows.forEach((r, i) => {
+        lines.push(`| ${i + 1} | \`${r.configKey}\` | ${r.reads} | ${r.distinctFiles} |`);
+      });
+      lines.push('', 'Pass `key` to a follow-up call to see exact read sites.');
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    }
+
+    const sites = cg.getConfigRefsByKey(key, { configKind: 'env' });
+    if (sites.length === 0) {
+      return this.textResult(`No reads found for env var "${key}".`);
+    }
+    const lines: string[] = [
+      `## Reads of \`${key}\` (${sites.length} site${sites.length === 1 ? '' : 's'})`,
+      '',
+    ];
+    for (const s of sites) {
+      const enclosing = s.sourceName
+        ? ` — ${s.sourceKind ?? 'symbol'} \`${s.sourceName}\``
+        : ' — top-level';
+      lines.push(`- \`${s.filePath}:${s.line}\`${enclosing}`);
+    }
+    return this.textResult(this.truncateOutput(lines.join('\n')));
+  }
+
+  /**
    * Handle codegraph_hotspots — files ranked by risk = centrality × churn.
    */
   async handleHotspots(args: Record<string, unknown>): Promise<ToolResult> {

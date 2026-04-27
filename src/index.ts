@@ -576,6 +576,23 @@ export class CodeGraph {
     return this.queries.getIssuesForNode(nodeId);
   }
 
+  getConfigKeys(opts: { configKind?: 'env'; limit?: number } = {}): ReturnType<
+    QueryBuilder['getConfigKeys']
+  > {
+    return this.queries.getConfigKeys(opts);
+  }
+
+  getConfigRefsByKey(
+    configKey: string,
+    opts: { configKind?: 'env' } = {}
+  ): ReturnType<QueryBuilder['getConfigRefsByKey']> {
+    return this.queries.getConfigRefsByKey(configKey, opts);
+  }
+
+  getConfigKeysForNode(nodeId: string): ReturnType<QueryBuilder['getConfigKeysForNode']> {
+    return this.queries.getConfigKeysForNode(nodeId);
+  }
+
   // ===========================================================================
   // File Watching
   // ===========================================================================

@@ -131,6 +131,7 @@ function mergeConfig(
     enableCentrality: overrides.enableCentrality ?? defaults.enableCentrality,
     enableChurn: overrides.enableChurn ?? defaults.enableChurn,
     enableIssueHistory: overrides.enableIssueHistory ?? defaults.enableIssueHistory,
+    enableConfigRefs: overrides.enableConfigRefs ?? defaults.enableConfigRefs,
   };
 }
 

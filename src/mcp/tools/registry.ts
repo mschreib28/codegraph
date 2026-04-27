@@ -20,6 +20,7 @@ import type { ToolModule } from './types';
 
 import { CALLEES_TOOL } from './callees';
 import { CALLERS_TOOL } from './callers';
+import { CONFIG_TOOL } from './config';
 import { CONTEXT_TOOL } from './context';
 import { EXPLORE_TOOL } from './explore';
 import { FILES_TOOL } from './files';
@@ -32,6 +33,7 @@ import { STATUS_TOOL } from './status';
 const ALL_TOOLS: readonly ToolModule[] = [
   CALLEES_TOOL,
   CALLERS_TOOL,
+  CONFIG_TOOL,
   CONTEXT_TOOL,
   EXPLORE_TOOL,
   FILES_TOOL,
