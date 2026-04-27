@@ -42,6 +42,7 @@ import { PASCAL_DEF } from './pascal';
 import { PHP_DEF } from './php';
 import { PYTHON_DEF } from './python';
 import { R_DEF } from './r';
+import { RESCRIPT_DEF } from './rescript';
 import { RUBY_DEF } from './ruby';
 import { RUST_DEF } from './rust';
 import { SCALA_DEF } from './scala';
@@ -70,6 +71,7 @@ const ALL_DEFS: readonly LanguageDef[] = [
   PHP_DEF,
   PYTHON_DEF,
   R_DEF,
+  RESCRIPT_DEF,
   RUBY_DEF,
   RUST_DEF,
   SCALA_DEF,
