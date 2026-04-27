@@ -286,6 +286,14 @@ export class ContextBuilder {
     options: FindRelevantContextOptions = {}
   ): Promise<Subgraph> {
     const opts = { ...DEFAULT_FIND_OPTIONS, ...options };
+    // Bound user-supplied limits — `searchLimit` is multiplied by 5 in
+    // findNodesByExactName (line 312) and feeds several other unbounded
+    // operations below, so a request with `searchLimit: 1_000_000` would
+    // pull millions of rows before any filtering. 100 is well above the
+    // largest legitimate use we've seen.
+    opts.searchLimit = Math.min(Math.max(1, opts.searchLimit), 100);
+    opts.maxNodes = Math.min(Math.max(1, opts.maxNodes), 1000);
+    opts.traversalDepth = Math.min(Math.max(0, opts.traversalDepth), 10);
 
     // Start with empty subgraph
     const nodes = new Map<string, Node>();

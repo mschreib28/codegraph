@@ -319,7 +319,12 @@ export interface Subgraph {
  * Options for graph traversal
  */
 export interface TraversalOptions {
-  /** Maximum depth to traverse (default: Infinity) */
+  /**
+   * Maximum depth to traverse (default: 10).
+   * Pass `Infinity` to traverse the full reachable subgraph; callers should
+   * combine that with a sensible `limit` since highly connected graphs can
+   * produce a frontier far larger than `limit` allows during traversal.
+   */
   maxDepth?: number;
 
   /** Edge types to follow (default: all) */

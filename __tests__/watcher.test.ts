@@ -235,6 +235,36 @@ describe('FileWatcher', () => {
 
       watcher.stop();
     });
+
+    it('should retry pending changes after a sync failure (no events lost)', async () => {
+      // First call rejects, subsequent calls resolve. After the initial
+      // failure, the watcher should retry the same batch on its own — without
+      // this, transient sync failures (DB locked etc.) would silently drop the
+      // changes until a new file event happened.
+      let calls = 0;
+      const syncFn = vi.fn().mockImplementation(() => {
+        calls++;
+        if (calls === 1) return Promise.reject(new Error('transient'));
+        return Promise.resolve({ filesChanged: 1, durationMs: 5 });
+      });
+      const onSyncError = vi.fn();
+      const onSyncComplete = vi.fn();
+      const watcher = new FileWatcher(testDir, baseConfig, syncFn, {
+        debounceMs: 100,
+        onSyncError,
+        onSyncComplete,
+      });
+
+      watcher.start();
+      fs.writeFileSync(path.join(testDir, 'src', 'test.ts'), 'export const z = 3;');
+
+      await waitFor(() => onSyncComplete.mock.calls.length > 0, 5000);
+      expect(onSyncError).toHaveBeenCalledTimes(1);
+      expect(syncFn).toHaveBeenCalledTimes(2);
+      expect(onSyncComplete).toHaveBeenCalledWith({ filesChanged: 1, durationMs: 5 });
+
+      watcher.stop();
+    });
   });
 
   describe('CodeGraph integration', () => {
