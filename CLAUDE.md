@@ -98,7 +98,7 @@ SQLite database with:
 
 ### Supported Languages
 
-TypeScript, JavaScript, TSX, JSX, Svelte, Python, Go, Rust, Java, C, C++, C#, PHP, Ruby, Swift, Kotlin, Dart, Liquid, Pascal, HCL / Terraform
+TypeScript, JavaScript, TSX, JSX, Svelte, Python, Go, Rust, Java, C, C++, C#, PHP, Ruby, Swift, Kotlin, Dart, Liquid, Pascal, R
 
 ### Node and Edge Types
 

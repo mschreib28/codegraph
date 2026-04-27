@@ -3081,6 +3081,181 @@ describe('Directory Exclusion', () => {
 });
 
 // =============================================================================
+// R Extraction
+// =============================================================================
+
+describe('R Extraction', () => {
+  describe('Language detection', () => {
+    it('should detect R files', () => {
+      expect(detectLanguage('script.R')).toBe('r');
+      expect(detectLanguage('utils.r')).toBe('r');
+    });
+
+    it('should report R as supported', () => {
+      expect(isLanguageSupported('r')).toBe(true);
+      expect(getSupportedLanguages()).toContain('r');
+    });
+  });
+
+  describe('Function extraction', () => {
+    it('should extract a function defined with <-', () => {
+      const code = `add <- function(a, b) {
+  a + b
+}`;
+      const result = extractFromSource('main.R', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'add');
+      expect(fn).toBeDefined();
+      expect(fn?.signature).toBe('(a, b)');
+    });
+
+    it('should extract a function defined with =', () => {
+      const code = `subtract = function(a, b) a - b`;
+      const result = extractFromSource('main.R', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'subtract');
+      expect(fn).toBeDefined();
+    });
+
+    it('should extract a function defined with <<-', () => {
+      const code = `divide <<- function(a, b) a / b`;
+      const result = extractFromSource('main.R', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'divide');
+      expect(fn).toBeDefined();
+    });
+
+    it('should extract S3 method names verbatim (period in name)', () => {
+      const code = `print.myClass <- function(x, ...) cat(x$value)`;
+      const result = extractFromSource('print.R', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'print.myClass');
+      expect(fn).toBeDefined();
+    });
+
+    it('should NOT emit anonymous function nodes for inline lambdas', () => {
+      const code = `result <- lapply(xs, function(x) x * 2)`;
+      const result = extractFromSource('main.R', code);
+      expect(result.nodes.find((n) => n.kind === 'function')).toBeUndefined();
+    });
+
+    it('should attach a docstring from preceding roxygen comments', () => {
+      const code = `#' Add two numbers
+#' @param a numeric
+#' @param b numeric
+add <- function(a, b) a + b`;
+      const result = extractFromSource('main.R', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'add');
+      expect(fn?.docstring).toContain('Add two numbers');
+    });
+  });
+
+  describe('Call extraction', () => {
+    it('should extract simple function calls inside a function body', () => {
+      const code = `wrap <- function(x) {
+  inner(x)
+  another(x)
+}`;
+      const result = extractFromSource('main.R', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'wrap')!;
+      const calls = result.unresolvedReferences.filter(
+        (r) => r.fromNodeId === fn.id && r.referenceKind === 'calls'
+      );
+      const calleeNames = calls.map((c) => c.referenceName);
+      expect(calleeNames).toContain('inner');
+      expect(calleeNames).toContain('another');
+    });
+
+    it('should preserve namespace operator in callee name (pkg::fn)', () => {
+      const code = `runner <- function() {
+  dplyr::filter(df, x > 0)
+}`;
+      const result = extractFromSource('main.R', code);
+      const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'runner')!;
+      const calleeNames = result.unresolvedReferences
+        .filter((r) => r.fromNodeId === fn.id)
+        .map((r) => r.referenceName);
+      expect(calleeNames).toContain('dplyr::filter');
+    });
+  });
+
+  describe('Imports', () => {
+    it('should extract library() with bare-identifier argument', () => {
+      const code = `library(dplyr)`;
+      const result = extractFromSource('main.R', code);
+      const importNode = result.nodes.find((n) => n.kind === 'import');
+      expect(importNode?.name).toBe('dplyr');
+    });
+
+    it('should extract library() with quoted-string argument', () => {
+      const code = `library("tidyr")`;
+      const result = extractFromSource('main.R', code);
+      const importNode = result.nodes.find((n) => n.kind === 'import' && n.name === 'tidyr');
+      expect(importNode).toBeDefined();
+    });
+
+    it('should extract require() the same way as library()', () => {
+      const code = `require(ggplot2)`;
+      const result = extractFromSource('main.R', code);
+      const importNode = result.nodes.find((n) => n.kind === 'import' && n.name === 'ggplot2');
+      expect(importNode).toBeDefined();
+    });
+
+    it('should extract source() with a string path', () => {
+      const code = `source("helpers.R")`;
+      const result = extractFromSource('main.R', code);
+      const importNode = result.nodes.find((n) => n.kind === 'import' && n.name === 'helpers.R');
+      expect(importNode).toBeDefined();
+    });
+
+    it('should not emit an import node for a dynamic source() argument', () => {
+      const code = `source(paste0(BASE, "/helpers.R"))`;
+      const result = extractFromSource('main.R', code);
+      const imports = result.nodes.filter((n) => n.kind === 'import');
+      expect(imports.length).toBe(0);
+    });
+
+    it('should unquote R 4.0+ raw string literals (round delimiter)', () => {
+      const code = `source(r"(helpers.R)")`;
+      const result = extractFromSource('main.R', code);
+      const importNode = result.nodes.find((n) => n.kind === 'import' && n.name === 'helpers.R');
+      expect(importNode).toBeDefined();
+    });
+
+    it('should unquote R raw strings with bracket and brace delimiters', () => {
+      const r1 = extractFromSource('a.R', `library(R"[mypkg]")`);
+      const r2 = extractFromSource('b.R', `library(r"{mypkg}")`);
+      expect(r1.nodes.find((n) => n.kind === 'import' && n.name === 'mypkg')).toBeDefined();
+      expect(r2.nodes.find((n) => n.kind === 'import' && n.name === 'mypkg')).toBeDefined();
+    });
+
+    it('should unquote dash-delimited raw strings used to embed quotes', () => {
+      const code = `source(r"-(file.R)-")`;
+      const result = extractFromSource('main.R', code);
+      const importNode = result.nodes.find((n) => n.kind === 'import' && n.name === 'file.R');
+      expect(importNode).toBeDefined();
+    });
+  });
+
+  describe('Top-level constants', () => {
+    it('should extract top-level non-function assignments as constants', () => {
+      const code = `PI <- 3.14159
+COLORS <- c("red", "green")`;
+      const result = extractFromSource('main.R', code);
+      const pi = result.nodes.find((n) => n.kind === 'constant' && n.name === 'PI');
+      const colors = result.nodes.find((n) => n.kind === 'constant' && n.name === 'COLORS');
+      expect(pi).toBeDefined();
+      expect(colors).toBeDefined();
+    });
+
+    it('should NOT emit a constant for assignments inside a function body', () => {
+      const code = `outer <- function() {
+  x <- 5
+  x
+}`;
+      const result = extractFromSource('main.R', code);
+      const innerVar = result.nodes.find((n) => n.kind === 'constant' && n.name === 'x');
+      expect(innerVar).toBeUndefined();
+    });
+  });
+});
+
 // HCL / Terraform Extraction
 // =============================================================================
 

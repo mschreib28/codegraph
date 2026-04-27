@@ -41,6 +41,7 @@ import { LIQUID_DEF } from './liquid';
 import { PASCAL_DEF } from './pascal';
 import { PHP_DEF } from './php';
 import { PYTHON_DEF } from './python';
+import { R_DEF } from './r';
 import { RUBY_DEF } from './ruby';
 import { RUST_DEF } from './rust';
 import { SVELTE_DEF } from './svelte';
@@ -66,6 +67,7 @@ const ALL_DEFS: readonly LanguageDef[] = [
   PASCAL_DEF,
   PHP_DEF,
   PYTHON_DEF,
+  R_DEF,
   RUBY_DEF,
   RUST_DEF,
   SVELTE_DEF,
