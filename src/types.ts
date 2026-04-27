@@ -50,7 +50,8 @@ export type EdgeKind =
   | 'returns'         // Function returns type
   | 'instantiates'    // Creates instance of class
   | 'overrides'       // Method overrides parent method
-  | 'decorates';      // Decorator applied to symbol
+  | 'decorates'       // Decorator applied to symbol
+  | 'tests';          // Test file → subject file (convention-derived)
 
 /**
  * Supported programming languages

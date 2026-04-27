@@ -171,6 +171,8 @@ export class QueryBuilder {
     insertEdge?: SqliteStatement;
     upsertFile?: SqliteStatement;
     deleteEdgesBySource?: SqliteStatement;
+    deleteEdgesBySourceAndKind?: SqliteStatement;
+    deleteAllEdgesByKind?: SqliteStatement;
     deleteEdgesByTarget?: SqliteStatement;
     getEdgesBySource?: SqliteStatement;
     getEdgesByTarget?: SqliteStatement;
@@ -949,6 +951,34 @@ export class QueryBuilder {
       this.stmts.deleteEdgesBySource = this.db.prepare('DELETE FROM edges WHERE source = ?');
     }
     this.stmts.deleteEdgesBySource.run(sourceId);
+  }
+
+  /**
+   * Delete all edges of a given kind from a single source node. Used by
+   * the tests-edges rebuild path to refresh `tests` edges for a single
+   * test file without disturbing its other outgoing edges.
+   */
+  deleteEdgesBySourceAndKind(sourceId: string, kind: EdgeKind): void {
+    if (!this.stmts.deleteEdgesBySourceAndKind) {
+      this.stmts.deleteEdgesBySourceAndKind = this.db.prepare(
+        'DELETE FROM edges WHERE source = ? AND kind = ?'
+      );
+    }
+    this.stmts.deleteEdgesBySourceAndKind.run(sourceId, kind);
+  }
+
+  /**
+   * Delete every edge of a given kind across the whole graph. Used to
+   * fully rebuild a derived edge layer (e.g. `tests`) before re-inserting
+   * the current set.
+   */
+  deleteAllEdgesByKind(kind: EdgeKind): void {
+    if (!this.stmts.deleteAllEdgesByKind) {
+      this.stmts.deleteAllEdgesByKind = this.db.prepare(
+        'DELETE FROM edges WHERE kind = ?'
+      );
+    }
+    this.stmts.deleteAllEdgesByKind.run(kind);
   }
 
   /**

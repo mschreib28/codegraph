@@ -511,9 +511,8 @@ export class CodeGraph {
           }
         }
 
-        // Run registered post-sync hooks. Same registry as the
-        // indexAll path — hooks distinguish via their
-        // `afterIndexAll` vs `afterSync` methods.
+        // Run registered post-sync hooks (cochange, centrality, churn,
+        // tests-edges, …).
         await runIndexHooksAfterSync(this.buildHookContext(), result);
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
@@ -530,16 +529,36 @@ export class CodeGraph {
 
   /**
    * Get files coupled to `filePath` via shared git commit history.
-   * Surfaces hidden coupling that static analysis can't see.
-   *
-   * @param filePath  Anchor file (relative to project root, forward slashes).
-   * @param options   See {@link QueryBuilder.getCoChangedFiles}.
    */
   getCoChangedFiles(
     filePath: string,
     options: { limit?: number; minCount?: number; minJaccard?: number } = {}
   ): Array<{ path: string; count: number; jaccard: number }> {
     return this.queries.getCoChangedFiles(filePath, options);
+  }
+
+  /** Get the test files that test `filePath` (incoming `tests` edges). */
+  getTestsForFile(filePath: string): FileRecord[] {
+    const incoming = this.queries.getIncomingEdges(`file:${filePath}`, ['tests']);
+    const paths = incoming
+      .map((e) => e.source)
+      .filter((id): id is string => id.startsWith('file:'))
+      .map((id) => id.slice('file:'.length));
+    return paths
+      .map((p) => this.queries.getFileByPath(p))
+      .filter((f): f is FileRecord => f !== null);
+  }
+
+  /** Get the subject file(s) of a test file (outgoing `tests` edges). */
+  getSubjectsOfTest(testFilePath: string): FileRecord[] {
+    const outgoing = this.queries.getOutgoingEdges(`file:${testFilePath}`, ['tests']);
+    const paths = outgoing
+      .map((e) => e.target)
+      .filter((id): id is string => id.startsWith('file:'))
+      .map((id) => id.slice('file:'.length));
+    return paths
+      .map((p) => this.queries.getFileByPath(p))
+      .filter((f): f is FileRecord => f !== null);
   }
 
   /**
