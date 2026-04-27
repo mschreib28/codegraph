@@ -185,54 +185,172 @@ interface GitChanges {
 }
 
 /**
- * Use `git status` to detect changed files instead of scanning every file.
- * Returns null on failure so callers fall back to full scan.
+ * Project-metadata key holding the HEAD SHA the index was last synced against.
+ * Used to detect HEAD-moving operations (merge, pull, checkout, rebase,
+ * reset, post-commit) that leave the working tree clean — which `git status`
+ * alone cannot see.
  */
-function getGitChangedFiles(rootDir: string, config: CodeGraphConfig): GitChanges | null {
+export const LAST_SYNCED_HEAD_KEY = 'last_synced_head';
+
+interface GitChangesResult {
+  changes: GitChanges;
+  /** Current HEAD SHA, or null if not in a git repo or repo has no commits yet. */
+  currentHead: string | null;
+  /**
+   * True when the previously-synced HEAD is no longer reachable from current
+   * HEAD (e.g., after a force-push, history rewrite, or `git gc`). Caller
+   * should treat this as "git history is unreliable here" and fall back to
+   * a full filesystem scan.
+   */
+  needsFullReindex: boolean;
+}
+
+/**
+ * Get the current HEAD commit SHA. Returns null when not in a git repo or
+ * the repo has no commits yet.
+ */
+export function getGitHead(rootDir: string): string | null {
   try {
-    const output = execFileSync(
+    return execFileSync(
+      'git',
+      ['rev-parse', 'HEAD'],
+      { cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect changed files using git, combining two sources:
+ *
+ *   1. `git status --porcelain` — uncommitted edits in the working tree.
+ *   2. `git diff <lastSyncedHead>..HEAD` — committed changes since last
+ *      sync. This catches operations that move HEAD without dirtying the
+ *      working tree (merge, pull, checkout, rebase, reset, post-commit).
+ *
+ * Without (2), a `git merge` (etc.) would silently leave the index stale
+ * because the working tree is clean and `git status` reports nothing.
+ *
+ * Returns null when git is unavailable (non-git project or status failure)
+ * so the caller falls back to a full filesystem scan. Returns
+ * `needsFullReindex: true` when the last-synced HEAD is unreachable
+ * (force-push, gc), which also calls for a full scan.
+ */
+function getGitChangedFiles(
+  rootDir: string,
+  config: CodeGraphConfig,
+  lastSyncedHead: string | null
+): GitChangesResult | null {
+  let statusOutput: string;
+  try {
+    statusOutput = execFileSync(
       'git',
       ['status', '--porcelain', '--no-renames'],
       { cwd: rootDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
     );
-
-    // Two-pass: collect candidate paths first so we can build the
-    // .codegraphignore directory set in one go, then re-walk to bucketize.
-    const candidatePaths: { code: string; filePath: string }[] = [];
-    for (const line of output.split('\n')) {
-      if (line.length < 4) continue; // Minimum: "XY file"
-      const statusCode = line.substring(0, 2);
-      const filePath = normalizePath(line.substring(3));
-      if (!shouldIncludeFile(filePath, config)) continue;
-      candidatePaths.push({ code: statusCode, filePath });
-    }
-
-    const ignoredDirs = findCodegraphIgnoredDirs(
-      rootDir,
-      candidatePaths.map((c) => c.filePath)
-    );
-
-    const modified: string[] = [];
-    const added: string[] = [];
-    const deleted: string[] = [];
-
-    for (const { code, filePath } of candidatePaths) {
-      if (isUnderCodegraphIgnoredDir(filePath, ignoredDirs)) continue;
-
-      if (code === '??') {
-        added.push(filePath);
-      } else if (code.includes('D')) {
-        deleted.push(filePath);
-      } else {
-        // M, MM, AM, A (staged), etc. — treat as modified
-        modified.push(filePath);
-      }
-    }
-
-    return { modified, added, deleted };
   } catch {
     return null;
   }
+
+  const currentHead = getGitHead(rootDir);
+
+  // Two parallel maps: candidates (files that exist or may exist on disk
+  // and need an index check) and deletions (files git says were removed).
+  // Origin distinguishes untracked-add (skip hash compare) from
+  // modified/committed (do hash compare).
+  const candidates = new Map<string, '??' | 'modified'>();
+  const deletions = new Set<string>();
+
+  for (const line of statusOutput.split('\n')) {
+    if (line.length < 4) continue;
+    const code = line.substring(0, 2);
+    const filePath = normalizePath(line.substring(3));
+    if (!shouldIncludeFile(filePath, config)) continue;
+
+    if (code === '??') {
+      if (!candidates.has(filePath)) candidates.set(filePath, '??');
+    } else if (code.includes('D')) {
+      deletions.add(filePath);
+    } else {
+      candidates.set(filePath, 'modified');
+    }
+  }
+
+  // Union committed changes since last sync.
+  if (currentHead && lastSyncedHead && currentHead !== lastSyncedHead) {
+    // Verify the previously-synced commit is still reachable. If history
+    // was rewritten (force-push) or pruned (gc), we cannot diff against it
+    // and must full-reindex.
+    try {
+      execFileSync(
+        'git',
+        ['cat-file', '-e', `${lastSyncedHead}^{commit}`],
+        { cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+    } catch {
+      logDebug('Last-synced HEAD unreachable, falling back to full reindex', { lastSyncedHead, currentHead });
+      return { changes: { modified: [], added: [], deleted: [] }, currentHead, needsFullReindex: true };
+    }
+
+    let diffOutput: string;
+    try {
+      // -z: NUL-delimited fields/records, robust against arbitrary path chars.
+      // --no-renames: keep semantics consistent with the status call above.
+      diffOutput = execFileSync(
+        'git',
+        ['diff', '--name-status', '--no-renames', '-z', `${lastSyncedHead}..${currentHead}`],
+        { cwd: rootDir, encoding: 'utf-8', timeout: 30000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+    } catch {
+      logDebug('git diff against last-synced HEAD failed, falling back to full reindex', { lastSyncedHead, currentHead });
+      return { changes: { modified: [], added: [], deleted: [] }, currentHead, needsFullReindex: true };
+    }
+
+    // With -z + --name-status the stream is: status \0 path \0 status \0 path \0 ...
+    const tokens = diffOutput.split('\0').filter((t) => t.length > 0);
+    for (let i = 0; i + 1 < tokens.length; i += 2) {
+      const code = tokens[i]!;
+      const filePath = normalizePath(tokens[i + 1]!);
+      if (!shouldIncludeFile(filePath, config)) continue;
+
+      if (code.startsWith('D')) {
+        deletions.add(filePath);
+      } else {
+        // A/M/T (and C with --no-renames) — caller will read+hash and let
+        // the DB lookup decide whether it's truly an add or a modify.
+        if (!candidates.has(filePath)) candidates.set(filePath, 'modified');
+      }
+    }
+  }
+
+  // A file present in both sets exists on disk now (working tree wins over
+  // recorded deletion — e.g., file deleted in commit, then re-created
+  // uncommitted).
+  for (const filePath of candidates.keys()) deletions.delete(filePath);
+
+  // Apply .codegraphignore filtering across both candidates and
+  // deletions in one pass — the marker is per-directory, so build the
+  // ignored-dir set from the union of all paths we're considering.
+  const allConsidered = [...candidates.keys(), ...deletions];
+  const ignoredDirs = findCodegraphIgnoredDirs(rootDir, allConsidered);
+
+  const modified: string[] = [];
+  const added: string[] = [];
+  for (const [filePath, origin] of candidates) {
+    if (isUnderCodegraphIgnoredDir(filePath, ignoredDirs)) continue;
+    if (origin === '??') added.push(filePath);
+    else modified.push(filePath);
+  }
+  const deleted = Array.from(deletions).filter(
+    (p) => !isUnderCodegraphIgnoredDir(p, ignoredDirs)
+  );
+
+  return {
+    changes: { modified, added, deleted },
+    currentHead,
+    needsFullReindex: false,
+  };
 }
 
 /**
@@ -916,6 +1034,13 @@ export class ExtractionOrchestrator {
       (parseWorker as import('worker_threads').Worker).terminate().catch(() => {});
     }
 
+    // Establish a baseline HEAD so the next sync can detect HEAD-moving git
+    // operations against this index.
+    const headAfterIndex = getGitHead(this.rootDir);
+    if (headAfterIndex) {
+      this.queries.setMetadata(LAST_SYNCED_HEAD_KEY, headAfterIndex);
+    }
+
     return {
       success: filesIndexed > 0 || errors.filter((e) => e.severity === 'error').length === 0,
       filesIndexed,
@@ -1169,7 +1294,12 @@ export class ExtractionOrchestrator {
     });
 
     const filesToIndex: string[] = [];
-    const gitChanges = getGitChangedFiles(this.rootDir, this.config);
+    const lastSyncedHead = this.queries.getMetadata(LAST_SYNCED_HEAD_KEY);
+    const gitResult = getGitChangedFiles(this.rootDir, this.config, lastSyncedHead);
+    const currentHead = gitResult?.currentHead ?? null;
+    // When the last-synced HEAD is unreachable we drop to the filesystem
+    // fallback, which uses on-disk hashes and is correct regardless of git.
+    const gitChanges = gitResult && !gitResult.needsFullReindex ? gitResult.changes : null;
 
     if (gitChanges) {
       // === Git fast path ===
@@ -1287,6 +1417,13 @@ export class ExtractionOrchestrator {
       nodesUpdated += result.nodes.length;
     }
 
+    // Persist current HEAD so the next sync can detect HEAD-moving git
+    // operations (merge, pull, checkout, rebase, reset, post-commit) even
+    // when they leave the working tree clean.
+    if (currentHead) {
+      this.queries.setMetadata(LAST_SYNCED_HEAD_KEY, currentHead);
+    }
+
     return {
       filesChecked,
       filesAdded,
@@ -1303,7 +1440,11 @@ export class ExtractionOrchestrator {
    * Uses git status as a fast path when available, falling back to full scan.
    */
   getChangedFiles(): { added: string[]; modified: string[]; removed: string[] } {
-    const gitChanges = getGitChangedFiles(this.rootDir, this.config);
+    const lastSyncedHead = this.queries.getMetadata(LAST_SYNCED_HEAD_KEY);
+    const gitResult = getGitChangedFiles(this.rootDir, this.config, lastSyncedHead);
+    // Unreachable last-synced HEAD → drop to the filesystem fallback, which
+    // is correct regardless of git history state.
+    const gitChanges = gitResult && !gitResult.needsFullReindex ? gitResult.changes : null;
 
     if (gitChanges) {
       // === Git fast path ===
