@@ -18,7 +18,6 @@ import {
 import { getParser, detectLanguage, isLanguageSupported } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
-import { EXTRACTORS } from './languages';
 import { getLanguageDefByName } from './languages/registry';
 
 // Re-export for backward compatibility
@@ -113,7 +112,10 @@ export class TreeSitterExtractor {
     this.filePath = filePath;
     this.source = source;
     this.language = language || detectLanguage(filePath, source);
-    this.extractor = EXTRACTORS[this.language] || null;
+    // Single source of truth: read the extractor straight off the
+    // language def so adding a new grammar-backed language is a
+    // one-file change (no parallel EXTRACTORS map to keep in sync).
+    this.extractor = getLanguageDefByName(this.language)?.grammar?.extractor ?? null;
   }
 
   /**

@@ -6,6 +6,12 @@
  *      `<NAME>_DEF: LanguageDef` constant.
  *   2. Add **one** import line and **one** array entry to this file.
  *
+ * **That is the complete change list.** All consumers
+ * (`grammars.ts`, `tree-sitter.ts`'s extractor lookup,
+ * `default-config.ts`'s include globs, the legacy `EXTRACTORS`
+ * barrel in `./index.ts`) all read from this registry — there is
+ * no parallel list to keep in sync.
+ *
  * This file is the only place a "central list" of languages lives,
  * so adjacent-line conflicts between PRs adding different languages
  * are limited to whichever alphabetical neighborhood they target.
