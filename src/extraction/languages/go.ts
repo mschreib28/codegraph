@@ -49,3 +49,12 @@ export const goExtractor: LanguageExtractor = {
     return match?.[1];
   },
 };
+
+import type { LanguageDef } from './types';
+export const GO_DEF: LanguageDef = {
+  name: 'go',
+  displayName: 'Go',
+  extensions: ['.go'],
+  includeGlobs: ['**/*.go'],
+  grammar: { wasmFile: 'tree-sitter-go.wasm', extractor: goExtractor },
+};

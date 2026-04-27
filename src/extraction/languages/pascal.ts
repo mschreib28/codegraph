@@ -60,3 +60,30 @@ export const pascalExtractor: LanguageExtractor = {
     return node.type === 'declConst';
   },
 };
+
+import type { LanguageDef } from './types';
+import { DfmExtractor } from '../dfm-extractor';
+
+const dfmCustomExtractor = (filePath: string, source: string) =>
+  new DfmExtractor(filePath, source).extract();
+
+export const PASCAL_DEF: LanguageDef = {
+  name: 'pascal',
+  displayName: 'Pascal / Delphi',
+  extensions: ['.pas', '.dpr', '.dpk', '.lpr', '.dfm', '.fmx'],
+  includeGlobs: [
+    '**/*.pas', '**/*.dpr', '**/*.dpk', '**/*.lpr',
+    '**/*.dfm', '**/*.fmx',
+  ],
+  grammar: {
+    wasmFile: 'tree-sitter-pascal.wasm',
+    vendored: true,
+    extractor: pascalExtractor,
+  },
+  // .dfm/.fmx are Delphi/FireMonkey form files — declarative property
+  // definitions, not Pascal source. Route them to the dedicated DfmExtractor.
+  extensionOverrides: {
+    '.dfm': { customExtractor: dfmCustomExtractor },
+    '.fmx': { customExtractor: dfmCustomExtractor },
+  },
+};

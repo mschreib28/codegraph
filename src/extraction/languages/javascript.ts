@@ -82,3 +82,12 @@ export const javascriptExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const JAVASCRIPT_DEF: LanguageDef = {
+  name: 'javascript',
+  displayName: 'JavaScript',
+  extensions: ['.js', '.mjs', '.cjs'],
+  includeGlobs: ['**/*.js'],
+  grammar: { wasmFile: 'tree-sitter-javascript.wasm', extractor: javascriptExtractor },
+};

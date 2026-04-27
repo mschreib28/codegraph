@@ -109,3 +109,12 @@ export const rubyExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const RUBY_DEF: LanguageDef = {
+  name: 'ruby',
+  displayName: 'Ruby',
+  extensions: ['.rb', '.rake'],
+  includeGlobs: ['**/*.rb'],
+  grammar: { wasmFile: 'tree-sitter-ruby.wasm', extractor: rubyExtractor },
+};

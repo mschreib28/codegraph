@@ -51,3 +51,12 @@ export const pythonExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const PYTHON_DEF: LanguageDef = {
+  name: 'python',
+  displayName: 'Python',
+  extensions: ['.py', '.pyw'],
+  includeGlobs: ['**/*.py'],
+  grammar: { wasmFile: 'tree-sitter-python.wasm', extractor: pythonExtractor },
+};

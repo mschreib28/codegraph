@@ -19,9 +19,7 @@ import { getParser, detectLanguage, isLanguageSupported } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
 import { EXTRACTORS } from './languages';
-import { LiquidExtractor } from './liquid-extractor';
-import { SvelteExtractor } from './svelte-extractor';
-import { DfmExtractor } from './dfm-extractor';
+import { getLanguageDefByName } from './languages/registry';
 
 // Re-export for backward compatibility
 export { generateNodeId } from './tree-sitter-helpers';
@@ -2319,28 +2317,21 @@ export function extractFromSource(
 ): ExtractionResult {
   const detectedLanguage = language || detectLanguage(filePath, source);
   const fileExtension = path.extname(filePath).toLowerCase();
+  const def = getLanguageDefByName(detectedLanguage);
 
-  // Use custom extractor for Svelte
-  if (detectedLanguage === 'svelte') {
-    const extractor = new SvelteExtractor(filePath, source);
-    return extractor.extract();
+  // Per-extension override wins (e.g. Pascal `.dfm`/`.fmx` route to
+  // DfmExtractor rather than the tree-sitter Pascal grammar).
+  const override = def?.extensionOverrides?.[fileExtension];
+  if (override) {
+    return override.customExtractor(filePath, source);
   }
 
-  // Use custom extractor for Liquid
-  if (detectedLanguage === 'liquid') {
-    const extractor = new LiquidExtractor(filePath, source);
-    return extractor.extract();
+  // Whole-language custom extractor (Liquid, Svelte, etc.).
+  if (def?.customExtractor) {
+    return def.customExtractor(filePath, source);
   }
 
-  // Use custom extractor for DFM/FMX form files
-  if (
-    detectedLanguage === 'pascal' &&
-    (fileExtension === '.dfm' || fileExtension === '.fmx')
-  ) {
-    const extractor = new DfmExtractor(filePath, source);
-    return extractor.extract();
-  }
-
+  // Tree-sitter path.
   const extractor = new TreeSitterExtractor(filePath, source, detectedLanguage);
   return extractor.extract();
 }

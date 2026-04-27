@@ -114,3 +114,12 @@ export const rustExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const RUST_DEF: LanguageDef = {
+  name: 'rust',
+  displayName: 'Rust',
+  extensions: ['.rs'],
+  includeGlobs: ['**/*.rs'],
+  grammar: { wasmFile: 'tree-sitter-rust.wasm', extractor: rustExtractor },
+};

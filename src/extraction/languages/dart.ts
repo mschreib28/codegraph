@@ -193,3 +193,12 @@ export const dartExtractor: LanguageExtractor = {
     return undefined;
   },
 };
+
+import type { LanguageDef } from './types';
+export const DART_DEF: LanguageDef = {
+  name: 'dart',
+  displayName: 'Dart',
+  extensions: ['.dart'],
+  includeGlobs: ['**/*.dart'],
+  grammar: { wasmFile: 'tree-sitter-dart.wasm', extractor: dartExtractor },
+};

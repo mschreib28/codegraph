@@ -4,77 +4,63 @@
  * Uses web-tree-sitter (WASM) for universal cross-platform support.
  * Grammars are loaded lazily — only languages actually present in the project
  * are compiled, keeping V8 WASM memory pressure low on large codebases.
+ *
+ * As of the language-registry refactor, all per-language metadata
+ * (WASM filenames, file extensions, display names, vendored flag)
+ * lives in `./languages/<name>.ts` and is auto-collected by
+ * `./languages/registry.ts`. The constants exported here
+ * (`EXTENSION_MAP`, `getSupportedLanguages`, `getLanguageDisplayName`)
+ * remain for backward compat but are derived from the registry.
  */
 
 import * as path from 'path';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { Language } from '../types';
+import { getLanguageDefs, getLanguageDefByExtension, getLanguageDefByName } from './languages/registry';
 
 export type GrammarLanguage = Exclude<Language, 'svelte' | 'liquid' | 'unknown'>;
 
 /**
- * WASM filename map — maps each language to its .wasm grammar file
- * in the tree-sitter-wasms package.
+ * File extension → Language mapping, computed lazily on first read.
+ *
+ * Cannot be a top-level IIFE: the registry transitively pulls in
+ * `tree-sitter.ts` (via custom-extractor language defs), which
+ * imports this file — building the map at module load would TDZ
+ * against `ALL_DEFS` in the registry. Use the `getExtensionMap()`
+ * function for an explicit lazy entry point, or read
+ * `EXTENSION_MAP` (a Proxy that materialises on first property
+ * access).
  */
-const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
-  typescript: 'tree-sitter-typescript.wasm',
-  tsx: 'tree-sitter-tsx.wasm',
-  javascript: 'tree-sitter-javascript.wasm',
-  jsx: 'tree-sitter-javascript.wasm',
-  python: 'tree-sitter-python.wasm',
-  go: 'tree-sitter-go.wasm',
-  rust: 'tree-sitter-rust.wasm',
-  java: 'tree-sitter-java.wasm',
-  c: 'tree-sitter-c.wasm',
-  cpp: 'tree-sitter-cpp.wasm',
-  csharp: 'tree-sitter-c_sharp.wasm',
-  php: 'tree-sitter-php.wasm',
-  ruby: 'tree-sitter-ruby.wasm',
-  swift: 'tree-sitter-swift.wasm',
-  kotlin: 'tree-sitter-kotlin.wasm',
-  dart: 'tree-sitter-dart.wasm',
-  pascal: 'tree-sitter-pascal.wasm',
-};
+let _extensionMapCache: Record<string, Language> | null = null;
+export function getExtensionMap(): Record<string, Language> {
+  if (_extensionMapCache) return _extensionMapCache;
+  const out: Record<string, Language> = {};
+  for (const def of getLanguageDefs()) {
+    for (const ext of def.extensions) {
+      out[ext.toLowerCase()] = def.name as Language;
+    }
+  }
+  _extensionMapCache = out;
+  return out;
+}
 
 /**
- * File extension to Language mapping
+ * Backward-compat: a Proxy that lazy-builds the extension map on
+ * first property access. Existing callers can keep doing
+ * `EXTENSION_MAP['.ts']` without changes.
  */
-export const EXTENSION_MAP: Record<string, Language> = {
-  '.ts': 'typescript',
-  '.tsx': 'tsx',
-  '.js': 'javascript',
-  '.mjs': 'javascript',
-  '.cjs': 'javascript',
-  '.jsx': 'jsx',
-  '.py': 'python',
-  '.pyw': 'python',
-  '.go': 'go',
-  '.rs': 'rust',
-  '.java': 'java',
-  '.c': 'c',
-  '.h': 'c', // Could also be C++, defaulting to C
-  '.cpp': 'cpp',
-  '.cc': 'cpp',
-  '.cxx': 'cpp',
-  '.hpp': 'cpp',
-  '.hxx': 'cpp',
-  '.cs': 'csharp',
-  '.php': 'php',
-  '.rb': 'ruby',
-  '.rake': 'ruby',
-  '.swift': 'swift',
-  '.kt': 'kotlin',
-  '.kts': 'kotlin',
-  '.dart': 'dart',
-  '.liquid': 'liquid',
-  '.svelte': 'svelte',
-  '.pas': 'pascal',
-  '.dpr': 'pascal',
-  '.dpk': 'pascal',
-  '.lpr': 'pascal',
-  '.dfm': 'pascal',
-  '.fmx': 'pascal',
-};
+export const EXTENSION_MAP: Record<string, Language> = new Proxy({} as Record<string, Language>, {
+  get(_t, key: string) { return getExtensionMap()[key]; },
+  has(_t, key: string) { return key in getExtensionMap(); },
+  ownKeys() { return Object.keys(getExtensionMap()); },
+  getOwnPropertyDescriptor(_t, key: string) {
+    const map = getExtensionMap();
+    if (key in map) {
+      return { configurable: true, enumerable: true, writable: false, value: map[key] };
+    }
+    return undefined;
+  },
+});
 
 /**
  * Caches for loaded grammars and parsers
@@ -108,21 +94,28 @@ export async function loadGrammarsForLanguages(languages: Language[]): Promise<v
     await initGrammars();
   }
 
-  // Deduplicate and filter to languages that have WASM grammars and aren't already loaded
-  const toLoad = [...new Set(languages)].filter(
-    (lang): lang is GrammarLanguage =>
-      lang in WASM_GRAMMAR_FILES &&
-      !languageCache.has(lang) &&
-      !unavailableGrammarErrors.has(lang)
-  );
+  // Deduplicate; filter to languages that have a tree-sitter grammar
+  // (registry's `def.grammar` field) and aren't already loaded.
+  const seen = new Set<Language>();
+  const toLoad: Array<{ lang: Language; wasmFile: string; vendored: boolean }> = [];
+  for (const lang of languages) {
+    if (seen.has(lang)) continue;
+    seen.add(lang);
+    if (languageCache.has(lang) || unavailableGrammarErrors.has(lang)) continue;
+    const def = getLanguageDefByName(lang);
+    if (!def?.grammar) continue;
+    toLoad.push({
+      lang,
+      wasmFile: def.grammar.wasmFile,
+      vendored: def.grammar.vendored === true,
+    });
+  }
 
   // Load grammars sequentially to avoid web-tree-sitter WASM race condition on Node 20+
   // See: https://github.com/tree-sitter/tree-sitter/issues/2338
-  for (const lang of toLoad) {
-    const wasmFile = WASM_GRAMMAR_FILES[lang];
+  for (const { lang, wasmFile, vendored } of toLoad) {
     try {
-      // Pascal ships its own WASM (not in tree-sitter-wasms)
-      const wasmPath = lang === 'pascal'
+      const wasmPath = vendored
         ? path.join(__dirname, 'wasm', wasmFile)
         : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
       const language = await WasmLanguage.load(wasmPath);
@@ -140,7 +133,9 @@ export async function loadGrammarsForLanguages(languages: Language[]): Promise<v
  * backward compatibility. Prefer loadGrammarsForLanguages() in production.
  */
 export async function loadAllGrammars(): Promise<void> {
-  const allLanguages = Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[];
+  const allLanguages = getLanguageDefs()
+    .filter((d) => d.grammar)
+    .map((d) => d.name as Language);
   await loadGrammarsForLanguages(allLanguages);
 }
 
@@ -176,7 +171,8 @@ export function getParser(language: Language): Parser | null {
  */
 export function detectLanguage(filePath: string, source?: string): Language {
   const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
-  const lang = EXTENSION_MAP[ext] || 'unknown';
+  const def = getLanguageDefByExtension(ext);
+  const lang = (def?.name as Language) ?? 'unknown';
 
   // .h files could be C or C++ — check source content for C++ features
   if (lang === 'c' && ext === '.h' && source) {
@@ -196,29 +192,30 @@ function looksLikeCpp(source: string): boolean {
 }
 
 /**
- * Check if a language is supported (has a grammar defined).
- * Returns true if the grammar exists, even if not yet loaded.
+ * Check if a language is supported (has a grammar or custom extractor).
+ * Returns true if a registry entry exists, even if its grammar isn't loaded.
  */
 export function isLanguageSupported(language: Language): boolean {
-  if (language === 'svelte') return true; // custom extractor (script block delegation)
-  if (language === 'liquid') return true; // custom regex extractor
   if (language === 'unknown') return false;
-  return language in WASM_GRAMMAR_FILES;
+  return getLanguageDefByName(language) !== undefined;
 }
 
 /**
  * Check if a grammar has been loaded and is ready for parsing.
+ * Custom-extractor languages (no `grammar` field) are always "ready".
  */
 export function isGrammarLoaded(language: Language): boolean {
-  if (language === 'svelte' || language === 'liquid') return true;
+  const def = getLanguageDefByName(language);
+  if (!def) return false;
+  if (!def.grammar) return true; // custom extractor — always available
   return languageCache.has(language);
 }
 
 /**
- * Get all supported languages (those with grammar definitions).
+ * Get all supported languages from the registry.
  */
 export function getSupportedLanguages(): Language[] {
-  return [...(Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[]), 'svelte', 'liquid'];
+  return getLanguageDefs().map((d) => d.name as Language);
 }
 
 /**
@@ -237,54 +234,33 @@ export function resetParser(language: Language): void {
 }
 
 /**
- * Clear parser/grammar caches (useful for testing)
+ * Clear parser cache (useful for testing).
+ *
+ * Note: `languageCache` is intentionally NOT cleared — the WASM
+ * `Language` modules are expensive to load and stay cached so a
+ * subsequent `getParser` call can rebuild a fresh `Parser` instance
+ * without re-reading the .wasm file. To fully re-init, set
+ * `parserInitialized = false` and call `initGrammars()` again.
  */
 export function clearParserCache(): void {
   for (const parser of parserCache.values()) {
-    parser.delete();
+    try { parser.delete(); } catch { /* ignore */ }
   }
   parserCache.clear();
-  // Note: languageCache is NOT cleared — WASM languages persist.
-  // To fully re-init, set parserInitialized = false and call initGrammars() again.
   unavailableGrammarErrors.clear();
 }
 
 /**
- * Report grammars that failed to load.
+ * Get unavailable grammar errors (for diagnostics)
  */
-export function getUnavailableGrammarErrors(): Partial<Record<Language, string>> {
-  const out: Partial<Record<Language, string>> = {};
-  for (const [language, message] of unavailableGrammarErrors.entries()) {
-    out[language] = message;
-  }
-  return out;
+export function getUnavailableGrammarErrors(): Record<string, string> {
+  return Object.fromEntries(unavailableGrammarErrors);
 }
 
 /**
- * Get language display name
+ * Human-readable display name (e.g. "TypeScript", "Pascal / Delphi").
+ * Returns the canonical name unchanged if no display name is registered.
  */
 export function getLanguageDisplayName(language: Language): string {
-  const names: Record<Language, string> = {
-    typescript: 'TypeScript',
-    javascript: 'JavaScript',
-    tsx: 'TypeScript (TSX)',
-    jsx: 'JavaScript (JSX)',
-    python: 'Python',
-    go: 'Go',
-    rust: 'Rust',
-    java: 'Java',
-    c: 'C',
-    cpp: 'C++',
-    csharp: 'C#',
-    php: 'PHP',
-    ruby: 'Ruby',
-    swift: 'Swift',
-    kotlin: 'Kotlin',
-    dart: 'Dart',
-    svelte: 'Svelte',
-    liquid: 'Liquid',
-    pascal: 'Pascal / Delphi',
-    unknown: 'Unknown',
-  };
-  return names[language] || language;
+  return getLanguageDefByName(language)?.displayName ?? language;
 }

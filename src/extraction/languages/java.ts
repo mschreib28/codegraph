@@ -57,3 +57,12 @@ export const javaExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const JAVA_DEF: LanguageDef = {
+  name: 'java',
+  displayName: 'Java',
+  extensions: ['.java'],
+  includeGlobs: ['**/*.java'],
+  grammar: { wasmFile: 'tree-sitter-java.wasm', extractor: javaExtractor },
+};

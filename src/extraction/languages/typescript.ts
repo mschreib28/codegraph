@@ -1,5 +1,6 @@
 import { getNodeText, getChildByField } from '../tree-sitter-helpers';
 import type { LanguageExtractor } from '../tree-sitter-types';
+import type { LanguageDef } from './types';
 
 export const typescriptExtractor: LanguageExtractor = {
   functionTypes: ['function_declaration', 'arrow_function', 'function_expression'],
@@ -115,4 +116,12 @@ export const typescriptExtractor: LanguageExtractor = {
     }
     return null;
   },
+};
+
+export const TYPESCRIPT_DEF: LanguageDef = {
+  name: 'typescript',
+  displayName: 'TypeScript',
+  extensions: ['.ts'],
+  includeGlobs: ['**/*.ts'],
+  grammar: { wasmFile: 'tree-sitter-typescript.wasm', extractor: typescriptExtractor },
 };

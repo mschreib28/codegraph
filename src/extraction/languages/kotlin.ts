@@ -236,3 +236,12 @@ export const kotlinExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const KOTLIN_DEF: LanguageDef = {
+  name: 'kotlin',
+  displayName: 'Kotlin',
+  extensions: ['.kt', '.kts'],
+  includeGlobs: ['**/*.kt'],
+  grammar: { wasmFile: 'tree-sitter-kotlin.wasm', extractor: kotlinExtractor },
+};

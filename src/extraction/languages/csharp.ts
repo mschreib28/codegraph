@@ -65,3 +65,12 @@ export const csharpExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const CSHARP_DEF: LanguageDef = {
+  name: 'csharp',
+  displayName: 'C#',
+  extensions: ['.cs'],
+  includeGlobs: ['**/*.cs'],
+  grammar: { wasmFile: 'tree-sitter-c_sharp.wasm', extractor: csharpExtractor },
+};

@@ -81,3 +81,12 @@ export const swiftExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const SWIFT_DEF: LanguageDef = {
+  name: 'swift',
+  displayName: 'Swift',
+  extensions: ['.swift'],
+  includeGlobs: ['**/*.swift'],
+  grammar: { wasmFile: 'tree-sitter-swift.wasm', extractor: swiftExtractor },
+};

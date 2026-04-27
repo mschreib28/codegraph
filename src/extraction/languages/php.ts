@@ -103,3 +103,12 @@ export const phpExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const PHP_DEF: LanguageDef = {
+  name: 'php',
+  displayName: 'PHP',
+  extensions: ['.php'],
+  includeGlobs: ['**/*.php'],
+  grammar: { wasmFile: 'tree-sitter-php.wasm', extractor: phpExtractor },
+};

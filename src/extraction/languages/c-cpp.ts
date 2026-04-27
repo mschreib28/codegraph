@@ -114,3 +114,21 @@ export const cppExtractor: LanguageExtractor = {
     return null;
   },
 };
+
+import type { LanguageDef } from './types';
+export const C_DEF: LanguageDef = {
+  name: 'c',
+  displayName: 'C',
+  // .h is also listed for C; tree-sitter.ts contains a `.h might be C++`
+  // heuristic that overrides this on a content-sniff basis.
+  extensions: ['.c', '.h'],
+  includeGlobs: ['**/*.c', '**/*.h'],
+  grammar: { wasmFile: 'tree-sitter-c.wasm', extractor: cExtractor },
+};
+export const CPP_DEF: LanguageDef = {
+  name: 'cpp',
+  displayName: 'C++',
+  extensions: ['.cpp', '.cc', '.cxx', '.hpp', '.hxx'],
+  includeGlobs: ['**/*.cpp', '**/*.cc', '**/*.cxx', '**/*.hpp', '**/*.hxx'],
+  grammar: { wasmFile: 'tree-sitter-cpp.wasm', extractor: cppExtractor },
+};
