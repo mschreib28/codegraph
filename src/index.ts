@@ -49,6 +49,11 @@ import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
+import {
+  runAfterIndexAll as runIndexHooksAfterIndexAll,
+  runAfterSync as runIndexHooksAfterSync,
+  type IndexHookContext,
+} from './index-hooks/registry';
 
 // Re-export types for consumers
 export * from './types';
@@ -402,11 +407,30 @@ export class CodeGraph {
           });
         }
 
+        // Run registered post-indexAll hooks (centrality, churn,
+        // issue-history, config-refs, sql-refs, …). Best-effort:
+        // hook errors are caught + logged inside the runner.
+        if (result.success) {
+          await runIndexHooksAfterIndexAll(this.buildHookContext());
+        }
+
         return result;
       } finally {
         this.fileLock.release();
       }
     });
+  }
+
+  /**
+   * Build the read-only context handed to every index hook.
+   */
+  private buildHookContext(): IndexHookContext {
+    return {
+      projectRoot: this.projectRoot,
+      config: this.config,
+      queries: this.queries,
+      db: this.db,
+    };
   }
 
   /**
@@ -482,6 +506,11 @@ export class CodeGraph {
             });
           }
         }
+
+        // Run registered post-sync hooks. Same registry as the
+        // indexAll path — hooks distinguish via their
+        // `afterIndexAll` vs `afterSync` methods.
+        await runIndexHooksAfterSync(this.buildHookContext(), result);
 
         return result;
       } finally {
