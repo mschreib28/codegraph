@@ -32,6 +32,17 @@ export const STOP_WORDS = new Set([
 ]);
 
 /**
+ * Drop {@link STOP_WORDS} from a list of query terms. Returns the
+ * original list if every term is a stopword (so a degenerate input like
+ * `["the"]` still returns something rather than producing an empty
+ * downstream FTS query).
+ */
+export function filterStopwords(terms: string[]): string[] {
+  const filtered = terms.filter((t) => !STOP_WORDS.has(t.toLowerCase()));
+  return filtered.length > 0 ? filtered : terms;
+}
+
+/**
  * Generate stem variants of a search term by removing common English suffixes.
  * Used for FTS query expansion so "caching" also finds "cache", "eviction" finds "evict", etc.
  * Stems are used as PREFIX matches in FTS, so they don't need to be perfect English words.

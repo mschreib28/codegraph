@@ -303,6 +303,26 @@ export function globToSafeRegex(glob: string): string | null {
 }
 
 /**
+ * Split an identifier on camelCase, snake_case, kebab-case, dots, and slashes.
+ */
+export function splitIdentifierTokens(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[\s_\-.\/:]+/)
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * Build the value stored in the `name_subwords` FTS column.
+ */
+export function buildNameSubwords(name: string): string {
+  const tokens = splitIdentifierTokens(name);
+  return [...new Set([name, ...tokens])].join(' ');
+}
+
+/**
  * Cross-process file lock using a lock file with PID tracking.
  *
  * Prevents multiple processes (e.g., git hooks, CLI, MCP server) from
