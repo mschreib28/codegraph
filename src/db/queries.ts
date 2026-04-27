@@ -1395,6 +1395,7 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM edges');
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
+      this.db.exec('DELETE FROM co_changes');
     })();
   }
 
@@ -1402,11 +1403,6 @@ export class QueryBuilder {
   // Centrality (PageRank scores on nodes)
   // ===========================================================================
 
-  /**
-   * Apply PageRank scores to the nodes table in a single transaction.
-   * Existing scores for ids not in the map are NOT cleared — call
-   * `clearCentrality()` first for a from-scratch recompute.
-   */
   applyCentralityScores(scores: Map<string, number>): void {
     if (scores.size === 0) return;
     const stmt = this.db.prepare('UPDATE nodes SET centrality = ? WHERE id = ?');
@@ -1415,23 +1411,14 @@ export class QueryBuilder {
         stmt.run(score, id);
       }
     })();
-    // Cached node objects now have stale centrality. Drop the cache;
-    // subsequent reads pull the fresh value.
     this.nodeCache.clear();
   }
 
-  /** Reset all centrality values to NULL (fresh-recompute path). */
   clearCentrality(): void {
     this.db.exec('UPDATE nodes SET centrality = NULL');
     this.nodeCache.clear();
   }
 
-  /**
-   * Get top-N nodes by centrality, descending. Filters out NULL
-   * centrality (= not yet computed). Optional `kind` filter narrows
-   * to one node kind; optional `minCentrality` filters out the long
-   * tail of essentially-zero ranks.
-   */
   getTopNodesByCentrality(opts: {
     limit?: number;
     kind?: NodeKind;
@@ -1452,10 +1439,6 @@ export class QueryBuilder {
     return rows.map(rowToNode);
   }
 
-  /**
-   * Compute the rank (1-based) of a single node by centrality.
-   * Returns null if the node has no centrality yet.
-   */
   getCentralityRank(nodeId: string): { rank: number; total: number } | null {
     const row = this.db
       .prepare('SELECT centrality FROM nodes WHERE id = ?')
@@ -1471,18 +1454,36 @@ export class QueryBuilder {
   }
 
   // ===========================================================================
+  // Co-Change (file-level coupling derived from git history)
+  // ===========================================================================
+
+  applyCoChangeDeltas(
+    pairDeltas: Iterable<[string, string, number]>,
+    fileCommitDeltas: Iterable<[string, number]>
+  ): void {
+    const upsertPair = this.db.prepare(`
+      INSERT INTO co_changes (file_a, file_b, count) VALUES (?, ?, ?)
+      ON CONFLICT(file_a, file_b) DO UPDATE SET count = count + excluded.count
+    `);
+    const incFileCommit = this.db.prepare(`
+      UPDATE files SET commit_count = commit_count + ? WHERE path = ?
+    `);
+    this.db.transaction(() => {
+      for (const [a, b, delta] of pairDeltas) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        if (lo === hi) continue;
+        upsertPair.run(lo, hi, delta);
+      }
+      for (const [path, delta] of fileCommitDeltas) {
+        incFileCommit.run(delta, path);
+      }
+    })();
+  }
+
+  // ===========================================================================
   // Per-file churn (mined from git log)
   // ===========================================================================
 
-  /**
-   * Apply churn deltas to the files table. For each delta:
-   *   commit_count   += commitCountDelta
-   *   last_touched_ts = MAX(existing, lastTouchedTs)
-   *   first_seen_ts   = COALESCE(existing, firstSeenTs)   // sticky
-   *
-   * Files in the delta map but not in the files table (uncommon —
-   * they'd have to be mined-but-never-indexed) are silently skipped.
-   */
   applyChurnDeltas(
     deltas: Iterable<{
       path: string;
@@ -1918,5 +1919,54 @@ export class QueryBuilder {
          ORDER BY tableName ASC, op ASC`
       )
       .all(nodeId) as Array<{ tableName: string; op: string }>;
+  }
+
+  // ===========================================================================
+  // Co-Change reads
+  // ===========================================================================
+
+  clearCoChanges(): void {
+    this.db.transaction(() => {
+      this.db.exec('DELETE FROM co_changes');
+      this.db.exec('UPDATE files SET commit_count = 0');
+    })();
+  }
+
+  getCoChangedFiles(
+    filePath: string,
+    options: { limit?: number; minCount?: number; minJaccard?: number } = {}
+  ): Array<{ path: string; count: number; jaccard: number }> {
+    const limit = options.limit ?? 10;
+    const minCount = options.minCount ?? 2;
+    const minJaccard = options.minJaccard ?? 0;
+    const sql = `
+      WITH partners AS (
+        SELECT file_b AS path, count FROM co_changes WHERE file_a = ?
+        UNION ALL
+        SELECT file_a AS path, count FROM co_changes WHERE file_b = ?
+      ),
+      anchor AS (SELECT commit_count AS c FROM files WHERE path = ?),
+      scored AS (
+        SELECT
+          p.path AS path,
+          p.count AS count,
+          CAST(p.count AS REAL) / NULLIF((SELECT c FROM anchor) + f.commit_count - p.count, 0) AS jaccard
+        FROM partners p
+        JOIN files f ON f.path = p.path
+        WHERE p.count >= ?
+      )
+      SELECT path, count, jaccard FROM scored
+      WHERE COALESCE(jaccard, 0) >= ?
+      ORDER BY jaccard DESC, count DESC
+      LIMIT ?
+    `;
+    const rows = this.db
+      .prepare(sql)
+      .all(filePath, filePath, filePath, minCount, minJaccard, limit) as Array<{
+        path: string;
+        count: number;
+        jaccard: number | null;
+      }>;
+    return rows.map((r) => ({ path: r.path, count: r.count, jaccard: r.jaccard ?? 0 }));
   }
 }

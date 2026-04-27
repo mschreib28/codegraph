@@ -5,6 +5,12 @@ export const MIGRATION: MigrationModule = {
   description:
     'Add name_subwords + Porter stemmer to FTS so natural-language and partial-identifier queries work',
   up: (db) => {
+    // Synthetic test DBs may not have the nodes table — skip cleanly.
+    const hasNodes = (db
+      .prepare(`SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='nodes'`)
+      .get() as { c: number }).c > 0;
+    if (!hasNodes) return;
+
     // 1. Add the synthetic subwords column to nodes — idempotent so a
     //    re-run after a partial DDL failure (SQLite auto-commits DDL,
     //    so only some of these statements may have landed) doesn't fail

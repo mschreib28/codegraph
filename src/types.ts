@@ -508,11 +508,14 @@ export interface CodeGraphConfig {
 
   /**
    * Whether to recurse into git submodules during indexing and sync.
-   * Default: true. Set to false to skip submodule contents (useful when
-   * a submodule pulls in a large vendor tree you don't want indexed —
-   * adding the path to `exclude` also works).
+   * Default: true.
    */
   indexSubmodules?: boolean;
+
+  /**
+   * Mine the file-level co-change graph from git history. Default true.
+   */
+  enableCoChange?: boolean;
 
   /** Custom symbol patterns to extract */
   customPatterns?: {

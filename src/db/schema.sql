@@ -77,6 +77,18 @@ CREATE TABLE IF NOT EXISTS files (
     last_touched_ts INTEGER DEFAULT NULL -- unix seconds
 );
 
+-- Co-Changes: pairs of files that have changed together in git history.
+-- Symmetric — stored canonically with file_a < file_b.
+CREATE TABLE IF NOT EXISTS co_changes (
+    file_a TEXT NOT NULL,
+    file_b TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    PRIMARY KEY (file_a, file_b),
+    CHECK (file_a < file_b)
+);
+CREATE INDEX IF NOT EXISTS idx_co_changes_a ON co_changes(file_a);
+CREATE INDEX IF NOT EXISTS idx_co_changes_b ON co_changes(file_b);
+
 -- Unresolved References: References that need resolution after full indexing
 CREATE TABLE IF NOT EXISTS unresolved_refs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,6 +174,10 @@ CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
 CREATE INDEX IF NOT EXISTS idx_files_commit_count ON files(commit_count DESC);
 CREATE INDEX IF NOT EXISTS idx_files_last_touched ON files(last_touched_ts DESC);
+
+-- Co-change indexes (one per side so we can look up either direction efficiently)
+CREATE INDEX IF NOT EXISTS idx_co_changes_a ON co_changes(file_a);
+CREATE INDEX IF NOT EXISTS idx_co_changes_b ON co_changes(file_b);
 
 -- Unresolved refs indexes
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_node ON unresolved_refs(from_node_id);

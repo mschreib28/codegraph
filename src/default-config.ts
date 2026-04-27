@@ -189,6 +189,7 @@ const baseConfig: CodeGraphConfig = {
   enableConfigRefs: true,
   enableSqlRefs: true,
   indexSubmodules: true,
+  enableCoChange: true,
 };
 
 Object.defineProperty(baseConfig, 'include', {

@@ -32,6 +32,7 @@ import { MIGRATION as MIG_006 } from './006-config-refs';
 import { MIGRATION as MIG_007 } from './007-sql-refs';
 import { MIGRATION as MIG_008 } from './008-edges-unique';
 import { MIGRATION as MIG_009 } from './009-fts-subwords-porter';
+import { MIGRATION as MIG_010 } from './010-co-changes';
 
 interface ModuleRef {
   /**
@@ -60,6 +61,7 @@ const REGISTERED_MODULES: readonly ModuleRef[] = [
   { filename: '007-sql-refs.ts', module: MIG_007 },
   { filename: '008-edges-unique.ts', module: MIG_008 },
   { filename: '009-fts-subwords-porter.ts', module: MIG_009 },
+  { filename: '010-co-changes.ts', module: MIG_010 },
 ];
 
 /** Strict 3-digit prefix on each migration filename. */

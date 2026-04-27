@@ -127,6 +127,7 @@ function mergeConfig(
     maxFileSize: overrides.maxFileSize ?? defaults.maxFileSize,
     extractDocstrings: overrides.extractDocstrings ?? defaults.extractDocstrings,
     trackCallSites: overrides.trackCallSites ?? defaults.trackCallSites,
+    enableCoChange: overrides.enableCoChange ?? defaults.enableCoChange,
     customPatterns: overrides.customPatterns ?? defaults.customPatterns,
     enableCentrality: overrides.enableCentrality ?? defaults.enableCentrality,
     enableChurn: overrides.enableChurn ?? defaults.enableChurn,
