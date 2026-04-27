@@ -413,6 +413,11 @@ export class CodeGraph {
         if (result.success) {
           await runIndexHooksAfterIndexAll(this.buildHookContext());
         }
+        // Refresh planner stats + checkpoint the WAL after bulk writes.
+        // Cheap and non-blocking; never load-bearing for correctness.
+        if (result.success && result.filesIndexed > 0) {
+          this.db.runMaintenance();
+        }
 
         return result;
       } finally {
@@ -511,6 +516,11 @@ export class CodeGraph {
         // indexAll path — hooks distinguish via their
         // `afterIndexAll` vs `afterSync` methods.
         await runIndexHooksAfterSync(this.buildHookContext(), result);
+
+        // Refresh planner stats + checkpoint the WAL after bulk writes.
+        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
+          this.db.runMaintenance();
+        }
 
         return result;
       } finally {
