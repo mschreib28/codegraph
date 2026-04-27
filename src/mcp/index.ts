@@ -18,7 +18,8 @@
 import * as path from 'path';
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
 import { StdioTransport, JsonRpcRequest, JsonRpcNotification, ErrorCodes } from './transport';
-import { tools, ToolHandler } from './tools';
+import { ToolHandler } from './tools';
+import { getToolModule } from './tools/registry';
 
 /**
  * Convert a file:// URI to a filesystem path.
@@ -309,8 +310,9 @@ export class MCPServer {
     const toolName = params.name;
     const toolArgs = params.arguments || {};
 
-    // Validate tool exists
-    const tool = tools.find(t => t.name === toolName);
+    // Validate tool exists — O(1) Map lookup against the registry,
+    // matches the path `ToolHandler.execute()` uses internally.
+    const tool = getToolModule(toolName)?.definition;
     if (!tool) {
       this.transport.sendError(
         request.id,
