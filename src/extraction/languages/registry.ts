@@ -44,6 +44,7 @@ import { PYTHON_DEF } from './python';
 import { R_DEF } from './r';
 import { RUBY_DEF } from './ruby';
 import { RUST_DEF } from './rust';
+import { SCALA_DEF } from './scala';
 import { SQL_DEF } from './sql';
 import { SVELTE_DEF } from './svelte';
 import { SWIFT_DEF } from './swift';
@@ -71,6 +72,7 @@ const ALL_DEFS: readonly LanguageDef[] = [
   R_DEF,
   RUBY_DEF,
   RUST_DEF,
+  SCALA_DEF,
   SQL_DEF,
   SVELTE_DEF,
   SWIFT_DEF,
