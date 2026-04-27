@@ -344,3 +344,49 @@ export function kindBonus(kind: Node['kind']): number {
   };
   return bonuses[kind] ?? 0;
 }
+
+/**
+ * Cap consecutive results from the same file. Preserves overall ranking:
+ * the highest-scoring hit from each file is taken first (up to `perFileCap`
+ * per file), in score order. If `limit` isn't filled after the capped
+ * pass, the remaining slots are filled with the next-best hits regardless
+ * of file (preserves correctness — never hides a hit that would have
+ * otherwise been returned).
+ *
+ * Why: queries like `"ExtractionOrchestrator"` return the matching class
+ * plus 9 of its members from the same file. The first hit is informative;
+ * the next 9 are implementation detail that pushes peer files (subclasses,
+ * callers, sibling modules) past the limit. Capping per file surfaces
+ * representative breadth without losing the top hit.
+ */
+export function diversifyByFile<T extends { node: Node }>(
+  results: T[],
+  limit: number,
+  perFileCap: number
+): T[] {
+  if (perFileCap <= 0) return results.slice(0, limit);
+  const perFile = new Map<string, number>();
+  const picked: T[] = [];
+  const skipped: T[] = [];
+  for (const r of results) {
+    const f = r.node.filePath;
+    const c = perFile.get(f) ?? 0;
+    if (c < perFileCap) {
+      picked.push(r);
+      perFile.set(f, c + 1);
+      if (picked.length >= limit) return picked;
+    } else {
+      skipped.push(r);
+    }
+  }
+  // Backfill from skipped (in original score order) so we don't return
+  // fewer results than the caller asked for. This also handles the
+  // edge case where `results.length <= limit`: nothing was actually
+  // dropped, but the per-file cap reordered them so peer files appear
+  // earlier — `picked` first, then any leftover same-file hits.
+  for (const r of skipped) {
+    if (picked.length >= limit) break;
+    picked.push(r);
+  }
+  return picked;
+}

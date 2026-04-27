@@ -18,7 +18,7 @@ import {
   SearchResult,
 } from '../types';
 import { safeJsonParse, buildNameSubwords } from '../utils';
-import { kindBonus, nameMatchBonus, scorePathRelevance, filterStopwords } from '../search/query-utils';
+import { kindBonus, nameMatchBonus, scorePathRelevance, filterStopwords, diversifyByFile } from '../search/query-utils';
 
 /**
  * Database row types (snake_case from SQLite)
@@ -557,7 +557,13 @@ export class QueryBuilder {
    * 3. Score results based on match quality
    */
   searchNodes(query: string, options: SearchOptions = {}): SearchResult[] {
-    const { kinds, languages, limit = 100, offset = 0 } = options;
+    const { kinds, languages, limit = 100, offset = 0, perFileCap = 3 } = options;
+
+    // Note on over-fetching: searchNodesFTS already over-fetches by 5x
+    // internally (Math.max(limit*5, 100)) so its own rescoring pass has
+    // headroom. That same headroom feeds the per-file diversification
+    // below — no additional outer multiplier needed. Keeping this comment
+    // here so future readers don't reintroduce a multiplier-on-multiplier.
 
     // First try FTS5 with prefix matching
     let results = this.searchNodesFTS(query, { kinds, languages, limit, offset });
@@ -609,10 +615,23 @@ export class QueryBuilder {
           + nameMatchBonus(r.node.name, query),
       }));
       results.sort((a, b) => b.score - a.score);
-      // Trim to requested limit after rescoring
-      if (results.length > limit) {
-        results = results.slice(0, limit);
-      }
+    }
+
+    // Diversification: cap per-file results so the top-K isn't dominated
+    // by the methods of a single class. Top-scoring hit per file is always
+    // included; the cap only kicks in for the second-and-onward members
+    // of the same file. perFileCap=0 disables.
+    //
+    // Guard `results.length > limit`: when results <= limit there's
+    // nothing to drop, so the existing score order is already what the
+    // caller will see. (`diversifyByFile` is also safe to call here and
+    // would reorder within the same set, but the existing rescore order
+    // is already meaningful and we don't want to perturb it without
+    // benefit.)
+    if (perFileCap > 0 && results.length > limit) {
+      results = diversifyByFile(results, limit, perFileCap);
+    } else if (results.length > limit) {
+      results = results.slice(0, limit);
     }
 
     return results;
