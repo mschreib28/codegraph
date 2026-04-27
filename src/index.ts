@@ -54,6 +54,7 @@ import {
   runAfterSync as runIndexHooksAfterSync,
   type IndexHookContext,
 } from './index-hooks/registry';
+import { buildReviewContext, ReviewContext, ReviewContextOptions } from './review';
 
 // Re-export types for consumers
 export * from './types';
@@ -566,6 +567,23 @@ export class CodeGraph {
    */
   isIndexing(): boolean {
     return this.indexMutex.isLocked();
+  }
+
+  /**
+   * Build structured review context from a unified diff.
+   *
+   * Maps each hunk back to the symbols whose line ranges it touches,
+   * then attaches per-symbol callers / callees / impact-radius / tests
+   * plus historical co-change warnings (files that historically change
+   * together with a changed file but are NOT in this PR — the kind of
+   * coupling violation that catches "you changed schema.sql but didn't
+   * update migrations.ts").
+   *
+   * Returns pure data; no synthesis. Designed for an LLM consumer to
+   * turn into a code review.
+   */
+  buildReviewContext(diff: string, options: ReviewContextOptions = {}): ReviewContext {
+    return buildReviewContext(diff, this.queries, this.traverser, options);
   }
 
   // ===========================================================================

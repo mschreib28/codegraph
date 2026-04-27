@@ -34,7 +34,8 @@ export type HandlerKey =
   | 'handleFiles'
   | 'handleHotspots'
   | 'handleConfig'
-  | 'handleSql';
+  | 'handleSql'
+  | 'handleReviewContext';
 
 /**
  * The minimum surface a `ToolHandler`-shaped object exposes for

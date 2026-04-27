@@ -862,6 +862,39 @@ export class ToolHandler implements ToolHandlerLike {
   }
 
   /**
+   * Handle codegraph_review_context — structured PR-review context from a diff.
+   */
+  async handleReviewContext(args: Record<string, unknown>): Promise<ToolResult> {
+    const diff = this.validateString(args.diff, 'diff');
+    if (typeof diff !== 'string') return diff;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const context = cg.buildReviewContext(diff, {
+      maxCallersPerSymbol: args.maxCallersPerSymbol != null
+        ? clamp(Number(args.maxCallersPerSymbol), 0, 50)
+        : undefined,
+      maxCalleesPerSymbol: args.maxCalleesPerSymbol != null
+        ? clamp(Number(args.maxCalleesPerSymbol), 0, 50)
+        : undefined,
+      maxCoChangeWarnings: args.maxCoChangeWarnings != null
+        ? clamp(Number(args.maxCoChangeWarnings), 0, 20)
+        : undefined,
+      minCoChangeJaccard: args.minCoChangeJaccard != null
+        ? clamp(Number(args.minCoChangeJaccard), 0, 1)
+        : undefined,
+    });
+
+    if (context.summary.symbolsAffected === 0 && context.files.length === 0) {
+      return this.textResult(
+        'No indexed symbols overlap the diff hunks. Either the affected files are not indexed, the diff is empty, or it touches files that were added/deleted entirely.'
+      );
+    }
+
+    return this.textResult(serializeReviewContextWithinCap(context, MAX_OUTPUT_LENGTH));
+  }
+
+  /**
    * Handle codegraph_sql — SQL call-site queries.
    */
   async handleSql(args: Record<string, unknown>): Promise<ToolResult> {
@@ -1322,4 +1355,65 @@ export class ToolHandler implements ToolHandlerLike {
       isError: true,
     };
   }
+}
+
+/**
+ * Serialize the review context as JSON, progressively trimming low-value
+ * fields (docstrings → signatures → callers/callees → files) to fit `cap`.
+ */
+function serializeReviewContextWithinCap(context: unknown, cap: number): string {
+  const ctx = JSON.parse(JSON.stringify(context)) as {
+    summary: Record<string, number>;
+    files: Array<{
+      affectedSymbols: Array<{
+        docstring?: string;
+        signature?: string;
+        callers?: unknown[];
+        callees?: unknown[];
+      }>;
+      _truncated?: boolean;
+    }>;
+    coChangeWarnings: unknown[];
+    _truncated?: boolean;
+  };
+
+  const fits = (s: string) => s.length <= cap;
+
+  let json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  for (const f of ctx.files) for (const s of f.affectedSymbols) delete s.docstring;
+  json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  for (const f of ctx.files) for (const s of f.affectedSymbols) delete s.signature;
+  json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  for (const f of ctx.files) for (const s of f.affectedSymbols) {
+    if (Array.isArray(s.callers)) s.callers = s.callers.slice(0, 2);
+    if (Array.isArray(s.callees)) s.callees = s.callees.slice(0, 2);
+  }
+  json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  for (const f of ctx.files) for (const s of f.affectedSymbols) {
+    delete s.callers;
+    delete s.callees;
+  }
+  json = JSON.stringify(ctx, null, 2);
+  if (fits(json)) return json;
+
+  while (ctx.files.length > 1) {
+    ctx.files.pop();
+    ctx._truncated = true;
+    json = JSON.stringify(ctx, null, 2);
+    if (fits(json)) return json;
+  }
+
+  return JSON.stringify(
+    { summary: ctx.summary, coChangeWarnings: ctx.coChangeWarnings, _truncated: true },
+    null,
+    2
+  );
 }
