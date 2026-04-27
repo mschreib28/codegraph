@@ -32,6 +32,7 @@ import { C_DEF, CPP_DEF } from './c-cpp';
 import { CSHARP_DEF } from './csharp';
 import { DART_DEF } from './dart';
 import { GO_DEF } from './go';
+import { HCL_DEF } from './hcl';
 import { JAVA_DEF } from './java';
 import { JAVASCRIPT_DEF } from './javascript';
 import { JSX_DEF } from './jsx';
@@ -56,6 +57,7 @@ const ALL_DEFS: readonly LanguageDef[] = [
   CSHARP_DEF,
   DART_DEF,
   GO_DEF,
+  HCL_DEF,
   JAVA_DEF,
   JAVASCRIPT_DEF,
   JSX_DEF,

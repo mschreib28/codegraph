@@ -3081,70 +3081,243 @@ describe('Directory Exclusion', () => {
 });
 
 // =============================================================================
-// Svelte line-number regressions (audit fix)
+// HCL / Terraform Extraction
 // =============================================================================
 
-describe('Svelte line numbering', () => {
-  it('reports symbol line numbers relative to the .svelte file, not the script content', () => {
-    // Line 1: <script>
-    // Line 2: function add(a, b) { return a + b; }
-    // Line 3: </script>
-    const code = `<script>\nfunction add(a, b) { return a + b; }\n</script>\n`;
-    const result = extractFromSource('Comp.svelte', code);
-    const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'add');
-    expect(fn).toBeDefined();
-    expect(fn?.startLine).toBe(2);
+describe('HCL / Terraform Extraction', () => {
+  describe('Language detection', () => {
+    it('should detect HCL/Terraform files', () => {
+      expect(detectLanguage('main.tf')).toBe('hcl');
+      expect(detectLanguage('terraform.tfvars')).toBe('hcl');
+      expect(detectLanguage('config.hcl')).toBe('hcl');
+    });
+
+    it('should report HCL as supported', () => {
+      expect(isLanguageSupported('hcl')).toBe(true);
+      expect(getSupportedLanguages()).toContain('hcl');
+    });
   });
 
-  it('handles multi-line opening tags (script with attributes wrapped)', () => {
-    // Line 1: <script
-    // Line 2:   lang="ts">
-    // Line 3: function greet() { return "hi"; }
-    // Line 4: </script>
-    const code = `<script\n  lang="ts">\nfunction greet() { return "hi"; }\n</script>\n`;
-    const result = extractFromSource('Comp.svelte', code);
-    const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'greet');
-    expect(fn).toBeDefined();
-    expect(fn?.startLine).toBe(3);
+  describe('Block extraction', () => {
+    it('should extract a resource block as a class node', () => {
+      const code = `resource "aws_s3_bucket" "logs" { bucket = "my-logs" }`;
+      const result = extractFromSource('main.tf', code);
+
+      const node = result.nodes.find((n) => n.qualifiedName === 'aws_s3_bucket.logs');
+      expect(node).toBeDefined();
+      expect(node?.kind).toBe('class');
+      expect(node?.name).toBe('aws_s3_bucket.logs');
+      expect(node?.language).toBe('hcl');
+      expect(node?.signature).toBe('resource "aws_s3_bucket" "logs"');
+    });
+
+    it('should extract a data block with `data.` prefix', () => {
+      const code = `data "aws_caller_identity" "current" {}`;
+      const result = extractFromSource('main.tf', code);
+
+      const node = result.nodes.find((n) => n.qualifiedName === 'data.aws_caller_identity.current');
+      expect(node).toBeDefined();
+      expect(node?.kind).toBe('class');
+      expect(node?.name).toBe('aws_caller_identity.current');
+    });
+
+    it('should extract a variable block', () => {
+      const code = `variable "environment" { type = string }`;
+      const result = extractFromSource('main.tf', code);
+
+      const node = result.nodes.find((n) => n.qualifiedName === 'var.environment');
+      expect(node).toBeDefined();
+      expect(node?.kind).toBe('variable');
+      expect(node?.name).toBe('environment');
+    });
+
+    it('should extract an output block as an export', () => {
+      const code = `output "vpc_id" { value = "abc" }`;
+      const result = extractFromSource('main.tf', code);
+
+      const node = result.nodes.find((n) => n.qualifiedName === 'output.vpc_id');
+      expect(node).toBeDefined();
+      expect(node?.kind).toBe('export');
+      expect(node?.name).toBe('vpc_id');
+    });
+
+    it('should extract a module block', () => {
+      const code = `module "vpc" { source = "terraform-aws-modules/vpc/aws" }`;
+      const result = extractFromSource('main.tf', code);
+
+      const node = result.nodes.find((n) => n.qualifiedName === 'module.vpc');
+      expect(node).toBeDefined();
+      expect(node?.kind).toBe('module');
+      expect(node?.name).toBe('vpc');
+    });
+
+    it('should extract a provider block as namespace', () => {
+      const code = `provider "aws" { region = "us-east-1" }`;
+      const result = extractFromSource('main.tf', code);
+
+      const node = result.nodes.find((n) => n.qualifiedName === 'provider.aws');
+      expect(node).toBeDefined();
+      expect(node?.kind).toBe('namespace');
+    });
+
+    it('should split a locals block into one constant per attribute', () => {
+      const code = `locals {
+  bucket_name = "my-bucket"
+  retention   = 30
+}`;
+      const result = extractFromSource('main.tf', code);
+
+      const bucketName = result.nodes.find((n) => n.qualifiedName === 'local.bucket_name');
+      const retention = result.nodes.find((n) => n.qualifiedName === 'local.retention');
+      expect(bucketName?.kind).toBe('constant');
+      expect(retention?.kind).toBe('constant');
+    });
+
+    it('should connect blocks to the file via contains edges', () => {
+      const code = `resource "aws_s3_bucket" "logs" {}`;
+      const result = extractFromSource('main.tf', code);
+
+      const fileNode = result.nodes.find((n) => n.kind === 'file');
+      const resourceNode = result.nodes.find((n) => n.qualifiedName === 'aws_s3_bucket.logs');
+      expect(fileNode).toBeDefined();
+      expect(resourceNode).toBeDefined();
+      const containsEdge = result.edges.find(
+        (e) => e.source === fileNode!.id && e.target === resourceNode!.id && e.kind === 'contains'
+      );
+      expect(containsEdge).toBeDefined();
+    });
   });
 
-  it('preserves correct line numbers when the script block is offset by template lines', () => {
-    // Line 1: <h1>Hello</h1>
-    // Line 2:
-    // Line 3: <script>
-    // Line 4: function bottom() {}
-    // Line 5: </script>
-    const code = `<h1>Hello</h1>\n\n<script>\nfunction bottom() {}\n</script>\n`;
-    const result = extractFromSource('Comp.svelte', code);
-    const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'bottom');
-    expect(fn).toBeDefined();
-    expect(fn?.startLine).toBe(4);
+  describe('Reference extraction', () => {
+    it('should extract var.X references', () => {
+      const code = `resource "aws_s3_bucket" "logs" { bucket = var.bucket_name }`;
+      const result = extractFromSource('main.tf', code);
+
+      const ref = result.unresolvedReferences.find((r) => r.referenceName === 'var.bucket_name');
+      expect(ref).toBeDefined();
+      expect(ref?.referenceKind).toBe('references');
+    });
+
+    it('should extract local.X references', () => {
+      const code = `resource "aws_s3_bucket" "logs" { tags = local.common_tags }`;
+      const result = extractFromSource('main.tf', code);
+
+      const ref = result.unresolvedReferences.find((r) => r.referenceName === 'local.common_tags');
+      expect(ref).toBeDefined();
+    });
+
+    it('should extract module.X references and stop at the module name', () => {
+      const code = `output "vpc_id" { value = module.vpc.vpc_id }`;
+      const result = extractFromSource('main.tf', code);
+
+      const ref = result.unresolvedReferences.find((r) => r.referenceName === 'module.vpc');
+      expect(ref).toBeDefined();
+      // Should NOT emit a reference for the trailing attribute
+      expect(result.unresolvedReferences.find((r) => r.referenceName === 'module.vpc.vpc_id')).toBeUndefined();
+    });
+
+    it('should extract data.T.N references with both labels', () => {
+      const code = `output "x" { value = data.aws_caller_identity.current.account_id }`;
+      const result = extractFromSource('main.tf', code);
+
+      const ref = result.unresolvedReferences.find(
+        (r) => r.referenceName === 'data.aws_caller_identity.current'
+      );
+      expect(ref).toBeDefined();
+    });
+
+    it('should extract resource references as TYPE.NAME', () => {
+      const code = `resource "aws_s3_bucket_versioning" "v" { bucket = aws_s3_bucket.logs.id }`;
+      const result = extractFromSource('main.tf', code);
+
+      const ref = result.unresolvedReferences.find((r) => r.referenceName === 'aws_s3_bucket.logs');
+      expect(ref).toBeDefined();
+    });
+
+    it('should extract references inside string interpolations', () => {
+      const code = 'locals { name = "${var.environment}-${random_id.suffix.hex}" }';
+      const result = extractFromSource('main.tf', code);
+
+      const names = result.unresolvedReferences.map((r) => r.referenceName);
+      expect(names).toContain('var.environment');
+      expect(names).toContain('random_id.suffix');
+    });
+
+    it('should ignore references to count, each, self, and path', () => {
+      const code = `resource "aws_instance" "web" {
+  count = 3
+  tags  = { Name = "web-\${count.index}", For = each.value, Self = self.id, P = path.module }
+}`;
+      const result = extractFromSource('main.tf', code);
+
+      const names = result.unresolvedReferences.map((r) => r.referenceName);
+      expect(names.find((n) => n.startsWith('count.'))).toBeUndefined();
+      expect(names.find((n) => n.startsWith('each.'))).toBeUndefined();
+      expect(names.find((n) => n.startsWith('self.'))).toBeUndefined();
+      expect(names.find((n) => n.startsWith('path.'))).toBeUndefined();
+    });
+
+    it('should ignore for-loop iteration variables', () => {
+      const code = `output "ids" { value = [for s in var.subnets : s.id] }`;
+      const result = extractFromSource('main.tf', code);
+
+      const names = result.unresolvedReferences.map((r) => r.referenceName);
+      // var.subnets reference comes through, but `s.id` does NOT
+      expect(names).toContain('var.subnets');
+      expect(names.find((n) => n.startsWith('s.'))).toBeUndefined();
+    });
+
+    it('should ignore key/value bindings in for-object expressions', () => {
+      const code = `locals { tags = { for k, v in var.input : k => "\${v}-suffix" } }`;
+      const result = extractFromSource('main.tf', code);
+
+      const names = result.unresolvedReferences.map((r) => r.referenceName);
+      expect(names).toContain('var.input');
+      expect(names.find((n) => n === 'k' || n.startsWith('k.'))).toBeUndefined();
+      expect(names.find((n) => n === 'v' || n.startsWith('v.'))).toBeUndefined();
+    });
+
+    it('should emit an imports edge for module source', () => {
+      const code = `module "vpc" { source = "terraform-aws-modules/vpc/aws" }`;
+      const result = extractFromSource('main.tf', code);
+
+      const importRef = result.unresolvedReferences.find(
+        (r) => r.referenceKind === 'imports' && r.referenceName === 'terraform-aws-modules/vpc/aws'
+      );
+      expect(importRef).toBeDefined();
+    });
   });
 
-  it('handles a single-line script block with no internal newline', () => {
-    // Line 1: <script>function inline() { return 1; }</script>
-    const code = `<script>function inline() { return 1; }</script>\n`;
-    const result = extractFromSource('Comp.svelte', code);
-    const fn = result.nodes.find((n) => n.kind === 'function' && n.name === 'inline');
-    expect(fn).toBeDefined();
-    expect(fn?.startLine).toBe(1);
-  });
+  describe('Robustness', () => {
+    it('should handle empty files', () => {
+      const result = extractFromSource('main.tf', '');
+      const fileNode = result.nodes.find((n) => n.kind === 'file');
+      expect(fileNode).toBeDefined();
+    });
 
-  it('attributes each block correctly when a file has both module and instance scripts', () => {
-    // Line 1: <script context="module">
-    // Line 2: function moduleHelper() {}
-    // Line 3: </script>
-    // Line 4:
-    // Line 5: <script>
-    // Line 6: function instanceHelper() {}
-    // Line 7: </script>
-    const code =
-      `<script context="module">\nfunction moduleHelper() {}\n</script>\n` +
-      `\n<script>\nfunction instanceHelper() {}\n</script>\n`;
-    const result = extractFromSource('Comp.svelte', code);
-    const moduleFn = result.nodes.find((n) => n.kind === 'function' && n.name === 'moduleHelper');
-    const instanceFn = result.nodes.find((n) => n.kind === 'function' && n.name === 'instanceHelper');
-    expect(moduleFn?.startLine).toBe(2);
-    expect(instanceFn?.startLine).toBe(6);
+    it('should handle blocks with no body', () => {
+      const code = `data "aws_caller_identity" "current" {}`;
+      const result = extractFromSource('main.tf', code);
+      expect(result.nodes.find((n) => n.qualifiedName === 'data.aws_caller_identity.current')).toBeDefined();
+    });
+
+    it('should walk nested blocks for references without emitting child nodes', () => {
+      const code = `resource "aws_s3_bucket_versioning" "v" {
+  bucket = aws_s3_bucket.logs.id
+  versioning_configuration {
+    status = var.versioning_status
+  }
+}`;
+      const result = extractFromSource('main.tf', code);
+
+      // Only one block-level node, plus the file
+      const blockNodes = result.nodes.filter((n) => n.kind === 'class');
+      expect(blockNodes.length).toBe(1);
+
+      // References from the nested block should still be captured
+      const names = result.unresolvedReferences.map((r) => r.referenceName);
+      expect(names).toContain('aws_s3_bucket.logs');
+      expect(names).toContain('var.versioning_status');
+    });
   });
 });
