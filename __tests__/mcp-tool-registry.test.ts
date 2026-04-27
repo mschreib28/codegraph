@@ -49,6 +49,7 @@ describe('MCP tool registry — single source of truth', () => {
       'codegraph_impact',
       'codegraph_node',
       'codegraph_search',
+      'codegraph_sql',
       'codegraph_status',
     ];
     const actual = getToolModules()

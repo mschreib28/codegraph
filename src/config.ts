@@ -132,6 +132,7 @@ function mergeConfig(
     enableChurn: overrides.enableChurn ?? defaults.enableChurn,
     enableIssueHistory: overrides.enableIssueHistory ?? defaults.enableIssueHistory,
     enableConfigRefs: overrides.enableConfigRefs ?? defaults.enableConfigRefs,
+    enableSqlRefs: overrides.enableSqlRefs ?? defaults.enableSqlRefs,
   };
 }
 

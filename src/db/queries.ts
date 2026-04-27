@@ -1689,4 +1689,147 @@ export class QueryBuilder {
       )
       .all(nodeId) as Array<{ configKey: string; line: number }>;
   }
+
+  // ===========================================================================
+  // SQL references (table-name string-literal refs from app code)
+  // ===========================================================================
+
+  applySqlRefs(
+    rows: Array<{
+      tableName: string;
+      op: 'read' | 'write' | 'ddl';
+      sourceNodeId: string | null;
+      filePath: string;
+      line: number;
+    }>
+  ): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(
+      `INSERT INTO sql_refs (table_name, op, source_node_id, file_path, line)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+    this.db.transaction(() => {
+      for (const r of rows) {
+        stmt.run(r.tableName, r.op, r.sourceNodeId, r.filePath, r.line);
+      }
+    })();
+  }
+
+  replaceAllSqlRefs(
+    rows: Array<{
+      tableName: string;
+      op: 'read' | 'write' | 'ddl';
+      sourceNodeId: string | null;
+      filePath: string;
+      line: number;
+    }>
+  ): void {
+    const insert = this.db.prepare(
+      `INSERT INTO sql_refs (table_name, op, source_node_id, file_path, line)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+    this.db.transaction(() => {
+      this.db.exec('DELETE FROM sql_refs');
+      for (const r of rows) {
+        insert.run(r.tableName, r.op, r.sourceNodeId, r.filePath, r.line);
+      }
+    })();
+  }
+
+  deleteSqlRefsForPaths(filePaths: Iterable<string>): void {
+    const stmt = this.db.prepare('DELETE FROM sql_refs WHERE file_path = ?');
+    this.db.transaction(() => {
+      for (const p of filePaths) stmt.run(p);
+    })();
+  }
+
+  clearSqlRefs(): void {
+    this.db.exec('DELETE FROM sql_refs');
+  }
+
+  pruneOrphanedSqlRefs(): void {
+    this.db.exec(
+      `DELETE FROM sql_refs WHERE file_path NOT IN (SELECT path FROM files)`
+    );
+  }
+
+  getSqlTables(opts: { limit?: number } = {}): Array<{
+    tableName: string;
+    reads: number;
+    writes: number;
+    ddl: number;
+    total: number;
+  }> {
+    const limit = opts.limit ?? 100;
+    return this.db
+      .prepare(
+        `SELECT lower(table_name) AS tableName,
+                SUM(CASE WHEN op = 'read'  THEN 1 ELSE 0 END) AS reads,
+                SUM(CASE WHEN op = 'write' THEN 1 ELSE 0 END) AS writes,
+                SUM(CASE WHEN op = 'ddl'   THEN 1 ELSE 0 END) AS ddl,
+                COUNT(*)                                       AS total
+         FROM sql_refs
+         GROUP BY lower(table_name)
+         ORDER BY total DESC, tableName ASC
+         LIMIT ?`
+      )
+      .all(limit) as Array<{
+      tableName: string;
+      reads: number;
+      writes: number;
+      ddl: number;
+      total: number;
+    }>;
+  }
+
+  getSqlRefsByTable(
+    tableName: string,
+    opts: { op?: 'read' | 'write' | 'ddl' } = {}
+  ): Array<{
+    op: 'read' | 'write' | 'ddl';
+    filePath: string;
+    line: number;
+    sourceNodeId: string | null;
+    sourceName: string | null;
+    sourceKind: string | null;
+  }> {
+    const params: Array<string> = [tableName.toLowerCase()];
+    let opFilter = '';
+    if (opts.op) {
+      opFilter = ' AND sr.op = ?';
+      params.push(opts.op);
+    }
+    return this.db
+      .prepare(
+        `SELECT sr.op AS op,
+                sr.file_path AS filePath,
+                sr.line AS line,
+                sr.source_node_id AS sourceNodeId,
+                n.name AS sourceName,
+                n.kind AS sourceKind
+         FROM sql_refs sr
+         LEFT JOIN nodes n ON n.id = sr.source_node_id
+         WHERE lower(sr.table_name) = ?${opFilter}
+         ORDER BY sr.file_path ASC, sr.line ASC`
+      )
+      .all(...params) as Array<{
+      op: 'read' | 'write' | 'ddl';
+      filePath: string;
+      line: number;
+      sourceNodeId: string | null;
+      sourceName: string | null;
+      sourceKind: string | null;
+    }>;
+  }
+
+  getSqlTablesForNode(nodeId: string): Array<{ tableName: string; op: string }> {
+    return this.db
+      .prepare(
+        `SELECT DISTINCT lower(table_name) AS tableName, op
+         FROM sql_refs
+         WHERE source_node_id = ?
+         ORDER BY tableName ASC, op ASC`
+      )
+      .all(nodeId) as Array<{ tableName: string; op: string }>;
+  }
 }

@@ -26,6 +26,7 @@ import { HOOK as CENTRALITY_HOOK } from './centrality';
 import { HOOK as CHURN_HOOK } from './churn';
 import { HOOK as CONFIG_REFS_HOOK } from './config-refs';
 import { HOOK as ISSUE_HISTORY_HOOK } from './issue-history';
+import { HOOK as SQL_REFS_HOOK } from './sql-refs';
 
 /**
  * Static-import list of every registered hook.
@@ -40,6 +41,7 @@ const REGISTERED_HOOKS: readonly IndexHook[] = [
   CHURN_HOOK,
   CONFIG_REFS_HOOK,
   ISSUE_HISTORY_HOOK,
+  SQL_REFS_HOOK,
 ];
 
 /**

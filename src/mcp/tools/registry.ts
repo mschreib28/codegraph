@@ -28,6 +28,7 @@ import { HOTSPOTS_TOOL } from './hotspots';
 import { IMPACT_TOOL } from './impact';
 import { NODE_TOOL } from './node';
 import { SEARCH_TOOL } from './search';
+import { SQL_TOOL } from './sql';
 import { STATUS_TOOL } from './status';
 
 const ALL_TOOLS: readonly ToolModule[] = [
@@ -41,6 +42,7 @@ const ALL_TOOLS: readonly ToolModule[] = [
   IMPACT_TOOL,
   NODE_TOOL,
   SEARCH_TOOL,
+  SQL_TOOL,
   STATUS_TOOL,
 ];
 

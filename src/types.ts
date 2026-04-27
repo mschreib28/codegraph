@@ -524,6 +524,12 @@ export interface CodeGraphConfig {
    * Enabled by default.
    */
   enableConfigRefs?: boolean;
+
+  /**
+   * Extract SQL string-literal references (table reads/writes/DDL)
+   * into sql_refs. Enabled by default.
+   */
+  enableSqlRefs?: boolean;
 }
 
 // `DEFAULT_CONFIG` lives in `./default-config.ts` so its `include`

@@ -187,6 +187,7 @@ const baseConfig: CodeGraphConfig = {
   enableChurn: true,
   enableIssueHistory: true,
   enableConfigRefs: true,
+  enableSqlRefs: true,
 };
 
 Object.defineProperty(baseConfig, 'include', {

@@ -29,6 +29,7 @@ import { MIGRATION as MIG_003 } from './003-lower-name-index';
 import { MIGRATION as MIG_004 } from './004-centrality-churn';
 import { MIGRATION as MIG_005 } from './005-symbol-issues';
 import { MIGRATION as MIG_006 } from './006-config-refs';
+import { MIGRATION as MIG_007 } from './007-sql-refs';
 
 interface ModuleRef {
   /**
@@ -54,6 +55,7 @@ const REGISTERED_MODULES: readonly ModuleRef[] = [
   { filename: '004-centrality-churn.ts', module: MIG_004 },
   { filename: '005-symbol-issues.ts', module: MIG_005 },
   { filename: '006-config-refs.ts', module: MIG_006 },
+  { filename: '007-sql-refs.ts', module: MIG_007 },
 ];
 
 /** Strict 3-digit prefix on each migration filename. */

@@ -593,6 +593,21 @@ export class CodeGraph {
     return this.queries.getConfigKeysForNode(nodeId);
   }
 
+  getSqlTables(opts: { limit?: number } = {}): ReturnType<QueryBuilder['getSqlTables']> {
+    return this.queries.getSqlTables(opts);
+  }
+
+  getSqlRefsByTable(
+    tableName: string,
+    opts: { op?: 'read' | 'write' | 'ddl' } = {}
+  ): ReturnType<QueryBuilder['getSqlRefsByTable']> {
+    return this.queries.getSqlRefsByTable(tableName, opts);
+  }
+
+  getSqlTablesForNode(nodeId: string): ReturnType<QueryBuilder['getSqlTablesForNode']> {
+    return this.queries.getSqlTablesForNode(nodeId);
+  }
+
   // ===========================================================================
   // File Watching
   // ===========================================================================

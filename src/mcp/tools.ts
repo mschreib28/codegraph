@@ -862,6 +862,57 @@ export class ToolHandler implements ToolHandlerLike {
   }
 
   /**
+   * Handle codegraph_sql — SQL call-site queries.
+   */
+  async handleSql(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const table = typeof args.table === 'string' ? args.table.trim() : '';
+    const op =
+      args.op === 'read' || args.op === 'write' || args.op === 'ddl'
+        ? args.op
+        : undefined;
+
+    if (!table) {
+      const limit = args.limit != null ? clamp(args.limit as number, 1, 500) : 30;
+      const rows = cg.getSqlTables({ limit });
+      if (rows.length === 0) {
+        return this.textResult(
+          'No SQL refs found. Either the index has no SQL string-literal call sites, or `enableSqlRefs` is disabled in config.'
+        );
+      }
+      const lines: string[] = [
+        `## SQL tables touched by this codebase (top ${rows.length})`,
+        '',
+        '| # | Table | Reads | Writes | DDL | Total |',
+        '|---|-------|------:|-------:|----:|------:|',
+      ];
+      rows.forEach((r, i) => {
+        lines.push(
+          `| ${i + 1} | \`${r.tableName}\` | ${r.reads} | ${r.writes} | ${r.ddl} | ${r.total} |`
+        );
+      });
+      lines.push('', 'Pass `table` to a follow-up call to see exact call sites.');
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    }
+
+    const sites = cg.getSqlRefsByTable(table, op ? { op } : {});
+    if (sites.length === 0) {
+      return this.textResult(`No SQL refs found for table "${table}"${op ? ` (op=${op})` : ''}.`);
+    }
+    const lines: string[] = [
+      `## Call sites for \`${table}\`${op ? ` (op=${op})` : ''} — ${sites.length} site${sites.length === 1 ? '' : 's'}`,
+      '',
+    ];
+    for (const s of sites) {
+      const enclosing = s.sourceName
+        ? ` — ${s.sourceKind ?? 'symbol'} \`${s.sourceName}\``
+        : ' — top-level';
+      lines.push(`- [${s.op}] \`${s.filePath}:${s.line}\`${enclosing}`);
+    }
+    return this.textResult(this.truncateOutput(lines.join('\n')));
+  }
+
+  /**
    * Handle codegraph_hotspots — files ranked by risk = centrality × churn.
    */
   async handleHotspots(args: Record<string, unknown>): Promise<ToolResult> {
