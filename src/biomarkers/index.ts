@@ -62,6 +62,35 @@ export interface AnalysisResult {
   durationMs: number;
 }
 
+/**
+ * Run one cross-file biomarker rule: clear all existing findings of
+ * its kind, recompute via `produce`, and append the new set — atomic
+ * so concurrent readers never see the intermediate empty window.
+ *
+ * Returns the count of findings emitted (for the caller's
+ * findingsEmitted accumulator). Errors are caught + reported via
+ * `onError` so one broken rule doesn't abort the whole pass.
+ */
+function runCrossFileRule(
+  queries: QueryBuilder,
+  kind: string,
+  produce: () => Finding[],
+  onError: (count: number) => void
+): number {
+  try {
+    const findings = produce();
+    queries.transaction(() => {
+      queries.clearFindingsByKind(kind);
+      queries.appendFindings(findings);
+    });
+    return findings.length;
+  } catch (err) {
+    onError(1);
+    logDebug(`Biomarkers: cross-file rule '${kind}' failed`, { err: String(err) });
+    return 0;
+  }
+}
+
 export async function analyseProject(
   queries: QueryBuilder,
   projectRoot: string,
@@ -193,35 +222,82 @@ export async function analyseProject(
     options.onProgress?.(filesScanned, total);
   }
 
-  // Cross-file rule: unused_export. Single graph query over the whole
-  // database — far cheaper than checking incoming-edge count per node.
-  // Skipped on partial scans (sync runs with filePaths set) because the
-  // result depends on global graph state, not the touched-file subset.
-  // (replaceFindingsForFile preserves any existing unused_export rows
-  // on touched files, so they remain valid until the next full pass.)
+  // Cross-file rules: depend on global graph state, so they run only
+  // on full scans (not partial syncs). replaceFindingsForFile is now
+  // configured to preserve every cross-file biomarker kind on per-file
+  // replace, so the existing findings remain valid between full passes.
   if (!fileFilter) {
-    try {
-      const dead = queries.findUnusedExports();
-      const findings = dead.map((sym) => ({
-        nodeId: sym.id,
-        biomarker: 'unused_export' as const,
-        severity: 'warning' as const,
-        metric: 0,
-        detail: { kind: sym.kind, name: sym.name },
-      }));
-      // Atomic clear+append so concurrent readers never see the
-      // intermediate "no unused exports" state between the DELETE and
-      // the INSERT. Without this, a tool reading findings during the
-      // re-scan window would briefly miss every existing finding.
-      queries.transaction(() => {
-        queries.clearFindingsByKind('unused_export');
-        queries.appendFindings(findings);
-      });
-      findingsEmitted += findings.length;
-    } catch (err) {
-      errors++;
-      logDebug('Biomarkers: findUnusedExports failed', { err: String(err) });
-    }
+    findingsEmitted += runCrossFileRule(
+      queries,
+      'unused_export',
+      () =>
+        queries.findUnusedExports().map((sym) => ({
+          nodeId: sym.id,
+          biomarker: 'unused_export' as const,
+          severity: 'warning' as const,
+          metric: 0,
+          detail: { kind: sym.kind, name: sym.name },
+        })),
+      (count) => {
+        errors += count;
+      }
+    );
+
+    // god_class — class-like nodes with too many member children.
+    // Thresholds informed by Lanza/Marinescu and CodeScene's
+    // published WMC ranges, conservative end (we'd rather under-flag
+    // than spam findings on a fresh codebase).
+    const T_GOD_INFO = 15;
+    const T_GOD_WARN = 25;
+    const T_GOD_ERR = 40;
+    findingsEmitted += runCrossFileRule(
+      queries,
+      'god_class',
+      () =>
+        queries.findGodClasses(T_GOD_INFO).map((c) => {
+          const sev: 'info' | 'warning' | 'error' =
+            c.memberCount >= T_GOD_ERR
+              ? 'error'
+              : c.memberCount >= T_GOD_WARN
+                ? 'warning'
+                : 'info';
+          return {
+            nodeId: c.id,
+            biomarker: 'god_class' as const,
+            severity: sev,
+            metric: c.memberCount,
+            detail: { name: c.name },
+          };
+        }),
+      (count) => {
+        errors += count;
+      }
+    );
+
+    // feature_envy — methods that call into other files at least
+    // 5× and at least 2× more than into their own file. The 5×
+    // floor avoids flagging tiny helper methods; the 2× ratio is
+    // a robust threshold from the literature.
+    const FE_MIN_EXTERNAL = 5;
+    const FE_RATIO = 2;
+    findingsEmitted += runCrossFileRule(
+      queries,
+      'feature_envy',
+      () =>
+        queries.findFeatureEnvy(FE_MIN_EXTERNAL, FE_RATIO).map((m) => ({
+          nodeId: m.id,
+          biomarker: 'feature_envy' as const,
+          severity:
+            m.externalCalls >= 20
+              ? 'warning'
+              : 'info',
+          metric: m.externalCalls,
+          detail: { name: m.name, sameFileCalls: m.sameFileCalls },
+        })),
+      (count) => {
+        errors += count;
+      }
+    );
   }
 
   return {

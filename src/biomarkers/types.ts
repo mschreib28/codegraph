@@ -16,7 +16,9 @@ export type BiomarkerName =
   | 'long_parameter_list'
   | 'magic_number'
   | 'hardcoded_url'
-  | 'unused_export';
+  | 'unused_export'
+  | 'god_class'
+  | 'feature_envy';
 
 export type Severity = 'info' | 'warning' | 'error';
 

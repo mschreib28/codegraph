@@ -515,6 +515,87 @@ export class QueryBuilder {
   }
 
   /**
+   * Find class-like nodes whose `contains` subtree has at least
+   * `minMembers` method/property children. Backs the `god_class`
+   * biomarker — a class with dozens of members is almost always
+   * a candidate for splitting. Sorted by memberCount desc so the
+   * worst offenders surface first.
+   *
+   * Includes interfaces and structs (Go's `interface`/`struct`
+   * with attached methods can grow just as unwieldy as a Java class).
+   */
+  findGodClasses(
+    minMembers: number
+  ): Array<{ id: string; name: string; filePath: string; memberCount: number }> {
+    const sql = `
+      SELECT n.id, n.name, n.file_path AS filePath, COUNT(child.id) AS memberCount
+      FROM nodes n
+      JOIN edges e ON e.source = n.id AND e.kind = 'contains'
+      JOIN nodes child ON e.target = child.id
+      WHERE n.kind IN ('class', 'struct', 'interface', 'trait', 'protocol')
+        AND child.kind IN ('method', 'function', 'property', 'field')
+      GROUP BY n.id, n.name, n.file_path
+      HAVING memberCount >= ?
+      ORDER BY memberCount DESC
+    `;
+    return this.db.prepare(sql).all(minMembers) as Array<{
+      id: string;
+      name: string;
+      filePath: string;
+      memberCount: number;
+    }>;
+  }
+
+  /**
+   * Find methods showing "feature envy" — they call into another
+   * file's API at least `minExternalCalls` times AND at least
+   * `externalRatio`× as often as into their own file. Backs the
+   * `feature_envy` biomarker.
+   *
+   * "Same class" is approximated by "same file" — a more accurate
+   * implementation would walk the `contains` chain to find the
+   * enclosing class, but file-grouping is correct in practice for
+   * any reasonable codebase (one class per file is the dominant
+   * style across our supported languages).
+   */
+  findFeatureEnvy(
+    minExternalCalls: number,
+    externalRatio: number
+  ): Array<{
+    id: string;
+    name: string;
+    filePath: string;
+    externalCalls: number;
+    sameFileCalls: number;
+  }> {
+    const sql = `
+      WITH outbound AS (
+        SELECT src.id AS srcId, src.name AS srcName, src.file_path AS srcFile,
+               tgt.file_path AS tgtFile
+        FROM edges e
+        JOIN nodes src ON e.source = src.id
+        JOIN nodes tgt ON e.target = tgt.id
+        WHERE e.kind = 'calls' AND src.kind IN ('method', 'function')
+      )
+      SELECT srcId AS id, srcName AS name, srcFile AS filePath,
+             SUM(CASE WHEN tgtFile != srcFile THEN 1 ELSE 0 END) AS externalCalls,
+             SUM(CASE WHEN tgtFile  = srcFile THEN 1 ELSE 0 END) AS sameFileCalls
+      FROM outbound
+      GROUP BY srcId, srcName, srcFile
+      HAVING externalCalls >= ?
+        AND externalCalls >= sameFileCalls * ?
+      ORDER BY externalCalls DESC
+    `;
+    return this.db.prepare(sql).all(minExternalCalls, externalRatio) as Array<{
+      id: string;
+      name: string;
+      filePath: string;
+      externalCalls: number;
+      sameFileCalls: number;
+    }>;
+  }
+
+  /**
    * Find exported nodes that have no incoming graph edge from outside
    * their own file. Used by the `unused_export` biomarker to flag
    * dead public API after refactors.
@@ -2486,12 +2567,12 @@ export class QueryBuilder {
       // Cross-file biomarkers (computed from global graph state, not
       // from this file's AST) must NOT be wiped by per-file replace,
       // or sync runs that touch a file will silently lose those
-      // findings without recomputing them. Today only `unused_export`
-      // qualifies; new cross-file biomarkers should be added here.
+      // findings without recomputing them. Add new cross-file kinds
+      // to the NOT-IN list as they're introduced.
       this.db
         .prepare(
           `DELETE FROM code_health_findings
-           WHERE biomarker NOT IN ('unused_export')
+           WHERE biomarker NOT IN ('unused_export', 'god_class', 'feature_envy')
              AND node_id IN (SELECT id FROM nodes WHERE file_path = ?)`
         )
         .run(filePath);
