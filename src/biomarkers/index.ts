@@ -197,12 +197,10 @@ export async function analyseProject(
   // database — far cheaper than checking incoming-edge count per node.
   // Skipped on partial scans (sync runs with filePaths set) because the
   // result depends on global graph state, not the touched-file subset.
+  // (replaceFindingsForFile preserves any existing unused_export rows
+  // on touched files, so they remain valid until the next full pass.)
   if (!fileFilter) {
     try {
-      // Always clear before re-emitting so deletions/refactors that
-      // turned a previously-unused export back into a referenced one
-      // don't keep a stale finding on the node.
-      queries.clearFindingsByKind('unused_export');
       const dead = queries.findUnusedExports();
       const findings = dead.map((sym) => ({
         nodeId: sym.id,
@@ -211,7 +209,14 @@ export async function analyseProject(
         metric: 0,
         detail: { kind: sym.kind, name: sym.name },
       }));
-      queries.appendFindings(findings);
+      // Atomic clear+append so concurrent readers never see the
+      // intermediate "no unused exports" state between the DELETE and
+      // the INSERT. Without this, a tool reading findings during the
+      // re-scan window would briefly miss every existing finding.
+      queries.transaction(() => {
+        queries.clearFindingsByKind('unused_export');
+        queries.appendFindings(findings);
+      });
       findingsEmitted += findings.length;
     } catch (err) {
       errors++;

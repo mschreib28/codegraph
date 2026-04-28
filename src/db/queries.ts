@@ -517,10 +517,22 @@ export class QueryBuilder {
   /**
    * Find exported nodes that have no incoming graph edge from outside
    * their own file. Used by the `unused_export` biomarker to flag
-   * dead public API after refactors. Excludes file/import/parameter
-   * nodes (never meaningful here) and the `contains` edge kind (which
-   * is purely structural — every exported method is "contained" by
-   * its class).
+   * dead public API after refactors.
+   *
+   * Excluded as "not real use":
+   *   - `contains`: structural; every method is contained by its class
+   *   - `exports`:  re-export barrels (`export { foo } from './a'`)
+   *                 forward the symbol but don't consume it. Without
+   *                 excluding this kind a re-export chain would mark
+   *                 every dead-but-re-exported symbol as "used".
+   *   - `imports`:  the import statement itself isn't a use; it just
+   *                 brings the name into scope. Real use shows up as
+   *                 `calls`/`references`/`instantiates`/`extends`/etc.
+   *   - `tests`:    convention-derived test→subject edges aren't a
+   *                 semantic call into the symbol's API.
+   *
+   * Also excludes node kinds that are never meaningful targets of the
+   * rule: file/import/parameter/enum_member/field.
    */
   findUnusedExports(): Array<{ id: string; name: string; filePath: string; kind: string }> {
     const sql = `
@@ -533,7 +545,7 @@ export class QueryBuilder {
           JOIN nodes src ON e.source = src.id
           WHERE e.target = n.id
             AND src.file_path != n.file_path
-            AND e.kind != 'contains'
+            AND e.kind NOT IN ('contains', 'exports', 'imports', 'tests')
         )
     `;
     return this.db.prepare(sql).all() as Array<{
@@ -2471,10 +2483,16 @@ export class QueryBuilder {
   ): void {
     const now = Date.now();
     this.db.transaction(() => {
+      // Cross-file biomarkers (computed from global graph state, not
+      // from this file's AST) must NOT be wiped by per-file replace,
+      // or sync runs that touch a file will silently lose those
+      // findings without recomputing them. Today only `unused_export`
+      // qualifies; new cross-file biomarkers should be added here.
       this.db
         .prepare(
           `DELETE FROM code_health_findings
-           WHERE node_id IN (SELECT id FROM nodes WHERE file_path = ?)`
+           WHERE biomarker NOT IN ('unused_export')
+             AND node_id IN (SELECT id FROM nodes WHERE file_path = ?)`
         )
         .run(filePath);
 

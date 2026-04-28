@@ -184,12 +184,15 @@ function isMagicNumber(text: string): boolean {
  * directly).
  */
 function countParameters(funcNode: TsNode): number {
+  // Only DECLARATION-site parameter list kinds. `argument_list` is
+  // intentionally excluded — that's a call-site node and including it
+  // would make a function whose body contains a call to a 7-arg
+  // function spuriously look like a 7-param function.
   const PARAM_LIST_KINDS = new Set([
     'formal_parameters',
     'parameters',
     'parameter_list',
     'parameter_declaration_list',
-    'argument_list',     // some grammars conflate
     'function_parameters',
   ]);
   // Single-identifier arrow function form: `x => ...`

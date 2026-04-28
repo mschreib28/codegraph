@@ -82,12 +82,36 @@ describe('engine: computeMetrics', () => {
   });
 });
 
+// Helper: build a SymbolMetrics with the new fields defaulted so each
+// test only needs to specify the field it's exercising. Keeps the
+// inline object literals readable as the metric set grows.
+function metrics(overrides: Partial<{
+  loc: number;
+  cyclomatic: number;
+  maxNesting: number;
+  maxConditionalOperands: number;
+  paramCount: number;
+  magicNumberCount: number;
+  hardcodedUrlCount: number;
+}> = {}) {
+  return {
+    loc: 20,
+    cyclomatic: 3,
+    maxNesting: 1,
+    maxConditionalOperands: 1,
+    paramCount: 0,
+    magicNumberCount: 0,
+    hardcodedUrlCount: 0,
+    ...overrides,
+  };
+}
+
 describe('engine: evaluateRules', () => {
   it('emits no findings for healthy metrics', () => {
     const findings = evaluateRules({
       nodeId: 'a',
       language: 'typescript',
-      metrics: { loc: 20, cyclomatic: 3, maxNesting: 1, maxConditionalOperands: 1 },
+      metrics: metrics(),
     });
     expect(findings).toEqual([]);
   });
@@ -96,7 +120,7 @@ describe('engine: evaluateRules', () => {
     const findings = evaluateRules({
       nodeId: 'a',
       language: 'typescript',
-      metrics: { loc: 250, cyclomatic: 3, maxNesting: 1, maxConditionalOperands: 1 },
+      metrics: metrics({ loc: 250 }),
     });
     const lm = findings.find((f) => f.biomarker === 'large_method');
     expect(lm).toBeDefined();
@@ -108,7 +132,7 @@ describe('engine: evaluateRules', () => {
     const findings = evaluateRules({
       nodeId: 'a',
       language: 'typescript',
-      metrics: { loc: 150, cyclomatic: 20, maxNesting: 5, maxConditionalOperands: 3 },
+      metrics: metrics({ loc: 150, cyclomatic: 20, maxNesting: 5, maxConditionalOperands: 3 }),
     });
     expect(findings.some((f) => f.biomarker === 'brain_method')).toBe(true);
     const brain = findings.find((f) => f.biomarker === 'brain_method')!;
@@ -123,9 +147,71 @@ describe('engine: evaluateRules', () => {
       nodeId: 'a',
       language: 'typescript',
       // Only loc warning; cyclomatic and nesting low.
-      metrics: { loc: 150, cyclomatic: 5, maxNesting: 1, maxConditionalOperands: 1 },
+      metrics: metrics({ loc: 150, cyclomatic: 5 }),
     });
     expect(findings.some((f) => f.biomarker === 'brain_method')).toBe(false);
+  });
+
+  it('emits long_parameter_list at warning when paramCount=5', () => {
+    const findings = evaluateRules({
+      nodeId: 'a',
+      language: 'typescript',
+      metrics: metrics({ paramCount: 5 }),
+    });
+    const f = findings.find((x) => x.biomarker === 'long_parameter_list');
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe('warning');
+    expect(f!.metric).toBe(5);
+  });
+
+  it('does NOT emit long_parameter_list when paramCount=3', () => {
+    const findings = evaluateRules({
+      nodeId: 'a',
+      language: 'typescript',
+      metrics: metrics({ paramCount: 3 }),
+    });
+    expect(findings.some((f) => f.biomarker === 'long_parameter_list')).toBe(false);
+  });
+
+  it('emits magic_number at error when count is 8', () => {
+    const findings = evaluateRules({
+      nodeId: 'a',
+      language: 'typescript',
+      metrics: metrics({ magicNumberCount: 8 }),
+    });
+    const f = findings.find((x) => x.biomarker === 'magic_number');
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe('error');
+    expect(f!.metric).toBe(8);
+  });
+
+  it('does NOT emit magic_number below threshold (count=2)', () => {
+    const findings = evaluateRules({
+      nodeId: 'a',
+      language: 'typescript',
+      metrics: metrics({ magicNumberCount: 2 }),
+    });
+    expect(findings.some((f) => f.biomarker === 'magic_number')).toBe(false);
+  });
+
+  it('emits hardcoded_url at info on first occurrence, warning at 2, error at 3', () => {
+    const one = evaluateRules({ nodeId: 'a', language: 'typescript', metrics: metrics({ hardcodedUrlCount: 1 }) });
+    expect(one.find((f) => f.biomarker === 'hardcoded_url')!.severity).toBe('info');
+
+    const two = evaluateRules({ nodeId: 'a', language: 'typescript', metrics: metrics({ hardcodedUrlCount: 2 }) });
+    expect(two.find((f) => f.biomarker === 'hardcoded_url')!.severity).toBe('warning');
+
+    const three = evaluateRules({ nodeId: 'a', language: 'typescript', metrics: metrics({ hardcodedUrlCount: 3 }) });
+    expect(three.find((f) => f.biomarker === 'hardcoded_url')!.severity).toBe('error');
+  });
+
+  it('does NOT emit hardcoded_url when count is 0', () => {
+    const findings = evaluateRules({
+      nodeId: 'a',
+      language: 'typescript',
+      metrics: metrics({ hardcodedUrlCount: 0 }),
+    });
+    expect(findings.some((f) => f.biomarker === 'hardcoded_url')).toBe(false);
   });
 });
 
