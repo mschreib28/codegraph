@@ -323,6 +323,12 @@ export function beta(x: number): number {
       await cg.ingestCoverage(lcovPath, { source: 'e2e' });
       const stats = cg.getCoverageStats();
       expect(stats.sources.sort()).toEqual(['e2e', 'unit']);
+
+      // When a source is requested, the rollup AND the source list
+      // both narrow to that source — surfacing all sources here would
+      // mislead the MCP `mode='stats', source='unit'` output.
+      const unitOnly = cg.getCoverageStats('unit');
+      expect(unitOnly.sources).toEqual(['unit']);
     } finally {
       cg.destroy();
     }

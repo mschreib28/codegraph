@@ -2348,8 +2348,8 @@ export class QueryBuilder {
     const where = source ? 'WHERE source = ?' : '';
     const args = source ? [source] : [];
     const sources = this.db
-      .prepare(`SELECT DISTINCT source FROM node_coverage`)
-      .all() as Array<{ source: string }>;
+      .prepare(`SELECT DISTINCT source FROM node_coverage ${where}`)
+      .all(...args) as Array<{ source: string }>;
     const agg = this.db
       .prepare(
         `SELECT COUNT(*) AS n,
