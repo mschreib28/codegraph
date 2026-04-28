@@ -112,25 +112,31 @@ export function parseQuery(raw: string): ParsedQuery {
     nameFilters: [],
   };
 
-  // Tokenise on whitespace, preserving quoted spans as a single token.
+  // Tokenise on whitespace, preserving quoted spans as part of the
+  // current token. Quotes can appear at the start (`"…"`) OR mid-token
+  // (`path:"…"`); in both cases everything from the opening `"` to the
+  // matching `"` is included in the token, whitespace and all.
   const tokens: string[] = [];
   let i = 0;
   while (i < raw.length) {
     while (i < raw.length && /\s/.test(raw[i]!)) i++;
     if (i >= raw.length) break;
-    if (raw[i] === '"') {
-      const end = raw.indexOf('"', i + 1);
-      if (end === -1) {
-        tokens.push(raw.slice(i));
-        break;
+    const start = i;
+    while (i < raw.length && !/\s/.test(raw[i]!)) {
+      if (raw[i] === '"') {
+        const end = raw.indexOf('"', i + 1);
+        if (end === -1) {
+          // Unterminated quote — swallow the rest of the input as
+          // one token. Forgiving rather than throwing.
+          i = raw.length;
+          break;
+        }
+        i = end + 1;
+        continue;
       }
-      tokens.push(raw.slice(i, end + 1));
-      i = end + 1;
-    } else {
-      const start = i;
-      while (i < raw.length && !/\s/.test(raw[i]!)) i++;
-      tokens.push(raw.slice(start, i));
+      i++;
     }
+    tokens.push(raw.slice(start, i));
   }
 
   const textParts: string[] = [];

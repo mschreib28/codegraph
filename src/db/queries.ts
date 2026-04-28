@@ -507,7 +507,11 @@ export class QueryBuilder {
     // First try FTS5 with prefix matching
     let results = text
       ? this.searchNodesFTS(text, { kinds, languages, limit, offset })
-      : this.searchAllByFilters({ kinds, languages, limit: limit * 2 });
+      // Over-fetch by 5× when running filter-only (no text). The
+      // post-scoring path: + name: filters can be very selective, so
+      // a smaller multiplier risks returning fewer than `limit`
+      // results despite the DB having plenty of matches.
+      : this.searchAllByFilters({ kinds, languages, limit: limit * 5 });
 
     // If no FTS results, try LIKE-based substring search
     if (results.length === 0 && text.length >= 2) {
@@ -638,7 +642,9 @@ export class QueryBuilder {
     const maxDist = lowered.length <= 4 ? 1 : 2;
 
     // Pull the distinct name list once. The set is cached on QueryBuilder
-    // by getAllNodeNames() if available; otherwise this is a fast scan.
+    // by getAllNodeNames(); even on a 200k-node project the distinct
+    // name set is typically O(10k) because most names repeat. The
+    // candidate-cap below bounds memory regardless.
     const allNames = this.getAllNodeNames();
     const candidates: Array<{ name: string; dist: number }> = [];
     for (const name of allNames) {
@@ -647,9 +653,17 @@ export class QueryBuilder {
     }
     candidates.sort((a, b) => a.dist - b.dist);
 
+    // Cap the per-name follow-up queries. Each survivor triggers a
+    // separate `SELECT * FROM nodes WHERE name = ?`; without this cap
+    // a project with many similar names (`getUser1`, `getUser2`...)
+    // could fan out far beyond `limit` queries before the inner-loop
+    // limit kicks in.
+    const FUZZY_FOLLOWUP_CAP = Math.max(limit * 2, 50);
+    const cappedCandidates = candidates.slice(0, FUZZY_FOLLOWUP_CAP);
+
     const results: SearchResult[] = [];
     const seen = new Set<string>();
-    for (const c of candidates) {
+    for (const c of cappedCandidates) {
       if (results.length >= limit) break;
       let sql = 'SELECT * FROM nodes WHERE name = ?';
       const params: (string | number)[] = [c.name];
