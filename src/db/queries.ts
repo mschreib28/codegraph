@@ -125,6 +125,24 @@ function rowToEdge(row: EdgeRow): Edge {
 }
 
 /**
+ * SQLite default `SQLITE_LIMIT_VARIABLE_NUMBER` is 999. Splitting
+ * an `IN (?, ?, ...)` list into chunks of this size keeps the
+ * helpers safe against pathological inputs (large name lists from
+ * graph qualifiers, large id sets from seeded searches) without
+ * having to know each prepared statement's variable budget.
+ */
+const SQLITE_VAR_LIMIT = 900;
+
+function chunkIds<T>(items: ReadonlyArray<T>): T[][] {
+  if (items.length <= SQLITE_VAR_LIMIT) return [items.slice()];
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += SQLITE_VAR_LIMIT) {
+    out.push(items.slice(i, i + SQLITE_VAR_LIMIT));
+  }
+  return out;
+}
+
+/**
  * Convert database row to FileRecord object
  */
 function rowToFileRecord(row: FileRow): FileRecord {
@@ -512,31 +530,56 @@ export class QueryBuilder {
     // candidate set FROM the graph rather than scanning a slice of
     // arbitrary nodes — a tiny callers set is much more likely to
     // produce useful results than the first N name-ordered nodes.
+    // Compute the graph-derived sets ONCE up-front so the filter pass
+    // below can reuse them instead of re-querying. Memoised lazily.
+    let cachedCallersSet: Set<string> | null = null;
+    let cachedCalleesSet: Set<string> | null = null;
+    const callersSet = (): Set<string> => {
+      if (cachedCallersSet === null) cachedCallersSet = this.nodesCallingAny(callersOf);
+      return cachedCallersSet;
+    };
+    const calleesSet = (): Set<string> => {
+      if (cachedCalleesSet === null) cachedCalleesSet = this.nodesCalledByAny(calleesOf);
+      return cachedCalleesSet;
+    };
+
     let results: SearchResult[];
     if (text) {
       results = this.searchNodesFTS(text, { kinds, languages, limit, offset });
     } else if (callersOf.length > 0 || calleesOf.length > 0) {
       const seedIds = new Set<string>();
       if (callersOf.length > 0) {
-        for (const id of this.nodesCallingAny(callersOf)) seedIds.add(id);
+        for (const id of callersSet()) seedIds.add(id);
       }
       if (calleesOf.length > 0) {
-        for (const id of this.nodesCalledByAny(calleesOf)) seedIds.add(id);
+        for (const id of calleesSet()) seedIds.add(id);
       }
-      results = this.nodesByIds([...seedIds]).map((node) => ({ node, score: 1 }));
+      // Apply kind / language filters here — the graph-seeded path
+      // skips the SQL WHERE that the FTS/Like paths use, so without
+      // this post-filter `callers-of:foo kind:method` would return
+      // every caller regardless of its declared kind.
+      const seedNodes = this.nodesByIds([...seedIds]);
+      const filtered = seedNodes.filter((n) => {
+        if (kinds && kinds.length > 0 && !kinds.includes(n.kind)) return false;
+        if (languages && languages.length > 0 && !languages.includes(n.language)) return false;
+        return true;
+      });
+      results = filtered.map((node) => ({ node, score: 1 }));
     } else {
       // Over-fetch by 5× when running filter-only (no text). The
       // post-scoring path: + name: filters can be very selective, so
       // a smaller multiplier risks returning fewer than `limit`
       // results despite the DB having plenty of matches.
-      // Push the FIRST sig: filter into SQL so signature-driven
-      // queries don't waste a candidate slot on every node that
-      // happens to have a small name.
+      // Push sig: filters into SQL with OR semantics so they match
+      // the JS post-filter (which uses `some()`). Pushing all of
+      // them avoids the previous bug where only signatureFilters[0]
+      // went to SQL while the JS post-filter OR'd all of them — the
+      // intersection silently dropped later sig: tokens.
       results = this.searchAllByFilters({
         kinds,
         languages,
         limit: limit * 5,
-        signatureLike: signatureFilters[0],
+        signatureLike: signatureFilters.length > 0 ? signatureFilters : undefined,
       });
     }
 
@@ -634,11 +677,11 @@ export class QueryBuilder {
     // (cheap on indexed columns) and then intersected with the
     // current `results`.
     if (callersOf.length > 0) {
-      const allowed = this.nodesCallingAny(callersOf);
+      const allowed = callersSet();
       results = results.filter((r) => allowed.has(r.node.id));
     }
     if (calleesOf.length > 0) {
-      const allowed = this.nodesCalledByAny(calleesOf);
+      const allowed = calleesSet();
       results = results.filter((r) => allowed.has(r.node.id));
     }
 
@@ -654,63 +697,78 @@ export class QueryBuilder {
   /**
    * Bulk-fetch nodes by id. Used by graph-qualifier search paths
    * (callers-of / callees-of) to materialise the seed set without
-   * issuing one SELECT per id.
+   * issuing one SELECT per id. Chunks the IN clause to stay below
+   * SQLite's default `SQLITE_LIMIT_VARIABLE_NUMBER` (999).
    */
   private nodesByIds(ids: string[]): Node[] {
     if (ids.length === 0) return [];
-    const placeholders = ids.map(() => '?').join(',');
-    const rows = this.db
-      .prepare(`SELECT * FROM nodes WHERE id IN (${placeholders})`)
-      .all(...ids) as NodeRow[];
-    return rows.map(rowToNode);
+    const out: Node[] = [];
+    for (const chunk of chunkIds(ids)) {
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT * FROM nodes WHERE id IN (${placeholders})`)
+        .all(...chunk) as NodeRow[];
+      for (const row of rows) out.push(rowToNode(row));
+    }
+    return out;
   }
 
   /**
    * Set of node IDs that have at least one outgoing `calls` edge to
    * a node whose `name` matches any element of `names`. Backs the
-   * `callers-of:NAME` query qualifier.
+   * `callers-of:NAME` query qualifier. Chunked for the 999-variable
+   * SQLite cap.
    */
   private nodesCallingAny(names: string[]): Set<string> {
     if (names.length === 0) return new Set();
-    const placeholders = names.map(() => '?').join(',');
-    const sql = `
-      SELECT DISTINCT e.source AS id
-      FROM edges e
-      JOIN nodes tgt ON e.target = tgt.id
-      WHERE e.kind = 'calls' AND tgt.name IN (${placeholders})
-    `;
-    const rows = this.db.prepare(sql).all(...names) as Array<{ id: string }>;
-    return new Set(rows.map((r) => r.id));
+    const out = new Set<string>();
+    for (const chunk of chunkIds(names)) {
+      const placeholders = chunk.map(() => '?').join(',');
+      const sql = `
+        SELECT DISTINCT e.source AS id
+        FROM edges e
+        JOIN nodes tgt ON e.target = tgt.id
+        WHERE e.kind = 'calls' AND tgt.name IN (${placeholders})
+      `;
+      const rows = this.db.prepare(sql).all(...chunk) as Array<{ id: string }>;
+      for (const r of rows) out.add(r.id);
+    }
+    return out;
   }
 
   /**
    * Set of node IDs that are called BY a node whose `name` matches
    * any element of `names`. Backs the `callees-of:NAME` query
-   * qualifier.
+   * qualifier. Chunked for the 999-variable SQLite cap.
    */
   private nodesCalledByAny(names: string[]): Set<string> {
     if (names.length === 0) return new Set();
-    const placeholders = names.map(() => '?').join(',');
-    const sql = `
-      SELECT DISTINCT e.target AS id
-      FROM edges e
-      JOIN nodes src ON e.source = src.id
-      WHERE e.kind = 'calls' AND src.name IN (${placeholders})
-    `;
-    const rows = this.db.prepare(sql).all(...names) as Array<{ id: string }>;
-    return new Set(rows.map((r) => r.id));
+    const out = new Set<string>();
+    for (const chunk of chunkIds(names)) {
+      const placeholders = chunk.map(() => '?').join(',');
+      const sql = `
+        SELECT DISTINCT e.target AS id
+        FROM edges e
+        JOIN nodes src ON e.source = src.id
+        WHERE e.kind = 'calls' AND src.name IN (${placeholders})
+      `;
+      const rows = this.db.prepare(sql).all(...chunk) as Array<{ id: string }>;
+      for (const r of rows) out.add(r.id);
+    }
+    return out;
   }
 
   private searchAllByFilters(options: {
     kinds?: NodeKind[];
     languages?: Language[];
     limit: number;
-    /** SQL LIKE %…% match against the signature column. Used by the
-     *  filter-only `sig:` query path so we don't have to over-fetch
-     *  arbitrary nodes and post-filter in JS (which often returned
-     *  zero results because the first 50 nodes by name rarely
-     *  contained the signature substring). */
-    signatureLike?: string;
+    /** SQL pre-filter on the signature column. ALL provided strings
+     *  are OR'd (matches the OR semantics of path:/name: filters in
+     *  the JS post-filter pass), so multi-sig: queries behave
+     *  consistently with multi-path:/multi-name: queries. Necessary
+     *  because the JS post-filter alone has nothing to narrow when
+     *  the candidate set is the first 50 nodes by name. */
+    signatureLike?: string[];
   }): SearchResult[] {
     const { kinds, languages, limit, signatureLike } = options;
     let sql = 'SELECT * FROM nodes WHERE 1=1';
@@ -723,9 +781,10 @@ export class QueryBuilder {
       sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
       params.push(...languages);
     }
-    if (signatureLike) {
-      sql += ' AND signature LIKE ? COLLATE NOCASE';
-      params.push(`%${signatureLike}%`);
+    if (signatureLike && signatureLike.length > 0) {
+      const ors = signatureLike.map(() => 'signature LIKE ? COLLATE NOCASE').join(' OR ');
+      sql += ` AND (${ors})`;
+      for (const s of signatureLike) params.push(`%${s}%`);
     }
     sql += ' ORDER BY name LIMIT ?';
     params.push(limit);
