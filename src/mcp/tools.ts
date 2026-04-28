@@ -126,7 +126,12 @@ export class ToolHandler implements ToolHandlerLike {
   private getCodeGraph(projectPath?: string): CodeGraph {
     if (!projectPath) {
       if (!this.cg) {
-        throw new Error('CodeGraph not initialized for this project. Run \'codegraph init\' first.');
+        throw new Error(
+          'No default codegraph project for this MCP server.\n' +
+            'Either: (a) restart the MCP server from a directory containing .codegraph/, ' +
+            '(b) run `codegraph init` in the current directory, or ' +
+            '(c) pass `projectPath` pointing to a directory that already has .codegraph/.'
+        );
       }
       return this.cg;
     }
@@ -140,7 +145,10 @@ export class ToolHandler implements ToolHandlerLike {
     const resolvedRoot = findNearestCodeGraphRoot(projectPath);
 
     if (!resolvedRoot) {
-      throw new Error(`CodeGraph not initialized in ${projectPath}. Run 'codegraph init' in that project first.`);
+      throw new Error(
+        `No .codegraph/ found at or above ${projectPath}. ` +
+          `Run \`codegraph init\` in that project first, or pass a different projectPath.`
+      );
     }
 
     // Check if we already have this resolved root cached (different path, same project)
@@ -735,9 +743,32 @@ export class ToolHandler implements ToolHandlerLike {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const stats = cg.getStats();
 
+    // Tell the agent *which* project this status is for and how it was
+    // selected. The friction point this addresses: when an MCP server's
+    // default project doesn't match what the user wants, the agent
+    // can't tell from any other tool's output whether to start passing
+    // `projectPath`. Surfacing the project root here makes the
+    // mismatch visible on the very first call.
+    //
+    // Note: `getCodeGraph(undefined)` always returns `this.cg` or
+    // throws, so when `args.projectPath` is undefined the project IS
+    // the default — no third "resolved from cache" branch needed.
+    const projectRoot = cg.getProjectRoot();
+    // Path equality below is strict-string. `path.resolve` doesn't
+    // normalise case, so on macOS/Windows (case-insensitive FS) a
+    // client-supplied `rootUri` with different capitalisation than the
+    // server's CWD would compare unequal — see the `otherRoots` Set
+    // below where we still dedup on the resolved root string.
+    const defaultRoot = this.cg?.getProjectRoot() ?? null;
+    const sourceLabel =
+      args.projectPath !== undefined
+        ? '(from `projectPath` argument)'
+        : '(default — server CWD at startup)';
+
     const lines: string[] = [
       '## CodeGraph Status',
       '',
+      `**Project root:** \`${projectRoot}\` ${sourceLabel}`,
       `**Files indexed:** ${stats.fileCount}`,
       `**Total nodes:** ${stats.nodeCount}`,
       `**Total edges:** ${stats.edgeCount}`,
@@ -757,6 +788,22 @@ export class ToolHandler implements ToolHandlerLike {
       if ((count as number) > 0) {
         lines.push(`- ${lang}: ${count}`);
       }
+    }
+
+    // List other projects the server already has open. Helpful when an
+    // agent is working across a monorepo or several adjacent repos —
+    // they can pick a `projectPath` from a known-good list instead of
+    // guessing.
+    const otherRoots = new Set<string>();
+    if (defaultRoot && defaultRoot !== projectRoot) otherRoots.add(defaultRoot);
+    for (const cached of this.projectCache.values()) {
+      const root = cached.getProjectRoot();
+      if (root !== projectRoot) otherRoots.add(root);
+    }
+    if (otherRoots.size > 0) {
+      lines.push('', '### Other projects this server has open');
+      for (const root of otherRoots) lines.push(`- \`${root}\``);
+      lines.push('', 'Pass `projectPath` to query any of these (or any other directory containing `.codegraph/`).');
     }
 
     return this.textResult(lines.join('\n'));

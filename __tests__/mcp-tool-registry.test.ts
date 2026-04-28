@@ -73,7 +73,10 @@ describe('MCP tool registry — single source of truth', () => {
     expect(result.isError).toBe(true);
     // Generic tool-execution-failed envelope from execute()'s catch block.
     expect(result.content[0]?.text).toMatch(/Tool execution failed/);
-    // Specifically because no CodeGraph was bound:
-    expect(result.content[0]?.text).toMatch(/CodeGraph not initialized/);
+    // Specifically because no CodeGraph was bound — the message
+    // should point the agent at `projectPath` as a remediation since
+    // the MCP server has no default project.
+    expect(result.content[0]?.text).toMatch(/No default codegraph project/);
+    expect(result.content[0]?.text).toMatch(/projectPath/);
   });
 });
