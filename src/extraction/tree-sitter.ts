@@ -867,12 +867,18 @@ export class TreeSitterExtractor {
     const typeText = typeNode ? getNodeText(typeNode, this.source) : undefined;
     const signature = typeText ? `${typeText} ${name}` : name;
 
-    this.createNode('property', name, node, {
+    const propNode = this.createNode('property', name, node, {
       docstring,
       signature,
       visibility,
       isStatic,
     });
+
+    // `@Inject() private svc: Foo` and similar — capture the
+    // decorator->target relationship for class properties too.
+    if (propNode) {
+      this.extractDecoratorsFor(node, propNode.id);
+    }
   }
 
   /**
@@ -946,12 +952,15 @@ export class TreeSitterExtractor {
         if (!nameNode) continue;
         const name = getNodeText(nameNode, this.source);
         const signature = typeText ? `${typeText} ${name}` : name;
-        this.createNode('field', name, decl, {
+        const fieldNode = this.createNode('field', name, decl, {
           docstring,
           signature,
           visibility,
           isStatic,
         });
+        // Java/Kotlin annotations / TS field decorators sit on the
+        // outer field_declaration, not on the individual declarator.
+        if (fieldNode) this.extractDecoratorsFor(node, fieldNode.id);
       }
     } else {
       // Fallback: try to find an identifier child directly
@@ -1505,6 +1514,12 @@ export class TreeSitterExtractor {
     if (!ctor) return;
 
     let className = getNodeText(ctor, this.source);
+    // Strip type-argument suffix first: `new Map<K, V>()` would
+    // otherwise produce className 'Map<K, V>' (the constructor
+    // field is a `generic_type` node) and resolution would fail
+    // because no class is named with the angle-bracket suffix.
+    const ltIdx = className.indexOf('<');
+    if (ltIdx > 0) className = className.slice(0, ltIdx);
     // For namespaced/qualified constructors (`new ns.Foo()`,
     // `new ns::Foo()`) keep the trailing identifier — that's what
     // matches a class node in the index.
@@ -1513,6 +1528,7 @@ export class TreeSitterExtractor {
       className.lastIndexOf('::')
     );
     if (lastDot >= 0) className = className.slice(lastDot + 1).replace(/^[:.]/, '');
+    className = className.trim();
 
     if (className) {
       this.unresolvedReferences.push({
@@ -1543,7 +1559,16 @@ export class TreeSitterExtractor {
   private extractDecoratorsFor(declNode: SyntaxNode, decoratedId: string): void {
     const consider = (n: SyntaxNode | null): void => {
       if (!n) return;
-      if (n.type !== 'decorator' && n.type !== 'annotation') return;
+      // `marker_annotation` is Java's grammar for arg-less annotations
+      // (`@Override`, `@Deprecated`); without including it, every
+      // such Java annotation would be silently skipped.
+      if (
+        n.type !== 'decorator' &&
+        n.type !== 'annotation' &&
+        n.type !== 'marker_annotation'
+      ) {
+        return;
+      }
       // Find the leading identifier: skip the `@` punct, unwrap
       // a call_expression if the decorator is invoked with args.
       let target: SyntaxNode | null = null;
@@ -1587,17 +1612,36 @@ export class TreeSitterExtractor {
 
     // 2. Decorators that are PRECEDING siblings of the declaration
     //    inside the parent's children (TypeScript class style).
-    //    Note: tree-sitter web bindings return fresh JS wrapper
-    //    objects from `parent`/`namedChild`, so `sibling === declNode`
-    //    is unreliable — compare by start byte instead.
+    //    Walk BACKWARDS from the declaration and stop at the first
+    //    non-decorator sibling — without that stop, decorators
+    //    belonging to an EARLIER unrelated declaration leak in
+    //    (e.g. `@A class Foo {} @B class Bar {}` would otherwise
+    //    attribute @A to Bar).
+    //
+    //    Note on identity: tree-sitter web bindings return fresh JS
+    //    wrapper objects from `parent`/`namedChild` navigation, so
+    //    `sibling === declNode` is unreliable — `startIndex` does
+    //    the matching instead.
     const parent = declNode.parent;
     if (parent) {
       const declStart = declNode.startIndex;
+      let declIdx = -1;
       for (let i = 0; i < parent.namedChildCount; i++) {
         const sibling = parent.namedChild(i);
-        if (!sibling) continue;
-        if (sibling.startIndex >= declStart) break;
-        consider(sibling);
+        if (sibling && sibling.startIndex === declStart) {
+          declIdx = i;
+          break;
+        }
+      }
+      if (declIdx > 0) {
+        for (let j = declIdx - 1; j >= 0; j--) {
+          const sibling = parent.namedChild(j);
+          if (!sibling) continue;
+          if (sibling.type !== 'decorator' && sibling.type !== 'annotation' && sibling.type !== 'marker_annotation') {
+            break; // non-decorator separator → stop consuming
+          }
+          consider(sibling);
+        }
       }
     }
   }
