@@ -265,6 +265,19 @@ type IndexResult = {
 function printIndexResult(clack: typeof import('@clack/prompts'), result: IndexResult, projectPath?: string): void {
   const hasErrors = result.filesErrored > 0;
 
+  // Surface non-file-level failures (e.g. lock-acquisition failure
+  // when another indexer is running) before the file-count branches.
+  // Without this the CLI falls through to "No files found to index",
+  // which is actively misleading — the index DID run, it just couldn't
+  // get the lock.
+  if (!result.success && !hasErrors && result.filesIndexed === 0) {
+    const generic = result.errors.find((e) => e.severity === 'error');
+    if (generic) {
+      clack.log.error(generic.message);
+      return;
+    }
+  }
+
   if (result.filesIndexed > 0) {
     if (hasErrors) {
       clack.log.success(`Indexed ${formatNumber(result.filesIndexed)} files (${formatNumber(result.filesErrored)} could not be parsed)`);

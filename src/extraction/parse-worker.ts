@@ -10,6 +10,33 @@ import { extractFromSource } from './tree-sitter';
 import { detectLanguage, loadGrammarsForLanguages, resetParser } from './grammars';
 import type { Language, ExtractionResult } from '../types';
 
+// Emscripten prints `Aborted()` (and a follow-up RuntimeError diag
+// line) directly to stderr when WASM aborts — before the JS catch
+// runs. Worker stderr is inherited by the parent, so each crash leaks
+// a noise line to the user's terminal even though the JS layer
+// already handles the failure cleanly. Filter these specific lines
+// out at the source. Real diagnostic output (anything we log
+// ourselves) goes through console.* / parentPort and is unaffected.
+{
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((
+    chunk: string | Uint8Array,
+    encoding?: BufferEncoding | ((err?: Error | null) => void),
+    cb?: (err?: Error | null) => void
+  ): boolean => {
+    const s = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    if (
+      s.startsWith('Aborted(') ||
+      s.includes('Build with -sASSERTIONS for more info')
+    ) {
+      if (typeof encoding === 'function') encoding();
+      else if (cb) cb();
+      return true;
+    }
+    return realWrite(chunk as never, encoding as never, cb as never);
+  }) as typeof process.stderr.write;
+}
+
 const PARSER_RESET_INTERVAL = 5000;
 const parseCounts = new Map<Language, number>();
 
