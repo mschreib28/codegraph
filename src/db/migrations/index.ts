@@ -26,6 +26,7 @@ import type { Migration, MigrationModule } from './types';
 
 import { MIGRATION as MIG_002 } from './002-project-metadata';
 import { MIGRATION as MIG_003 } from './003-lower-name-index';
+import { MIGRATION as MIG_017 } from './017-drop-redundant-edge-indexes';
 
 interface ModuleRef {
   /**
@@ -48,6 +49,7 @@ interface ModuleRef {
 const REGISTERED_MODULES: readonly ModuleRef[] = [
   { filename: '002-project-metadata.ts', module: MIG_002 },
   { filename: '003-lower-name-index.ts', module: MIG_003 },
+  { filename: '017-drop-redundant-edge-indexes.ts', module: MIG_017 },
 ];
 
 /** Strict 3-digit prefix on each migration filename. */

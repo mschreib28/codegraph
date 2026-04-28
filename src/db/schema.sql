@@ -123,8 +123,11 @@ CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
 END;
 
 -- Edge indexes
-CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
-CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
+-- Note: narrow source/target indexes are intentionally omitted — the
+-- (source, kind) and (target, kind) composite indexes below cover
+-- source-only and target-only lookups via SQLite's left-prefix scan
+-- (see migration 017 for the empirical justification: ~22% DB size
+-- and ~1.3x bulk-insert win with no query regression).
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
