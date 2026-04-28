@@ -30,6 +30,8 @@ about a second through the file watcher.
 - **"What calls this function?"** → \`codegraph_callers\`
 - **"What does this function call?"** → \`codegraph_callees\`
 - **"What would changing this break?"** → \`codegraph_impact\`
+- **"Is this function risky to change? Is it complex / nested / large?"** → \`codegraph_biomarkers\` (PR #125, when present) — structured answer instead of reading 200 lines of source
+- **"Is this function tested? What's covered?"** → \`codegraph_coverage\` (PR #124, when present) — requires a prior \`codegraph coverage <lcov>\` ingestion
 - **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\`
 - **"Survey an unfamiliar topic / pattern / module."** → \`codegraph_explore\` (heavier; best when budget allows)
 - **"What's in directory X?"** → \`codegraph_files\`
@@ -39,13 +41,14 @@ about a second through the file watcher.
 
 - **Onboarding to a topic**: \`codegraph_context\` first. If still unclear, \`codegraph_explore\` for breadth, then \`codegraph_node\` on specific symbols you want code for.
 - **PR review**: if \`codegraph_review_context\` is available (PR #110), pass the unified diff to it — returns affected symbols + their callers + impact + co-change warnings in one call.
-- **Refactor planning**: \`codegraph_search\` to find the symbol, \`codegraph_callers\` to see what depends on it, \`codegraph_impact\` to see the blast radius.
-- **Debugging a regression**: \`codegraph_callers\` of the suspected symbol. If recent changes are in scope, look for hotspot tools (\`codegraph_hotspots\` if available) to identify churn × centrality risk.
+- **Refactor planning**: \`codegraph_search\` to find the symbol; \`codegraph_biomarkers\` (mode=symbol) for its Code Health and complexity metrics; \`codegraph_coverage\` (mode=symbol) to see if tests exist; \`codegraph_callers\` for what depends on it; \`codegraph_impact\` for the full blast radius. The killer pre-refactor query is \`codegraph_biomarkers minSeverity=warning minCentrality=0.001\` — lists high-impact code with structural problems in one call.
+- **Debugging a regression**: \`codegraph_callers\` of the suspected symbol. If recent changes are in scope, look for hotspot tools (\`codegraph_hotspots\` if available) to identify churn × centrality risk. \`codegraph_biomarkers\` on the suspected hotspot tells you whether the function is structurally bad enough that it might be the cause.
+- **"What should I test next?"**: \`codegraph_coverage\` mode=ranked with \`minCentrality\` set — returns high-impact under-covered code, ordered by importance.
 
 ## Tool tiers (start cheap, escalate when needed)
 
-1. **Always available, deterministic, sub-millisecond**: search / context / callers / callees / impact / node / explore / files / status. Most tasks can be answered entirely at this tier.
-2. **Conditional on data availability**: \`codegraph_review_context\` needs a diff. \`codegraph_hotspots\`, \`codegraph_config\`, \`codegraph_sql\` need their respective indexed signals (git history, env-var read sites, SQL string-literals). All return clearly when data isn't present.
+1. **Always available, deterministic, sub-millisecond**: search / context / callers / callees / impact / node / explore / files / status. Plus \`codegraph_biomarkers\` once #125 lands — analysis runs as part of every indexAll/sync. Most tasks can be answered entirely at this tier.
+2. **Conditional on data availability**: \`codegraph_review_context\` needs a diff. \`codegraph_hotspots\`, \`codegraph_config\`, \`codegraph_sql\` need their respective indexed signals (git history, env-var read sites, SQL string-literals). \`codegraph_coverage\` needs a prior \`codegraph coverage <lcov>\` ingestion. All return clearly when data isn't present.
 3. **LLM-mediated, opt-in**: \`codegraph_ask\` (RAG Q&A), \`codegraph_similar\` (semantic search), \`codegraph_dead_code\` (graph + LLM judge), \`codegraph_role\` / \`codegraph_module\` (LLM classifications). These require a configured local LLM endpoint or the agent-bridge tier.
 
 ## Agent-bridge tier (when no local LLM is configured)
