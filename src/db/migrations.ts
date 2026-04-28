@@ -22,6 +22,7 @@ import type { Migration } from './migrations/types';
  */
 export const CURRENT_SCHEMA_VERSION: number = REGISTRY_CURRENT;
 
+
 /**
  * Get the current schema version from the database
  */

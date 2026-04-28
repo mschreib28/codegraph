@@ -35,7 +35,14 @@ export type HandlerKey =
   | 'handleHotspots'
   | 'handleConfig'
   | 'handleSql'
-  | 'handleReviewContext';
+  | 'handleReviewContext'
+  | 'handleAsk'
+  | 'handleDeadCode'
+  | 'handleModule'
+  | 'handlePendingSummaries'
+  | 'handleRole'
+  | 'handleSaveSummaries'
+  | 'handleSimilar';
 
 /**
  * The minimum surface a `ToolHandler`-shaped object exposes for

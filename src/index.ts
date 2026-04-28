@@ -55,6 +55,24 @@ import {
   type IndexHookContext,
 } from './index-hooks/registry';
 import { buildReviewContext, ReviewContext, ReviewContextOptions } from './review';
+import { LlmClient, LlmEndpointConfig } from './llm/client';
+import { summarizeAll, SUMMARIZABLE_KINDS } from './llm/summarizer';
+import { embedAllSummaries } from './llm/embeddings';
+import { askWithCandidates, AskOptions, AskResult } from './llm/ask';
+import { summarizeAllDirectories } from './llm/dir-summarizer';
+import { classifyAllRoles, RoleLabel } from './llm/classifier';
+import { summarizeChange, ChangeIntentOptions, ChangeIntentResult } from './llm/change-intent';
+import { judgeDeadCode, DeadCodeOptions, DeadCodeResult } from './llm/dead-code';
+import { checkNamingConvention, NamingCheckResult } from './llm/naming';
+import {
+  pendingSummariesBatch,
+  saveAgentSummaries,
+  PendingBatch,
+  SaveSummaryItem,
+  SaveResult,
+} from './llm/agent-bridge';
+import { detectLocalLlm, detectionToConfig } from './llm/detect';
+import { logDebug, logWarn } from './errors';
 
 // Re-export types for consumers
 export * from './types';
@@ -124,6 +142,14 @@ export interface IndexOptions {
 
   /** Enable verbose logging (worker lifecycle, memory, timeouts) */
   verbose?: boolean;
+
+  /**
+   * After indexing/syncing, kick off LLM symbol summarisation in the
+   * background if a local LLM is configured or auto-detectable.
+   * Defaults to true. Set false in scripts / git hooks where the
+   * caller doesn't want a long-running side effect.
+   */
+  summarize?: boolean;
 }
 
 /**
@@ -150,6 +176,19 @@ export class CodeGraph {
 
   // File watcher for auto-sync on file changes
   private watcher: FileWatcher | null = null;
+
+  // Background LLM summarisation lifecycle
+  private bgSummaryAbort: AbortController | null = null;
+  private bgSummaryPromise: Promise<void> | null = null;
+  // Set when an index/sync completes while a pass is already running.
+  // The active pass checks this on completion and re-queues itself so
+  // newly indexed symbols don't have to wait for the next sync to be
+  // summarised.
+  private bgSummaryDirty: boolean = false;
+  // Auto-detected LLM config (populated lazily on first index/sync when
+  // config.llm is absent). Cached per CodeGraph instance to avoid
+  // probing localhost on every sync.
+  private detectedLlmConfig: LlmEndpointConfig | null | undefined = undefined;
 
   private constructor(
     db: DatabaseConnection,
@@ -331,6 +370,17 @@ export class CodeGraph {
    */
   close(): void {
     this.unwatch();
+    // Cancel any in-flight background summarisation. The signal is
+    // checked between LLM requests; the in-flight HTTP call will
+    // continue running but its result is dropped. Clear our promise
+    // ref synchronously so isSummarizing() reflects cancellation
+    // intent immediately.
+    if (this.bgSummaryAbort) {
+      this.bgSummaryAbort.abort();
+      this.bgSummaryAbort = null;
+    }
+    this.bgSummaryPromise = null;
+    this.bgSummaryDirty = false;
     // Release file lock if held
     this.fileLock.release();
     this.db.close();
@@ -379,7 +429,7 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
-    return this.indexMutex.withLock(async () => {
+    const result = await this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
       } catch {
@@ -424,6 +474,13 @@ export class CodeGraph {
         this.fileLock.release();
       }
     });
+
+    // Fire-and-forget background summarisation. Skipped silently when
+    // no LLM is configured AND none is auto-detectable on localhost.
+    if (result.success && result.filesIndexed > 0 && options.summarize !== false) {
+      void this.startBackgroundSummarization();
+    }
+    return result;
   }
 
   /**
@@ -464,7 +521,7 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
-    return this.indexMutex.withLock(async () => {
+    const result = await this.indexMutex.withLock(async () => {
       try {
         this.fileLock.acquire();
       } catch {
@@ -526,6 +583,13 @@ export class CodeGraph {
         this.fileLock.release();
       }
     });
+
+    // Fire-and-forget background summarisation when files actually
+    // changed. No-op on cold sync where nothing was added/modified.
+    if ((result.filesAdded > 0 || result.filesModified > 0) && options.summarize !== false) {
+      void this.startBackgroundSummarization();
+    }
+    return result;
   }
 
   /**
@@ -666,6 +730,413 @@ export class CodeGraph {
 
   getSqlTablesForNode(nodeId: string): ReturnType<QueryBuilder['getSqlTablesForNode']> {
     return this.queries.getSqlTablesForNode(nodeId);
+  }
+
+  // ===========================================================================
+  // LLM-driven enrichment
+  // ===========================================================================
+
+  /**
+   * Resolve the LLM config to use: explicit config.llm wins; otherwise
+   * probe the conventional Ollama endpoint and cache the result. The
+   * probe is run once per CodeGraph instance — `null` is cached too, so
+   * users without Ollama don't pay the localhost roundtrip on every
+   * sync.
+   *
+   * Pass `forceRedetect: true` when the user has just installed Ollama
+   * and wants codegraph to pick it up without restarting the process.
+   */
+  private async resolveLlmConfig(forceRedetect = false): Promise<LlmEndpointConfig | null> {
+    if (this.config.llm?.endpoint && this.config.llm.chatModel) {
+      return this.config.llm;
+    }
+    if (this.detectedLlmConfig !== undefined && !forceRedetect) {
+      return this.detectedLlmConfig;
+    }
+    try {
+      const detected = await detectLocalLlm();
+      this.detectedLlmConfig = detected ? detectionToConfig(detected) : null;
+      if (detected) {
+        logDebug('Auto-detected local LLM', {
+          endpoint: detected.endpoint,
+          chatModel: detected.chatModel,
+          embeddingModel: detected.embeddingModel,
+        });
+      }
+    } catch (err) {
+      // Detection must never throw into callers — treat any failure as
+      // "no LLM available".
+      this.detectedLlmConfig = null;
+      logDebug('LLM auto-detect failed', { error: String(err) });
+    }
+    return this.detectedLlmConfig;
+  }
+
+  /**
+   * Run a full symbol-summarisation pass over the indexed nodes via the
+   * configured (or auto-detected) local LLM endpoint. Cached per node
+   * by content_hash, so repeated calls only generate new/changed
+   * summaries — first run is the slow one.
+   *
+   * Throws if no LLM is reachable. Use {@link hasLlm} (sync, config
+   * only) or await {@link getEffectiveLlmConfig} (async, includes
+   * auto-detect) before calling.
+   */
+  async summarizeAll(options: {
+    onProgress?: (done: number, total: number) => void;
+    signal?: AbortSignal;
+    concurrency?: number;
+  } = {}): Promise<{ candidates: number; generated: number; cacheHits: number; errors: number; durationMs: number }> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig) {
+      throw new Error(
+        'No LLM available. Configure config.llm.endpoint or run a local Ollama server with a chat model installed.'
+      );
+    }
+    const client = new LlmClient(llmConfig);
+    const reachable = await client.isReachable();
+    if (!reachable) {
+      throw new Error(`LLM endpoint not reachable at ${llmConfig.endpoint}. Is your local server running?`);
+    }
+    return summarizeAll(this.projectRoot, this.queries, client, llmConfig.chatModel!, options);
+  }
+
+  /**
+   * Whether an LLM endpoint is configured in `config.llm`. This is the
+   * synchronous check — it does NOT trigger auto-detection. Callers
+   * that want to know whether summaries are *possible* (config OR
+   * auto-detect) should `await getEffectiveLlmConfig()` instead.
+   */
+  hasLlm(): boolean {
+    return Boolean(this.config.llm?.endpoint && this.config.llm.chatModel);
+  }
+
+  /**
+   * Returns the LLM config that will be used, including auto-detection.
+   * Callers can use this to decide whether to surface LLM-dependent UI
+   * without writing it to disk.
+   */
+  async getEffectiveLlmConfig(): Promise<LlmEndpointConfig | null> {
+    return this.resolveLlmConfig();
+  }
+
+  /**
+   * Kick off a summarisation pass in the background. Returns
+   * immediately — does NOT block the caller. Subsequent calls while
+   * one is already running are no-ops (returns the existing promise).
+   *
+   * The pass is best-effort: errors are logged, never thrown. The
+   * promise resolves either when work completes or when {@link close}
+   * cancels via AbortController.
+   *
+   * Called automatically after `indexAll` and `sync` so the user gets
+   * summaries without having to invoke a CLI command.
+   */
+  startBackgroundSummarization(): Promise<void> {
+    if (this.bgSummaryPromise) {
+      // Mark dirty so the running pass re-queues itself once it
+      // finishes — newly indexed symbols will be picked up without
+      // needing another sync to land.
+      this.bgSummaryDirty = true;
+      return this.bgSummaryPromise;
+    }
+
+    const controller = new AbortController();
+    this.bgSummaryAbort = controller;
+    this.bgSummaryDirty = false;
+
+    const run = async (): Promise<void> => {
+      try {
+        const llmConfig = await this.resolveLlmConfig();
+        if (!llmConfig || controller.signal.aborted) return;
+
+        const client = new LlmClient(llmConfig);
+        if (!(await client.isReachable())) {
+          logDebug('Background summarisation: endpoint went away', {
+            endpoint: llmConfig.endpoint,
+          });
+          return;
+        }
+
+        const result = await summarizeAll(
+          this.projectRoot,
+          this.queries,
+          client,
+          llmConfig.chatModel!,
+          { signal: controller.signal, concurrency: 2 }
+        );
+        logDebug('Background summarisation complete', {
+          candidates: result.candidates,
+          generated: result.generated,
+          cacheHits: result.cacheHits,
+          errors: result.errors,
+          durationMs: result.durationMs,
+        });
+
+        // Phase-2: embed the summaries so semantic search has data.
+        // Only runs when an embedding model is configured/auto-detected.
+        if (llmConfig.embeddingModel && !controller.signal.aborted) {
+          const eResult = await embedAllSummaries(
+            this.queries,
+            client,
+            llmConfig.embeddingModel,
+            { signal: controller.signal, concurrency: 2 }
+          );
+          logDebug('Background embedding complete', {
+            candidates: eResult.candidates,
+            generated: eResult.generated,
+            errors: eResult.errors,
+            durationMs: eResult.durationMs,
+          });
+        }
+
+        // Phase-3: roll the symbol summaries up into one paragraph per
+        // directory. Cheap once symbol summaries exist (only dirs
+        // whose content changed regenerate).
+        if (!controller.signal.aborted) {
+          const dResult = await summarizeAllDirectories(
+            this.queries,
+            client,
+            llmConfig.chatModel!,
+            { signal: controller.signal, concurrency: 1 }
+          );
+          logDebug('Background directory summarisation complete', {
+            candidates: dResult.candidates,
+            generated: dResult.generated,
+            cacheHits: dResult.cacheHits,
+            errors: dResult.errors,
+            durationMs: dResult.durationMs,
+          });
+        }
+
+        // Phase-4: role classification. One short call per symbol;
+        // assigns a coarse label (api_endpoint, business_logic, ...).
+        if (!controller.signal.aborted) {
+          const cResult = await classifyAllRoles(
+            this.queries,
+            client,
+            llmConfig.chatModel!,
+            { signal: controller.signal, concurrency: 2 }
+          );
+          logDebug('Background role classification complete', {
+            candidates: cResult.candidates,
+            classified: cResult.classified,
+            errors: cResult.errors,
+            durationMs: cResult.durationMs,
+          });
+        }
+      } catch (err) {
+        // Background work must not crash the host process. Worst case
+        // is no summaries — the rest of codegraph still works.
+        logWarn('Background summarisation failed', { error: String(err) });
+      } finally {
+        // Only clear our refs if we still own them. close() may have
+        // already cancelled and a fresh pass may have been started in
+        // the interim — don't clobber its bookkeeping.
+        if (this.bgSummaryAbort === controller) {
+          this.bgSummaryAbort = null;
+        }
+        if (this.bgSummaryPromise === pending) {
+          this.bgSummaryPromise = null;
+          // Re-queue if more work landed during the pass and we
+          // weren't aborted — gives newly indexed symbols a fast
+          // path without waiting for the next sync.
+          if (this.bgSummaryDirty && !controller.signal.aborted) {
+            this.bgSummaryDirty = false;
+            void this.startBackgroundSummarization();
+          }
+        }
+      }
+    };
+
+    const pending = run();
+    this.bgSummaryPromise = pending;
+    return pending;
+  }
+
+  /** Whether a background summarisation pass is currently running. */
+  isSummarizing(): boolean {
+    return this.bgSummaryPromise !== null;
+  }
+
+  /**
+   * Wait for any background summarisation to finish. Useful in tests
+   * and short-lived CLI invocations that want summaries persisted
+   * before exit.
+   */
+  async awaitBackgroundSummarization(): Promise<void> {
+    if (this.bgSummaryPromise) await this.bgSummaryPromise;
+  }
+
+  /**
+   * Coverage stats: how many indexed symbols have a cached LLM summary.
+   * Surfaces in `codegraph status` and helps users understand why some
+   * tool outputs include summaries and others don't.
+   */
+  getSummaryCoverage(): { total: number; summarised: number } {
+    return this.queries.getSummaryCoverage(SUMMARIZABLE_KINDS);
+  }
+
+  /**
+   * Bulk-fetch cached summaries for a set of node ids. Used by MCP
+   * tools and the CLI to enrich result lists with one-line descriptions
+   * without exposing the database layer.
+   */
+  getSymbolSummaries(nodeIds: string[]): Map<string, string> {
+    if (nodeIds.length === 0) return new Map();
+    return this.queries.getSymbolSummaries(nodeIds);
+  }
+
+  /** Read a single directory's cached LLM summary, or null. */
+  getDirectorySummary(dirPath: string): string | null {
+    return this.queries.getDirectorySummary(dirPath)?.summary ?? null;
+  }
+
+  /** All directory summaries as { dirPath, summary } pairs. */
+  getAllDirectorySummaries(): Array<{ dirPath: string; summary: string }> {
+    return this.queries.getAllDirectorySummaries();
+  }
+
+  /** Bulk-fetch role labels for a set of node ids. */
+  getSymbolRoles(nodeIds: string[]): Map<string, string> {
+    if (nodeIds.length === 0) return new Map();
+    return this.queries.getSymbolRoles(nodeIds);
+  }
+
+  /** Find every classified node with a given role. */
+  findNodesByRole(role: RoleLabel, limit = 100): Node[] {
+    return this.queries.findNodesByRole(role, limit);
+  }
+
+  /** Counts of symbols per role (for status display). */
+  getRoleCounts(): Map<string, number> {
+    return this.queries.getRoleCounts();
+  }
+
+  // ===========================================================================
+  // Agent-as-LLM bridge (works without a local LLM)
+  // ===========================================================================
+
+  /**
+   * Pull a batch of un-summarised symbols (with bodies + content_hash)
+   * for an external agent — typically the AI assistant currently in
+   * the user's session — to summarise. The agent then calls
+   * {@link saveAgentSummaries} to persist its results.
+   *
+   * Designed for users without a local LLM. The cache shape is
+   * identical to the local-pass output, so both paths can coexist.
+   */
+  pendingSummariesBatch(options: { limit?: number; modelHint?: string } = {}): PendingBatch {
+    return pendingSummariesBatch(this.projectRoot, this.queries, options);
+  }
+
+  /**
+   * Persist a batch of agent-generated summaries. Re-validates the
+   * content_hash against current disk content to guard against
+   * stale answers.
+   */
+  saveAgentSummaries(items: ReadonlyArray<SaveSummaryItem>, modelLabel = 'agent-mcp'): SaveResult {
+    return saveAgentSummaries(this.projectRoot, this.queries, items, modelLabel);
+  }
+
+  /**
+   * Judge potentially-dead symbols. Pre-filters by graph signal
+   * (zero incoming calls + not exported) and asks the LLM to weigh
+   * in on entry points the static graph misses (framework hooks,
+   * dynamic dispatch, public API consumed externally).
+   *
+   * Returns a CANDIDATE list with confidence — not a delete list.
+   * The user always decides.
+   */
+  async findDeadCodeCandidates(options: DeadCodeOptions = {}): Promise<DeadCodeResult> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      throw new Error('No LLM available for dead-code judge.');
+    }
+    const client = new LlmClient(llmConfig);
+    if (!(await client.isReachable())) {
+      throw new Error(`LLM endpoint not reachable at ${llmConfig.endpoint}`);
+    }
+    return judgeDeadCode(this.queries, client, options);
+  }
+
+  /**
+   * Check whether a newly added symbol's name follows the conventions
+   * already established in the codebase for the same kind. Advisory
+   * only — the judge is asked to err on the side of "consistent" when
+   * unsure.
+   *
+   * Designed to be called from a sync hook for each newly added node;
+   * lightweight enough to run a few dozen at a time.
+   */
+  async checkNamingDrift(symbol: {
+    name: string;
+    kind: string;
+    filePath: string;
+  }): Promise<NamingCheckResult> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      throw new Error('No LLM available for naming-drift check.');
+    }
+    const client = new LlmClient(llmConfig);
+    return checkNamingConvention(this.queries, client, symbol);
+  }
+
+  /**
+   * One-shot "what did this change do" intent generator. Designed for
+   * PR-review tooling that supplies the before/after bodies for a
+   * specific symbol. No caching at this layer — caller controls
+   * lifetime and whether to persist.
+   */
+  async summarizeChange(
+    name: string,
+    kind: string,
+    beforeBody: string,
+    afterBody: string,
+    options: ChangeIntentOptions = {}
+  ): Promise<ChangeIntentResult> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      throw new Error('No LLM available for summarizeChange.');
+    }
+    const client = new LlmClient(llmConfig);
+    if (!(await client.isReachable())) {
+      throw new Error(`LLM endpoint not reachable at ${llmConfig.endpoint}`);
+    }
+    return summarizeChange(client, name, kind, beforeBody, afterBody, options);
+  }
+
+  /**
+   * Natural-language Q&A over the codebase. Hybrid-retrieves the
+   * top-K most relevant symbols, builds a context prompt, and asks
+   * the configured/auto-detected chat model.
+   *
+   * Throws if no LLM is reachable. Use {@link getEffectiveLlmConfig}
+   * to check before calling for a graceful UX.
+   */
+  async ask(question: string, options: AskOptions = {}): Promise<AskResult> {
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      throw new Error(
+        'No LLM available for codegraph_ask. Configure config.llm or run a local Ollama server with a chat model installed.'
+      );
+    }
+    const client = new LlmClient(llmConfig);
+    if (!(await client.isReachable())) {
+      throw new Error(`LLM endpoint not reachable at ${llmConfig.endpoint}`);
+    }
+
+    const k = options.retrieveK ?? 12;
+    const candidates = await this.searchHybrid(question, { limit: k });
+    return askWithCandidates(
+      this.projectRoot,
+      question,
+      candidates,
+      this.queries,
+      client,
+      llmConfig.chatModel,
+      options
+    );
   }
 
   // ===========================================================================
@@ -813,6 +1284,118 @@ export class CodeGraph {
    */
   searchNodes(query: string, options?: SearchOptions): SearchResult[] {
     return this.queries.searchNodes(query, options);
+  }
+
+  /**
+   * Hybrid search: blends FTS5 lexical results with cosine semantic
+   * results via Reciprocal Rank Fusion. Falls back to FTS-only when
+   * no embedding model is configured/auto-detected, so callers can
+   * always use this — it just gets smarter as enrichment lands.
+   *
+   * The semantic ranking comes from the LLM-generated symbol summaries
+   * (PR #111) embedded with the auto-detected embedding model
+   * (PR #112 / Phase 0). Cold codebases without summaries fall through
+   * to FTS-only with no quality regression.
+   */
+  async searchHybrid(query: string, options?: SearchOptions): Promise<SearchResult[]> {
+    const limit = options?.limit ?? 20;
+    // Pull a deeper FTS slice than the user wants because RRF blending
+    // needs candidates beyond the first cut.
+    const ftsResults = this.queries.searchNodes(query, { ...options, limit: Math.max(50, limit * 3) });
+
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.embeddingModel) {
+      return ftsResults.slice(0, limit);
+    }
+
+    // Cheap reachability check — if the endpoint is gone we still
+    // have valid FTS results to return rather than failing the call.
+    const client = new LlmClient(llmConfig);
+    if (!(await client.isReachable())) {
+      return ftsResults.slice(0, limit);
+    }
+
+    let queryVec: Float32Array;
+    try {
+      const vecs = await client.embed([query]);
+      if (vecs.length === 0 || !vecs[0]) return ftsResults.slice(0, limit);
+      queryVec = vecs[0];
+    } catch (err) {
+      logDebug('Hybrid search: query embed failed, falling back to FTS', { error: String(err) });
+      return ftsResults.slice(0, limit);
+    }
+
+    const allEmbeddings = this.queries.getAllEmbeddings(llmConfig.embeddingModel);
+    if (allEmbeddings.length === 0) {
+      return ftsResults.slice(0, limit);
+    }
+
+    const { topKByCosine, reciprocalRankFusion } = await import('./llm/embeddings');
+    const semanticHits = topKByCosine(queryVec, allEmbeddings, Math.max(50, limit * 3));
+
+    // Build the two ranking lists for RRF, both keyed by node id.
+    const ftsRanked = ftsResults.map((r) => ({ id: r.node.id }));
+    const semRanked = semanticHits.map((h) => ({ id: h.nodeId }));
+    const fused = reciprocalRankFusion([ftsRanked, semRanked]);
+
+    // Map every id we know about back to a SearchResult. FTS results
+    // already carry node objects; semantic-only hits need a lookup.
+    const known = new Map<string, SearchResult>();
+    for (const r of ftsResults) known.set(r.node.id, r);
+
+    const orderedIds = [...fused.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+    const out: SearchResult[] = [];
+    for (const id of orderedIds) {
+      if (out.length >= limit) break;
+      let result = known.get(id);
+      if (!result) {
+        const node = this.queries.getNodeById(id);
+        if (!node) continue;
+        result = { node, score: fused.get(id) ?? 0 };
+      }
+      out.push(result);
+    }
+    return out;
+  }
+
+  /**
+   * Find symbols whose meaning is similar to a given node, via
+   * embedding cosine. Useful for "show me the other functions doing
+   * the same thing" — including across languages, since summaries
+   * are language-agnostic.
+   */
+  async findSimilar(
+    nodeId: string,
+    options: { limit?: number; sameLanguage?: boolean; differentLanguage?: boolean } = {}
+  ): Promise<SearchResult[]> {
+    const limit = options.limit ?? 10;
+    const llmConfig = await this.resolveLlmConfig();
+    if (!llmConfig?.embeddingModel) return [];
+
+    // Need the source node + its own embedding to compare against.
+    const sourceNode = this.queries.getNodeById(nodeId);
+    if (!sourceNode) return [];
+
+    const all = this.queries.getAllEmbeddings(llmConfig.embeddingModel);
+    const sourceRow = all.find((r) => r.nodeId === nodeId);
+    if (!sourceRow) return [];
+
+    const { bytesToVector, topKByCosine } = await import('./llm/embeddings');
+    const sourceVec = bytesToVector(sourceRow.embedding);
+    // Skip the source itself by filtering after top-k (cheap with a
+    // small post-filter; a larger k+1 lets us guarantee `limit` survivors).
+    const hits = topKByCosine(sourceVec, all, limit + 1).filter((h) => h.nodeId !== nodeId);
+
+    const out: SearchResult[] = [];
+    for (const hit of hits) {
+      if (out.length >= limit) break;
+      const node = this.queries.getNodeById(hit.nodeId);
+      if (!node) continue;
+      if (options.sameLanguage && node.language !== sourceNode.language) continue;
+      if (options.differentLanguage && node.language === sourceNode.language) continue;
+      out.push({ node, score: hit.score });
+    }
+    return out;
   }
 
   // ===========================================================================

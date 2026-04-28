@@ -39,17 +39,24 @@ describe('MCP tool registry — single source of truth', () => {
 
   it('all main-line tools are registered (regression guard)', () => {
     const expected = [
+      'codegraph_ask',
       'codegraph_callees',
       'codegraph_callers',
       'codegraph_config',
       'codegraph_context',
+      'codegraph_dead_code',
       'codegraph_explore',
       'codegraph_files',
       'codegraph_hotspots',
       'codegraph_impact',
+      'codegraph_module',
       'codegraph_node',
+      'codegraph_pending_summaries',
       'codegraph_review_context',
+      'codegraph_role',
+      'codegraph_save_summaries',
       'codegraph_search',
+      'codegraph_similar',
       'codegraph_sql',
       'codegraph_status',
     ];

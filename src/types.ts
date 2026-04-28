@@ -520,6 +520,31 @@ export interface CodeGraphConfig {
    */
   enableCoChange?: boolean;
 
+  /**
+   * Optional local LLM endpoint for value-add features (symbol
+   * summarisation, semantic search, dead-code judging, role classification,
+   * RAG Q&A). OpenAI-compatible HTTP: Ollama, llama.cpp, LM Studio, vLLM.
+   *
+   * Off by default — codegraph remains FTS-only and zero-dependency
+   * when this is absent.
+   *
+   * @example
+   *   "llm": {
+   *     "endpoint": "http://localhost:11434/v1",
+   *     "chatModel": "qwen2.5-coder:32b"
+   *   }
+   */
+  llm?: {
+    endpoint: string;
+    chatModel?: string;
+    embeddingModel?: string;
+    apiKey?: string;
+    /** Per-request timeout in ms. Defaults to 60000. */
+    timeoutMs?: number;
+    /** Auto-summarise indexed symbols in a background pass. Default true when llm is configured. */
+    summarize?: boolean;
+  };
+
   /** Custom symbol patterns to extract */
   customPatterns?: {
     /** Name for this pattern group */

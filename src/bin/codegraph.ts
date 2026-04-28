@@ -249,6 +249,40 @@ function warn(message: string): void {
   console.log(chalk.yellow('⚠') + ' ' + message);
 }
 
+/**
+ * Await any background LLM summarisation pass kicked off by indexAll
+ * or sync. Shows a small status line so the user knows what's
+ * happening, and lets them Ctrl-C to skip — partial work is preserved
+ * because the summariser persists each summary as it lands.
+ */
+async function awaitSummarisationWithProgress(
+  cg: import('../index').default,
+  clack: typeof import('@clack/prompts')
+): Promise<void> {
+  if (!cg.isSummarizing()) return;
+
+  const llmConfig = await cg.getEffectiveLlmConfig();
+  const label = llmConfig?.chatModel ?? 'local LLM';
+  clack.log.info(`Summarising symbols with ${label} (Ctrl-C to skip)…`);
+
+  const onSigint = (): void => {
+    // Closing cancels the in-flight pass via AbortController.
+    cg.destroy();
+    process.exit(0);
+  };
+  process.once('SIGINT', onSigint);
+  try {
+    await cg.awaitBackgroundSummarization();
+    const cov = cg.getSummaryCoverage();
+    if (cov.total > 0) {
+      const pct = Math.round((cov.summarised / cov.total) * 100);
+      clack.log.info(`Summary coverage: ${formatNumber(cov.summarised)}/${formatNumber(cov.total)} (${pct}%)`);
+    }
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+  }
+}
+
 type IndexResult = {
   success: boolean;
   filesIndexed: number;
@@ -492,9 +526,10 @@ program
       const cg = await CodeGraph.open(projectPath);
 
       if (options.quiet) {
-        // Quiet mode: no UI, just run
+        // Quiet mode: no UI, no background summarisation (the process
+        // exits immediately and would kill in-flight LLM work anyway).
         if (options.force) cg.clear();
-        const result = await cg.indexAll();
+        const result = await cg.indexAll({ summarize: false });
         if (!result.success) process.exit(1);
         cg.destroy();
         return;
@@ -530,6 +565,12 @@ program
         process.exit(1);
       }
 
+      // If a local LLM was detected, indexAll kicked off a background
+      // summarisation pass. Await it here so the work persists before
+      // the CLI exits — Ctrl-C cancels and keeps whatever already
+      // landed in the DB.
+      await awaitSummarisationWithProgress(cg, clack);
+
       clack.outro('Done');
       cg.destroy();
     } catch (err) {
@@ -560,7 +601,10 @@ program
       const cg = await CodeGraph.open(projectPath);
 
       if (options.quiet) {
-        await cg.sync();
+        // Quiet mode (git hooks, scripts): skip summarisation so the
+        // hook stays fast. The next interactive sync/index picks up
+        // any new symbols.
+        await cg.sync({ summarize: false });
         cg.destroy();
         return;
       }
@@ -590,12 +634,133 @@ program
         clack.log.info(`${details.join(', ')} — ${formatNumber(result.nodesUpdated)} nodes in ${formatDuration(result.durationMs)}`);
       }
 
+      // Await any background summarisation kicked off by sync() so
+      // the work persists before exit.
+      await awaitSummarisationWithProgress(cg, clack);
+
       clack.outro('Done');
       cg.destroy();
     } catch (err) {
       if (!options.quiet) {
         error(`Failed to sync: ${err instanceof Error ? err.message : String(err)}`);
       }
+      process.exit(1);
+    }
+  });
+
+/**
+ * codegraph summarize [path]
+ *
+ * Run an LLM-driven summarisation pass over symbols missing docstrings.
+ * Requires `config.llm` to be configured; the local LLM endpoint must
+ * be reachable. Cached by content_hash, so re-runs are cheap.
+ */
+program
+  .command('summarize [path]')
+  .description('Generate one-line LLM summaries for indexed symbols (requires config.llm)')
+  .option('-q, --quiet', 'Suppress output')
+  .option('-c, --concurrency <n>', 'Concurrent LLM requests', '2')
+  .action(async (pathArg: string | undefined, options: { quiet?: boolean; concurrency?: string }) => {
+    const projectPath = resolveProjectPath(pathArg);
+    try {
+      if (!isInitialized(projectPath)) {
+        if (!options.quiet) error(`CodeGraph not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+
+      const llmConfig = await cg.getEffectiveLlmConfig();
+      if (!llmConfig) {
+        if (!options.quiet) {
+          error(
+            'No LLM available. Either add config.llm to .codegraph/config.json or run a local Ollama server (https://ollama.com) with a chat model installed.\n\nExample config:\n\n  "llm": {\n    "endpoint": "http://localhost:11434/v1",\n    "chatModel": "qwen2.5-coder:7b"\n  }'
+          );
+        }
+        cg.destroy();
+        process.exit(1);
+      }
+
+      const concurrency = Math.max(1, parseInt(options.concurrency ?? '2', 10) || 2);
+
+      if (options.quiet) {
+        await cg.summarizeAll({ concurrency });
+        cg.destroy();
+        return;
+      }
+
+      const clack = await importESM('@clack/prompts');
+      clack.intro('Summarising indexed symbols');
+
+      const progress = createShimmerProgress();
+      progress.onProgress({ phase: 'parsing', current: 0, total: 0 });
+
+      const result = await cg.summarizeAll({
+        concurrency,
+        onProgress: (done, total) => {
+          progress.onProgress({ phase: 'parsing', current: done, total });
+        },
+      });
+
+      await progress.stop();
+
+      const skipped = result.candidates - result.generated - result.errors - result.cacheHits;
+      clack.log.success(`Summarised ${formatNumber(result.generated)} new symbols in ${formatDuration(result.durationMs)}`);
+      const details: string[] = [];
+      if (result.cacheHits > 0) details.push(`Cache hits: ${formatNumber(result.cacheHits)}`);
+      if (result.errors > 0) details.push(`Errors: ${formatNumber(result.errors)}`);
+      if (skipped > 0) details.push(`Skipped: ${formatNumber(skipped)}`);
+      if (details.length > 0) clack.log.info(details.join(' — '));
+
+      clack.outro('Done');
+      cg.destroy();
+    } catch (err) {
+      if (!options.quiet) error(`Failed to summarise: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
+ * codegraph ask <question> [path]
+ *
+ * Natural-language Q&A over the indexed codebase. Hybrid-retrieves
+ * relevant symbols via FTS+semantic, then asks the configured chat
+ * model. Requires LLM (config.llm or auto-detected Ollama).
+ */
+program
+  .command('ask <question> [path]')
+  .description('Ask a natural-language question about the codebase (requires LLM)')
+  .option('-k, --retrieve-k <n>', 'Number of candidates to feed the model', '12')
+  .option('-q, --quiet', 'Print only the answer (no sources block)')
+  .action(async (question: string, pathArg: string | undefined, options: { retrieveK?: string; quiet?: boolean }) => {
+    const projectPath = resolveProjectPath(pathArg);
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+      const llmConfig = await cg.getEffectiveLlmConfig();
+      if (!llmConfig?.chatModel) {
+        error('No LLM available. Configure config.llm or run a local Ollama server with a chat model installed.');
+        cg.destroy();
+        process.exit(1);
+      }
+      const retrieveK = Math.max(4, Math.min(30, parseInt(options.retrieveK || '12', 10) || 12));
+      const result = await cg.ask(question, { retrieveK });
+      console.log(result.answer);
+      if (!options.quiet) {
+        console.log('\n' + chalk.dim('Sources:'));
+        for (const c of result.citations) {
+          const loc = c.node.startLine ? `:${c.node.startLine}` : '';
+          console.log(chalk.dim(`  • ${c.node.name} (${c.node.kind}) ${c.node.filePath}${loc}`));
+        }
+        console.log(chalk.dim(`\n  retrieve ${result.retrieveMs}ms · chat ${result.chatMs}ms · model ${llmConfig.chatModel}`));
+      }
+      cg.destroy();
+    } catch (err) {
+      error(`Failed to answer: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   });
@@ -699,6 +864,23 @@ program
         info('Run "codegraph sync" to update the index');
       } else {
         success('Index is up to date');
+      }
+      console.log();
+
+      // LLM enrichment status — auto-detected or configured.
+      console.log(chalk.bold('LLM Enrichment:'));
+      const llmConfig = await cg.getEffectiveLlmConfig();
+      if (!llmConfig) {
+        console.log('  No local LLM detected. Install Ollama (https://ollama.com) and pull a chat model to enable summaries.');
+      } else {
+        const source = cg.hasLlm() ? 'configured' : 'auto-detected';
+        console.log(`  Endpoint:  ${llmConfig.endpoint} (${source})`);
+        console.log(`  Model:     ${llmConfig.chatModel}`);
+        const cov = cg.getSummaryCoverage();
+        if (cov.total > 0) {
+          const pct = Math.round((cov.summarised / cov.total) * 100);
+          console.log(`  Coverage:  ${formatNumber(cov.summarised)}/${formatNumber(cov.total)} (${pct}%)`);
+        }
       }
       console.log();
 

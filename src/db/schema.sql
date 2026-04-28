@@ -250,3 +250,37 @@ CREATE INDEX IF NOT EXISTS idx_sql_refs_node
     ON sql_refs(source_node_id);
 CREATE INDEX IF NOT EXISTS idx_sql_refs_file
     ON sql_refs(file_path);
+
+-- Symbol summaries: one-line LLM-generated descriptions for symbols that
+-- lack docstrings. content_hash invalidates the summary when the symbol
+-- body changes, so a re-index regenerates only what actually changed.
+CREATE TABLE IF NOT EXISTS symbol_summaries (
+    node_id TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    model TEXT NOT NULL,
+    generated_at INTEGER NOT NULL,
+    -- Embeddings of the summary text for semantic search. Float32Array
+    -- bytes (LE), L2-normalised so dot product == cosine similarity.
+    embedding BLOB,
+    embedding_model TEXT,
+    -- Role classification (api_endpoint | business_logic | data_model |
+    -- util | framework_glue | test_helper | unknown).
+    role TEXT,
+    role_model TEXT,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_summaries_model ON symbol_summaries(model);
+CREATE INDEX IF NOT EXISTS idx_summaries_embedding_model ON symbol_summaries(embedding_model);
+CREATE INDEX IF NOT EXISTS idx_summaries_role ON symbol_summaries(role);
+
+-- Directory-level LLM summaries: one paragraph synthesised from the
+-- symbol summaries inside the directory.
+CREATE TABLE IF NOT EXISTS directory_summaries (
+    dir_path TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    model TEXT NOT NULL,
+    generated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dir_summaries_model ON directory_summaries(model);

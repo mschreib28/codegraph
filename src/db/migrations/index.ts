@@ -33,6 +33,10 @@ import { MIGRATION as MIG_007 } from './007-sql-refs';
 import { MIGRATION as MIG_008 } from './008-edges-unique';
 import { MIGRATION as MIG_009 } from './009-fts-subwords-porter';
 import { MIGRATION as MIG_010 } from './010-co-changes';
+import { MIGRATION as MIG_011 } from './011-symbol-summaries';
+import { MIGRATION as MIG_012 } from './012-summary-embeddings';
+import { MIGRATION as MIG_013 } from './013-directory-summaries';
+import { MIGRATION as MIG_014 } from './014-summary-roles';
 
 interface ModuleRef {
   /**
@@ -62,6 +66,10 @@ const REGISTERED_MODULES: readonly ModuleRef[] = [
   { filename: '008-edges-unique.ts', module: MIG_008 },
   { filename: '009-fts-subwords-porter.ts', module: MIG_009 },
   { filename: '010-co-changes.ts', module: MIG_010 },
+  { filename: '011-symbol-summaries.ts', module: MIG_011 },
+  { filename: '012-summary-embeddings.ts', module: MIG_012 },
+  { filename: '013-directory-summaries.ts', module: MIG_013 },
+  { filename: '014-summary-roles.ts', module: MIG_014 },
 ];
 
 /** Strict 3-digit prefix on each migration filename. */

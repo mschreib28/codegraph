@@ -18,32 +18,46 @@
 import type { ToolDefinition } from '../tool-types';
 import type { ToolModule } from './types';
 
+import { ASK_TOOL } from './ask';
 import { CALLEES_TOOL } from './callees';
 import { CALLERS_TOOL } from './callers';
 import { CONFIG_TOOL } from './config';
 import { CONTEXT_TOOL } from './context';
+import { DEAD_CODE_TOOL } from './dead-code';
 import { EXPLORE_TOOL } from './explore';
 import { FILES_TOOL } from './files';
 import { HOTSPOTS_TOOL } from './hotspots';
 import { IMPACT_TOOL } from './impact';
+import { MODULE_TOOL } from './module';
 import { NODE_TOOL } from './node';
+import { PENDING_SUMMARIES_TOOL } from './pending-summaries';
 import { REVIEW_CONTEXT_TOOL } from './review-context';
+import { ROLE_TOOL } from './role';
+import { SAVE_SUMMARIES_TOOL } from './save-summaries';
 import { SEARCH_TOOL } from './search';
+import { SIMILAR_TOOL } from './similar';
 import { SQL_TOOL } from './sql';
 import { STATUS_TOOL } from './status';
 
 const ALL_TOOLS: readonly ToolModule[] = [
+  ASK_TOOL,
   CALLEES_TOOL,
   CALLERS_TOOL,
   CONFIG_TOOL,
   CONTEXT_TOOL,
+  DEAD_CODE_TOOL,
   EXPLORE_TOOL,
   FILES_TOOL,
   HOTSPOTS_TOOL,
   IMPACT_TOOL,
+  MODULE_TOOL,
   NODE_TOOL,
+  PENDING_SUMMARIES_TOOL,
   REVIEW_CONTEXT_TOOL,
+  ROLE_TOOL,
+  SAVE_SUMMARIES_TOOL,
   SEARCH_TOOL,
+  SIMILAR_TOOL,
   SQL_TOOL,
   STATUS_TOOL,
 ];

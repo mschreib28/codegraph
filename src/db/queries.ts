@@ -1426,6 +1426,8 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
       this.db.exec('DELETE FROM co_changes');
+      this.db.exec('DELETE FROM symbol_summaries');
+      this.db.exec('DELETE FROM directory_summaries');
     })();
   }
 
@@ -1958,6 +1960,8 @@ export class QueryBuilder {
   clearCoChanges(): void {
     this.db.transaction(() => {
       this.db.exec('DELETE FROM co_changes');
+      this.db.exec('DELETE FROM symbol_summaries');
+      this.db.exec('DELETE FROM directory_summaries');
       this.db.exec('UPDATE files SET commit_count = 0');
     })();
   }
@@ -1999,4 +2003,391 @@ export class QueryBuilder {
       }>;
     return rows.map((r) => ({ path: r.path, count: r.count, jaccard: r.jaccard ?? 0 }));
   }
+
+
+  // ==========================================================================
+  // Symbol Summaries (LLM-generated one-liners; populated by background pass)
+  // ==========================================================================
+
+  /**
+   * Get every symbol whose body is meaningful enough to summarise and
+   * whose existing docstring (if any) is shorter than `docThreshold`
+   * chars. Sorted by file_path so callers iterating in order can warm
+   * the file-content cache.
+   */
+  getSummarizableNodes(
+    kinds: ReadonlySet<string>,
+    minBodyLines: number,
+    docCharThreshold: number
+  ): Node[] {
+    if (kinds.size === 0) return [];
+    const placeholders = [...kinds].map(() => '?').join(',');
+    const sql = `
+      SELECT * FROM nodes
+      WHERE kind IN (${placeholders})
+        AND (end_line - start_line) >= ?
+        AND (docstring IS NULL OR length(docstring) < ?)
+      ORDER BY file_path, start_line
+    `;
+    const params: (string | number)[] = [...kinds, minBodyLines, docCharThreshold];
+    const rows = this.db.prepare(sql).all(...params) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Read a single symbol's cached summary, or null if none exists.
+   */
+  getSymbolSummary(nodeId: string): { summary: string; contentHash: string; model: string } | null {
+    const row = this.db
+      .prepare('SELECT summary, content_hash, model FROM symbol_summaries WHERE node_id = ?')
+      .get(nodeId) as { summary: string; content_hash: string; model: string } | undefined;
+    if (!row) return null;
+    return { summary: row.summary, contentHash: row.content_hash, model: row.model };
+  }
+
+  /**
+   * Bulk fetch summaries for a set of node IDs. Returns a Map keyed by id;
+   * absent entries are nodes without a cached summary.
+   */
+  getSymbolSummaries(nodeIds: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (nodeIds.length === 0) return out;
+    const CHUNK = 500;
+    for (let i = 0; i < nodeIds.length; i += CHUNK) {
+      const chunk = nodeIds.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT node_id, summary FROM symbol_summaries WHERE node_id IN (${placeholders})`)
+        .all(...chunk) as Array<{ node_id: string; summary: string }>;
+      for (const r of rows) out.set(r.node_id, r.summary);
+    }
+    return out;
+  }
+
+  /**
+   * Insert or replace a summary. The unique key is `node_id`; the
+   * content_hash is the consistency anchor that lets the next pass
+   * detect a stale entry and regenerate.
+   */
+  upsertSymbolSummary(nodeId: string, contentHash: string, summary: string, model: string): void {
+    this.db
+      .prepare(`
+        INSERT INTO symbol_summaries (node_id, content_hash, summary, model, generated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET
+          content_hash = excluded.content_hash,
+          summary = excluded.summary,
+          model = excluded.model,
+          generated_at = excluded.generated_at
+      `)
+      .run(nodeId, contentHash, summary, model, Date.now());
+  }
+
+  /**
+   * Summaries that are missing an embedding for the given embedding
+   * model (or have one keyed to a different model). These are the
+   * candidates the embedder should run on.
+   *
+   * Joins to nodes only to surface name/signature, which we feed into
+   * the embedding text so search hits match by name + intent.
+   */
+  getEmbeddableSummaries(
+    embeddingModel: string
+  ): Array<{ nodeId: string; name: string; signature: string | null; summary: string }> {
+    const rows = this.db
+      .prepare(
+        `SELECT s.node_id AS node_id, n.name AS name, n.signature AS signature, s.summary AS summary
+         FROM symbol_summaries s
+         JOIN nodes n ON n.id = s.node_id
+         WHERE s.embedding IS NULL
+            OR s.embedding_model IS NULL
+            OR s.embedding_model != ?`
+      )
+      .all(embeddingModel) as Array<{
+      node_id: string;
+      name: string;
+      signature: string | null;
+      summary: string;
+    }>;
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      name: r.name,
+      signature: r.signature,
+      summary: r.summary,
+    }));
+  }
+
+  /**
+   * Bulk fetch every summary's embedding for the active model. Used by
+   * the in-process semantic search scan. Cheap because BLOBs are
+   * already byte-aligned in SQLite.
+   */
+  getAllEmbeddings(
+    embeddingModel: string
+  ): Array<{ nodeId: string; embedding: Buffer }> {
+    const rows = this.db
+      .prepare(
+        `SELECT node_id, embedding FROM symbol_summaries
+         WHERE embedding IS NOT NULL AND embedding_model = ?`
+      )
+      .all(embeddingModel) as Array<{ node_id: string; embedding: Buffer }>;
+    return rows.map((r) => ({ nodeId: r.node_id, embedding: r.embedding }));
+  }
+
+  /**
+   * Persist an embedding for a previously-summarised symbol. The
+   * caller passes raw Float32 bytes (already L2-normalised).
+   */
+  upsertSymbolEmbedding(nodeId: string, embedding: Buffer | Uint8Array, model: string): void {
+    this.db
+      .prepare(
+        `UPDATE symbol_summaries
+         SET embedding = ?, embedding_model = ?
+         WHERE node_id = ?`
+      )
+      .run(embedding, model, nodeId);
+  }
+
+  // ==========================================================================
+  // Role Classification (LLM-generated coarse role labels)
+  // ==========================================================================
+
+  /** Symbols that have a summary but no (or stale) role for this model. */
+  getClassifiableSummaries(
+    roleModel: string
+  ): Array<{ nodeId: string; name: string; kind: string; signature: string | null; summary: string }> {
+    const rows = this.db
+      .prepare(
+        `SELECT s.node_id AS node_id, n.name AS name, n.kind AS kind,
+                n.signature AS signature, s.summary AS summary
+         FROM symbol_summaries s
+         JOIN nodes n ON n.id = s.node_id
+         WHERE s.role IS NULL OR s.role_model IS NULL OR s.role_model != ?`
+      )
+      .all(roleModel) as Array<{
+      node_id: string;
+      name: string;
+      kind: string;
+      signature: string | null;
+      summary: string;
+    }>;
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      name: r.name,
+      kind: r.kind,
+      signature: r.signature,
+      summary: r.summary,
+    }));
+  }
+
+  /** Persist a role assignment for a previously-summarised symbol. */
+  upsertSymbolRole(nodeId: string, role: string, roleModel: string): void {
+    this.db
+      .prepare(
+        `UPDATE symbol_summaries SET role = ?, role_model = ? WHERE node_id = ?`
+      )
+      .run(role, roleModel, nodeId);
+  }
+
+  /** Bulk fetch roles for a set of node ids. */
+  getSymbolRoles(nodeIds: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (nodeIds.length === 0) return out;
+    const CHUNK = 500;
+    for (let i = 0; i < nodeIds.length; i += CHUNK) {
+      const chunk = nodeIds.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(
+          `SELECT node_id, role FROM symbol_summaries
+           WHERE role IS NOT NULL AND node_id IN (${placeholders})`
+        )
+        .all(...chunk) as Array<{ node_id: string; role: string }>;
+      for (const r of rows) out.set(r.node_id, r.role);
+    }
+    return out;
+  }
+
+  /** Find every node currently classified with a given role. */
+  findNodesByRole(role: string, limit = 100): Node[] {
+    const rows = this.db
+      .prepare(
+        `SELECT n.* FROM nodes n
+         JOIN symbol_summaries s ON s.node_id = n.id
+         WHERE s.role = ?
+         ORDER BY n.file_path, n.start_line
+         LIMIT ?`
+      )
+      .all(role, limit) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Sample existing sibling names for the naming-convention checker.
+   * Excludes the symbol's own file (so the new symbol's own name
+   * doesn't bias the convention) and prefers symbols that have
+   * survived multiple sync cycles (proxy: anything in the index).
+   */
+  sampleSiblingNames(
+    kind: string,
+    excludeName: string,
+    excludeFile: string,
+    limit: number
+  ): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT name FROM nodes
+         WHERE kind = ? AND name != ? AND file_path != ?
+         ORDER BY name
+         LIMIT ?`
+      )
+      .all(kind, excludeName, excludeFile, limit) as Array<{ name: string }>;
+    return rows.map((r) => r.name);
+  }
+
+  /**
+   * Find symbols with zero incoming `calls` edges that are not marked
+   * exported. Pre-filter for the dead-code judge — cheap, runs in
+   * SQL, narrows the LLM workload to the graph-suspicious set.
+   */
+  findOrphanedSymbols(limit = 200): Node[] {
+    const rows = this.db
+      .prepare(
+        `SELECT n.* FROM nodes n
+         WHERE n.is_exported = 0
+           AND n.kind IN ('function', 'method', 'class', 'component')
+           AND NOT EXISTS (
+             SELECT 1 FROM edges e
+             WHERE e.target = n.id AND e.kind = 'calls'
+           )
+         ORDER BY n.file_path, n.start_line
+         LIMIT ?`
+      )
+      .all(limit) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /** Counts of classified symbols by role (for status display). */
+  getRoleCounts(): Map<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT role, COUNT(*) AS n FROM symbol_summaries
+         WHERE role IS NOT NULL GROUP BY role`
+      )
+      .all() as Array<{ role: string; n: number }>;
+    const out = new Map<string, number>();
+    for (const r of rows) out.set(r.role, r.n);
+    return out;
+  }
+
+  // ==========================================================================
+  // Directory Summaries (LLM-generated module-level descriptions)
+  // ==========================================================================
+
+  /** Pull every (file_path, name, kind, summary) for symbols that
+   *  already have a summary — used to group by directory for the
+   *  module-level synthesis pass. */
+  getSummarisedSymbolsByDir(): Array<{
+    filePath: string;
+    name: string;
+    kind: string;
+    summary: string;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT n.file_path AS file_path, n.name AS name, n.kind AS kind, s.summary AS summary
+         FROM symbol_summaries s
+         JOIN nodes n ON n.id = s.node_id
+         ORDER BY n.file_path`
+      )
+      .all() as Array<{ file_path: string; name: string; kind: string; summary: string }>;
+    return rows.map((r) => ({
+      filePath: r.file_path,
+      name: r.name,
+      kind: r.kind,
+      summary: r.summary,
+    }));
+  }
+
+  /** Read a single directory's cached summary, or null. */
+  getDirectorySummary(
+    dirPath: string
+  ): { summary: string; contentHash: string; model: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT summary, content_hash, model FROM directory_summaries WHERE dir_path = ?`
+      )
+      .get(dirPath) as { summary: string; content_hash: string; model: string } | undefined;
+    if (!row) return null;
+    return { summary: row.summary, contentHash: row.content_hash, model: row.model };
+  }
+
+  /** Bulk fetch directory summaries by exact dir path. */
+  getDirectorySummaries(dirPaths: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (dirPaths.length === 0) return out;
+    const CHUNK = 500;
+    for (let i = 0; i < dirPaths.length; i += CHUNK) {
+      const chunk = dirPaths.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(
+          `SELECT dir_path, summary FROM directory_summaries WHERE dir_path IN (${placeholders})`
+        )
+        .all(...chunk) as Array<{ dir_path: string; summary: string }>;
+      for (const r of rows) out.set(r.dir_path, r.summary);
+    }
+    return out;
+  }
+
+  /** All directory summaries (for codegraph status / explore). */
+  getAllDirectorySummaries(): Array<{ dirPath: string; summary: string }> {
+    const rows = this.db
+      .prepare(`SELECT dir_path, summary FROM directory_summaries ORDER BY dir_path`)
+      .all() as Array<{ dir_path: string; summary: string }>;
+    return rows.map((r) => ({ dirPath: r.dir_path, summary: r.summary }));
+  }
+
+  /** Insert or replace a directory summary, keyed on dir_path. */
+  upsertDirectorySummary(
+    dirPath: string,
+    contentHash: string,
+    summary: string,
+    model: string
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO directory_summaries (dir_path, summary, content_hash, model, generated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(dir_path) DO UPDATE SET
+           summary = excluded.summary,
+           content_hash = excluded.content_hash,
+           model = excluded.model,
+           generated_at = excluded.generated_at`
+      )
+      .run(dirPath, summary, contentHash, model, Date.now());
+  }
+
+  /**
+   * Stats for `codegraph status`: how much of the index has summaries.
+   * `total` counts only nodes that are *eligible* for summarisation —
+   * counting parameters/imports/files in the denominator would
+   * understate coverage and confuse the user.
+   */
+  getSummaryCoverage(kinds?: ReadonlySet<string>): { total: number; summarised: number } {
+    let total: number;
+    if (kinds && kinds.size > 0) {
+      const placeholders = [...kinds].map(() => '?').join(',');
+      total = (
+        this.db
+          .prepare(`SELECT COUNT(*) AS n FROM nodes WHERE kind IN (${placeholders})`)
+          .get(...kinds) as { n: number }
+      ).n;
+    } else {
+      total = (this.db.prepare('SELECT COUNT(*) AS n FROM nodes').get() as { n: number }).n;
+    }
+    const summarised = (this.db.prepare('SELECT COUNT(*) AS n FROM symbol_summaries').get() as { n: number }).n;
+    return { total, summarised };
+  }
+
 }

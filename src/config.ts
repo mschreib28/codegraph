@@ -128,6 +128,7 @@ function mergeConfig(
     extractDocstrings: overrides.extractDocstrings ?? defaults.extractDocstrings,
     trackCallSites: overrides.trackCallSites ?? defaults.trackCallSites,
     enableCoChange: overrides.enableCoChange ?? defaults.enableCoChange,
+    llm: overrides.llm ?? defaults.llm,
     customPatterns: overrides.customPatterns ?? defaults.customPatterns,
     enableCentrality: overrides.enableCentrality ?? defaults.enableCentrality,
     enableChurn: overrides.enableChurn ?? defaults.enableChurn,

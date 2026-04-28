@@ -894,6 +894,263 @@ export class ToolHandler implements ToolHandlerLike {
     return this.textResult(serializeReviewContextWithinCap(context, MAX_OUTPUT_LENGTH));
   }
 
+  async handlePendingSummaries(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const limit = clamp(Number(args.limit) || 20, 1, 200);
+    const modelHint = (args.modelHint as string | undefined) ?? 'agent-mcp';
+    const batch = cg.pendingSummariesBatch({ limit, modelHint });
+
+    if (batch.items.length === 0) {
+      return this.textResult(
+        `No pending summaries (${batch.total} total candidates, all have current cache entries for model "${modelHint}").`
+      );
+    }
+
+    // Return as JSON so the agent can consume it programmatically.
+    return this.textResult(
+      JSON.stringify(
+        {
+          items: batch.items,
+          remaining: batch.remaining,
+          total: batch.total,
+          modelHint: batch.modelHint,
+          instructions:
+            'Summarise each item.body in ONE LINE (max 200 chars), starting with an action verb. No "This function..." preamble. Then call codegraph_save_summaries with [{nodeId, contentHash, summary}, ...] echoing each item\'s contentHash unchanged. Use the same modelHint as the model arg.',
+        },
+        null,
+        2
+      )
+    );
+  }
+
+  /**
+   * Handle codegraph_save_summaries — persist a batch of agent-
+   * generated summaries with content_hash re-validation.
+   */
+  async handleSaveSummaries(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const items = args.items as Array<{ nodeId?: unknown; contentHash?: unknown; summary?: unknown }> | undefined;
+    if (!Array.isArray(items)) {
+      return this.errorResult('items must be an array of { nodeId, contentHash, summary }');
+    }
+    const cleaned: Array<{ nodeId: string; contentHash: string; summary: string }> = [];
+    for (const it of items) {
+      if (
+        typeof it?.nodeId !== 'string' ||
+        typeof it?.contentHash !== 'string' ||
+        typeof it?.summary !== 'string'
+      ) {
+        return this.errorResult(
+          'each item requires string nodeId, contentHash, and summary'
+        );
+      }
+      cleaned.push({
+        nodeId: it.nodeId,
+        contentHash: it.contentHash,
+        summary: it.summary,
+      });
+    }
+    const model = (args.model as string | undefined) ?? 'agent-mcp';
+    const result = cg.saveAgentSummaries(cleaned, model);
+    const lines: string[] = [
+      `Saved ${result.saved} summaries (model: ${model}); skipped ${result.skipped}.`,
+    ];
+    if (result.errors.length > 0) {
+      lines.push('', 'Skipped:');
+      for (const e of result.errors.slice(0, 20)) lines.push(`  - ${e}`);
+      if (result.errors.length > 20) lines.push(`  ... and ${result.errors.length - 20} more`);
+    }
+    return this.textResult(lines.join('\n'));
+  }
+
+
+  async handleDeadCode(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const llmConfig = await cg.getEffectiveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      return this.errorResult(
+        'No LLM available for dead-code judge. Configure config.llm or run a local Ollama server.'
+      );
+    }
+    const maxCandidates = clamp(Number(args.maxCandidates) || 50, 1, 500);
+    const verdictFilter = (args.verdict as string | undefined) ?? 'all';
+
+    try {
+      const result = await cg.findDeadCodeCandidates({ maxCandidates });
+      let rows = result.results;
+      if (verdictFilter !== 'all') {
+        rows = rows.filter((r) => r.verdict === verdictFilter);
+      }
+
+      if (rows.length === 0) {
+        return this.textResult(
+          `Judged ${result.judged}/${result.candidates} candidates; no entries matched filter "${verdictFilter}".`
+        );
+      }
+
+      const lines: string[] = [
+        `## Dead-code candidates (${rows.length} of ${result.candidates} judged)`,
+        '',
+        `_Combines graph signal (no callers + not exported) with LLM verdict._`,
+        '',
+      ];
+      for (const c of rows) {
+        const loc = c.node.startLine ? `:${c.node.startLine}` : '';
+        const conf = `${(c.confidence * 100).toFixed(0)}%`;
+        lines.push(`### [${c.verdict.toUpperCase()} ${conf}] ${c.node.name} (${c.node.kind})`);
+        lines.push(`${c.node.filePath}${loc}`);
+        if (c.reason) lines.push(`> ${c.reason}`);
+        lines.push('');
+      }
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    } catch (err) {
+      return this.errorResult(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+
+  async handleRole(args: Record<string, unknown>): Promise<ToolResult> {
+    const role = this.validateString(args.role, 'role');
+    if (typeof role !== 'string') return role;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const limit = clamp(Number(args.limit) || 50, 1, 500);
+
+    const nodes = cg.findNodesByRole(role as never, limit);
+    if (nodes.length === 0) {
+      return this.textResult(
+        `No symbols classified as "${role}". The role classifier may not have run yet — check codegraph_status for coverage.`
+      );
+    }
+    const summaries = cg.getSymbolSummaries(nodes.map((n) => n.id));
+    const lines: string[] = [`## Symbols with role: ${role} (${nodes.length})`, ''];
+    for (const n of nodes) {
+      const loc = n.startLine ? `:${n.startLine}` : '';
+      lines.push(`- **${n.name}** (${n.kind}) — ${n.filePath}${loc}`);
+      const s = summaries.get(n.id);
+      if (s) lines.push(`  ${s}`);
+    }
+    return this.textResult(this.truncateOutput(lines.join('\n')));
+  }
+
+
+  async handleModule(args: Record<string, unknown>): Promise<ToolResult> {
+    const dirPathRaw = args.dirPath as string | undefined;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    if (!dirPathRaw) {
+      const all = cg.getAllDirectorySummaries();
+      if (all.length === 0) {
+        return this.textResult(
+          'No module summaries cached yet. Run a sync after the LLM background pass to populate them.'
+        );
+      }
+      const lines: string[] = ['## Module summaries', ''];
+      for (const { dirPath, summary } of all) {
+        lines.push(`### ${dirPath}`);
+        lines.push(summary);
+        lines.push('');
+      }
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    }
+
+    // Normalise a leading "./" or trailing slash before lookup
+    const dirPath = dirPathRaw.replace(/^\.\//, '').replace(/\/+$/, '');
+    const summary = cg.getDirectorySummary(dirPath);
+    if (!summary) {
+      return this.textResult(
+        `No summary cached for "${dirPath}". The directory may not have ≥3 summarised symbols yet, or the background pass hasn't completed.`
+      );
+    }
+    return this.textResult(`## ${dirPath}\n\n${summary}`);
+  }
+
+
+  async handleAsk(args: Record<string, unknown>): Promise<ToolResult> {
+    const question = this.validateString(args.question, 'question');
+    if (typeof question !== 'string') return question;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const llmConfig = await cg.getEffectiveLlmConfig();
+    if (!llmConfig?.chatModel) {
+      return this.errorResult(
+        'No LLM available for codegraph_ask. Configure config.llm or run a local Ollama server.'
+      );
+    }
+
+    const retrieveK = clamp(Number(args.retrieveK) || 12, 4, 30);
+    try {
+      const result = await cg.ask(question, { retrieveK });
+      const lines: string[] = [
+        '## Answer',
+        '',
+        result.answer,
+        '',
+        '## Sources',
+        '',
+      ];
+      for (const c of result.citations) {
+        const loc = c.node.startLine ? `:${c.node.startLine}` : '';
+        lines.push(`- **${c.node.name}** (${c.node.kind}) — ${c.node.filePath}${loc}`);
+        if (c.summary) lines.push(`  ${c.summary}`);
+      }
+      lines.push('');
+      lines.push(
+        `_Retrieved ${result.citations.length} symbols in ${result.retrieveMs}ms; chat ${result.chatMs}ms._`
+      );
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    } catch (err) {
+      return this.errorResult(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+
+  async handleSimilar(args: Record<string, unknown>): Promise<ToolResult> {
+    const symbol = this.validateString(args.symbol, 'symbol');
+    if (typeof symbol !== 'string') return symbol;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const limit = clamp(Number(args.limit) || 10, 1, 100);
+    const sameLanguage = args.sameLanguage === true;
+    const differentLanguage = args.differentLanguage === true;
+
+    const match = this.findSymbol(cg, symbol);
+    if (!match) {
+      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+    }
+
+    const results = await cg.findSimilar(match.node.id, {
+      limit,
+      sameLanguage,
+      differentLanguage,
+    });
+
+    if (results.length === 0) {
+      const llmConfig = await cg.getEffectiveLlmConfig();
+      const reason = llmConfig?.embeddingModel
+        ? 'No similar symbols above the threshold (the source symbol may not have an embedding yet — try again after the background pass completes).'
+        : 'No embedding model configured. Configure config.llm.embeddingModel or pull a known embedding model into Ollama (e.g. nomic-embed-text).';
+      return this.textResult(reason);
+    }
+
+    const lines: string[] = [
+      `## Similar to ${match.node.name} (${match.node.kind}) — ${match.node.filePath}:${match.node.startLine}`,
+      '',
+    ];
+    const summaries = cg.getSymbolSummaries(results.map((r) => r.node.id));
+    for (const r of results) {
+      const loc = r.node.startLine ? `:${r.node.startLine}` : '';
+      lines.push(
+        `### ${r.node.name} (${r.node.kind})  [score ${r.score.toFixed(3)}, lang ${r.node.language}]`
+      );
+      lines.push(`${r.node.filePath}${loc}`);
+      const summary = summaries.get(r.node.id);
+      if (summary) lines.push(`> ${summary}`);
+      lines.push('');
+    }
+    return this.textResult(this.truncateOutput(lines.join('\n')));
+  }
+
+
   /**
    * Handle codegraph_sql — SQL call-site queries.
    */

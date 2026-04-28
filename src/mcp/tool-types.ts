@@ -8,9 +8,14 @@
 
 export interface PropertySchema {
   type: string;
-  description: string;
+  description?: string;
   enum?: string[];
   default?: unknown;
+  /** For type: 'array' — describes the items shape. */
+  items?: PropertySchema | { type: string; properties?: Record<string, PropertySchema>; required?: string[] };
+  /** For nested object schemas (codegraph_save_summaries items). */
+  properties?: Record<string, PropertySchema>;
+  required?: string[];
 }
 
 export interface ToolDefinition {
