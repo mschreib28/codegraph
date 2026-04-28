@@ -19,6 +19,7 @@ import {
 } from '../types';
 import { safeJsonParse, buildNameSubwords } from '../utils';
 import { kindBonus, nameMatchBonus, scorePathRelevance, filterStopwords, diversifyByFile } from '../search/query-utils';
+import { CROSS_FILE_BIOMARKERS } from '../biomarkers/types';
 
 /**
  * Database row types (snake_case from SQLite)
@@ -548,19 +549,32 @@ export class QueryBuilder {
 
   /**
    * Find methods showing "feature envy" — they call into another
-   * file's API at least `minExternalCalls` times AND at least
-   * `externalRatio`× as often as into their own file. Backs the
+   * file's API substantially more than into their own. Backs the
    * `feature_envy` biomarker.
    *
-   * "Same class" is approximated by "same file" — a more accurate
-   * implementation would walk the `contains` chain to find the
-   * enclosing class, but file-grouping is correct in practice for
-   * any reasonable codebase (one class per file is the dominant
-   * style across our supported languages).
+   * Inputs:
+   *   - `minExternalCalls`  — minimum distinct external callees
+   *   - `externalRatio`     — ratio of external to same-file callees
+   *   - `minSameFileCalls`  — floor on same-file callees, so pure
+   *                            aggregators / facade methods that ONLY
+   *                            call externals (legitimate by design)
+   *                            aren't flagged
+   *
+   * Notes:
+   * - "External" / "same file" approximates "different class" /
+   *   "same class". A more accurate implementation would walk the
+   *   `contains` chain to find the enclosing class, but file
+   *   grouping is correct in practice for the dominant
+   *   one-class-per-file convention across our supported languages.
+   * - Counts DISTINCT call-edge targets, not invocation frequency:
+   *   the edges table is deduped at insert (UNIQUE(source, target,
+   *   kind)), so a method calling one external function 100 times
+   *   contributes externalCalls = 1.
    */
   findFeatureEnvy(
     minExternalCalls: number,
-    externalRatio: number
+    externalRatio: number,
+    minSameFileCalls = 1
   ): Array<{
     id: string;
     name: string;
@@ -583,10 +597,13 @@ export class QueryBuilder {
       FROM outbound
       GROUP BY srcId, srcName, srcFile
       HAVING externalCalls >= ?
+        AND sameFileCalls >= ?
         AND externalCalls >= sameFileCalls * ?
       ORDER BY externalCalls DESC
     `;
-    return this.db.prepare(sql).all(minExternalCalls, externalRatio) as Array<{
+    return this.db
+      .prepare(sql)
+      .all(minExternalCalls, minSameFileCalls, externalRatio) as Array<{
       id: string;
       name: string;
       filePath: string;
@@ -2567,15 +2584,17 @@ export class QueryBuilder {
       // Cross-file biomarkers (computed from global graph state, not
       // from this file's AST) must NOT be wiped by per-file replace,
       // or sync runs that touch a file will silently lose those
-      // findings without recomputing them. Add new cross-file kinds
-      // to the NOT-IN list as they're introduced.
+      // findings without recomputing them. The kinds list is sourced
+      // from CROSS_FILE_BIOMARKERS in src/biomarkers/types.ts so adding
+      // a new cross-file rule only requires touching that one constant.
+      const placeholders = [...CROSS_FILE_BIOMARKERS].map(() => '?').join(',');
       this.db
         .prepare(
           `DELETE FROM code_health_findings
-           WHERE biomarker NOT IN ('unused_export', 'god_class', 'feature_envy')
+           WHERE biomarker NOT IN (${placeholders})
              AND node_id IN (SELECT id FROM nodes WHERE file_path = ?)`
         )
-        .run(filePath);
+        .run(...CROSS_FILE_BIOMARKERS, filePath);
 
       const ins = this.db.prepare(
         `INSERT INTO code_health_findings

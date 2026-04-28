@@ -20,6 +20,22 @@ export type BiomarkerName =
   | 'god_class'
   | 'feature_envy';
 
+/**
+ * Cross-file biomarker kinds — those computed from global graph
+ * state (not from a single file's AST). The single source of truth
+ * referenced by:
+ *   - replaceFindingsForFile (so per-file replace doesn't wipe them)
+ *   - the analyseProject cross-file pass (so we know which kinds to
+ *     re-emit on a full pass)
+ *
+ * Adding a new cross-file rule? Add its name here.
+ */
+export const CROSS_FILE_BIOMARKERS: ReadonlySet<BiomarkerName> = new Set([
+  'unused_export',
+  'god_class',
+  'feature_envy',
+]);
+
 export type Severity = 'info' | 'warning' | 'error';
 
 export interface Finding {

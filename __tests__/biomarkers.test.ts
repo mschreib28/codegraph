@@ -408,4 +408,119 @@ compute();
       cg.destroy();
     }
   });
+
+  it('emits god_class for a class with many members', async () => {
+    fs.mkdirSync(path.join(dir, 'src'));
+    // 16 trivial methods → exceeds the info threshold (15) but not the
+    // warning threshold (25). Each method body is short to keep
+    // per-symbol rules out of the way.
+    const methods = Array.from({ length: 16 }, (_, i) => `  m${i}() { return ${i}; }`).join('\n');
+    fs.writeFileSync(
+      path.join(dir, 'src', 'god.ts'),
+      `export class GodClass {\n${methods}\n}\n`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ name: 'biomarker-god', version: '0.0.0' })
+    );
+
+    const cg = await CodeGraph.init(dir, { config: { llm: { endpoint: '' } } });
+    try {
+      await cg.indexAll({ summarize: false });
+      // Pull findings for any node named 'GodClass'.
+      const all = cg.getNodesByKind('class').filter((n) => n.name === 'GodClass');
+      expect(all.length).toBe(1);
+      const findings = cg.getFindingsForNode(all[0]!.id);
+      const god = findings.find((f) => f.biomarker === 'god_class');
+      expect(god).toBeDefined();
+      expect(god!.metric).toBe(16);
+    } finally {
+      cg.destroy();
+    }
+  });
+
+  it('emits feature_envy when a method calls many externals + has same-file work', async () => {
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(
+      path.join(dir, 'src', 'target.ts'),
+      `export function ext1() { return 1; }
+export function ext2() { return 2; }
+export function ext3() { return 3; }
+export function ext4() { return 4; }
+export function ext5() { return 5; }
+`
+    );
+    // envious() calls 5 distinct externals + at least 1 same-file
+    // (the minSameFileCalls=1 floor in findFeatureEnvy keeps pure
+    // aggregators from firing).
+    fs.writeFileSync(
+      path.join(dir, 'src', 'envy.ts'),
+      `import { ext1, ext2, ext3, ext4, ext5 } from './target';
+export class Envy {
+  envious() {
+    ext1(); ext2(); ext3(); ext4(); ext5();
+    return this.local() + this.local2();
+  }
+  local() { return 1; }
+  local2() { return 2; }
+}
+`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ name: 'biomarker-envy', version: '0.0.0' })
+    );
+
+    const cg = await CodeGraph.init(dir, { config: { llm: { endpoint: '' } } });
+    try {
+      await cg.indexAll({ summarize: false });
+      const envious = cg.getNodesByKind('method').find((n) => n.name === 'envious');
+      expect(envious).toBeDefined();
+      const findings = cg.getFindingsForNode(envious!.id);
+      const fe = findings.find((f) => f.biomarker === 'feature_envy');
+      expect(fe).toBeDefined();
+      // 5 distinct external callees.
+      expect(fe!.metric).toBe(5);
+    } finally {
+      cg.destroy();
+    }
+  });
+
+  it('does NOT emit feature_envy on a pure aggregator (zero same-file calls)', async () => {
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(
+      path.join(dir, 'src', 'helpers.ts'),
+      `export function h1() { return 1; }
+export function h2() { return 2; }
+export function h3() { return 3; }
+export function h4() { return 4; }
+export function h5() { return 5; }
+`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'src', 'aggregator.ts'),
+      `import { h1, h2, h3, h4, h5 } from './helpers';
+export function aggregate() {
+  return [h1(), h2(), h3(), h4(), h5()];
+}
+`
+    );
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ name: 'biomarker-agg', version: '0.0.0' })
+    );
+
+    const cg = await CodeGraph.init(dir, { config: { llm: { endpoint: '' } } });
+    try {
+      await cg.indexAll({ summarize: false });
+      const agg = cg.getNodesByKind('function').find((n) => n.name === 'aggregate');
+      expect(agg).toBeDefined();
+      const findings = cg.getFindingsForNode(agg!.id);
+      // The aggregator legitimately calls 5 externals and 0 same-file —
+      // sameFileCalls floor keeps the rule from firing.
+      expect(findings.some((f) => f.biomarker === 'feature_envy')).toBe(false);
+    } finally {
+      cg.destroy();
+    }
+  });
 });
