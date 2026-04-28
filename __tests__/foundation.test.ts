@@ -305,7 +305,7 @@ describe('Database Connection', () => {
 
     const version = db.getSchemaVersion();
     expect(version).not.toBeNull();
-    expect(version?.version).toBe(17);
+    expect(version?.version).toBe(18);
 
     db.close();
   });

@@ -712,6 +712,44 @@ export class CodeGraph {
     return this.queries.getHotspots(opts);
   }
 
+  /**
+   * Read symbol-level coverage joined to centrality / kind. Defaults
+   * to "lowest-coverage first" so the first call surfaces the
+   * untested-and-important code.
+   */
+  getCoverageRanked(opts: {
+    limit?: number;
+    minCentrality?: number;
+    maxPct?: number;
+    kinds?: ReadonlyArray<string>;
+    source?: string;
+  } = {}): ReturnType<QueryBuilder['getCoverageRanked']> {
+    return this.queries.getCoverageRanked(opts);
+  }
+
+  /** Coverage rollup for a single symbol; null if no row. */
+  getNodeCoverage(nodeId: string): ReturnType<QueryBuilder['getNodeCoverage']> {
+    return this.queries.getNodeCoverage(nodeId);
+  }
+
+  /** Project-wide coverage stats (optionally scoped to one source). */
+  getCoverageStats(source?: string): ReturnType<QueryBuilder['getCoverageStats']> {
+    return this.queries.getCoverageStats(source);
+  }
+
+  /**
+   * Parse a coverage report (lcov today; cobertura/jacoco TBD) and
+   * upsert per-symbol rollups into `node_coverage`. Idempotent under
+   * the same source key.
+   */
+  async ingestCoverage(
+    reportPath: string,
+    options: { format?: 'lcov'; source?: string; clearSource?: boolean } = {}
+  ): Promise<import('./coverage').IngestResult> {
+    const { ingestCoverage } = await import('./coverage');
+    return ingestCoverage(this.queries, this.projectRoot, reportPath, options);
+  }
+
   getIssuesForNode(nodeId: string): Array<{
     issueNumber: number;
     kind: 'modified' | 'added' | 'removed';

@@ -721,6 +721,69 @@ program
   });
 
 /**
+ * codegraph coverage <report> [path]
+ *
+ * Ingest a coverage report (lcov.info) and persist per-symbol
+ * coverage rollups so MCP tools / queries can answer
+ * "what untested symbols have the highest centrality?".
+ */
+program
+  .command('coverage <report> [path]')
+  .description('Ingest a coverage report (lcov) into the graph as per-symbol rollups')
+  .option('-q, --quiet', 'Suppress output')
+  .option('-s, --source <name>', 'Identifier for this report (e.g. unit, e2e). Default: lcov', 'lcov')
+  .option('-f, --format <fmt>', 'Report format. Currently only "lcov" is supported.', 'lcov')
+  .option('--clear', 'Drop existing rows for this source before ingesting (full refresh)')
+  .action(
+    async (
+      reportArg: string,
+      pathArg: string | undefined,
+      options: { quiet?: boolean; source?: string; format?: string; clear?: boolean }
+    ) => {
+      const projectPath = resolveProjectPath(pathArg);
+      const reportPath = path.resolve(reportArg);
+      try {
+        if (!isInitialized(projectPath)) {
+          if (!options.quiet) error(`CodeGraph not initialized in ${projectPath}`);
+          process.exit(1);
+        }
+        if (!fs.existsSync(reportPath)) {
+          if (!options.quiet) error(`Coverage report not found: ${reportPath}`);
+          process.exit(1);
+        }
+        if (options.format && options.format !== 'lcov') {
+          if (!options.quiet) error(`Unsupported format: ${options.format} (only 'lcov' supported today)`);
+          process.exit(1);
+        }
+        const { default: CodeGraph } = await loadCodeGraph();
+        const cg = await CodeGraph.open(projectPath);
+        try {
+          const result = await cg.ingestCoverage(reportPath, {
+            format: 'lcov',
+            source: options.source ?? 'lcov',
+            clearSource: options.clear ?? false,
+          });
+          if (!options.quiet) {
+            const ok = `Ingested ${formatNumber(result.symbolsUpdated)} symbol rollups from ${formatNumber(result.filesMatched)} files in ${formatDuration(result.durationMs)}`;
+            const details: string[] = [];
+            if (result.filesUnmatched > 0) details.push(`${result.filesUnmatched} report files had no match in the index`);
+            if (result.symbolsEmpty > 0) details.push(`${result.symbolsEmpty} symbols had no executable lines`);
+            console.log(ok);
+            if (details.length > 0) console.log('  ' + details.join(' · '));
+          }
+        } finally {
+          cg.destroy();
+        }
+      } catch (err) {
+        if (!options.quiet) {
+          error(`Failed to ingest coverage: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        process.exit(1);
+      }
+    }
+  );
+
+/**
  * codegraph ask <question> [path]
  *
  * Natural-language Q&A over the indexed codebase. Hybrid-retrieves

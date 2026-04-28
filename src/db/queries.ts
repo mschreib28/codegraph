@@ -190,6 +190,7 @@ export class QueryBuilder {
     getUnresolvedBatch?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
     getAllNodeNames?: SqliteStatement;
+    upsertNodeCoverage?: SqliteStatement;
   } = {};
 
   constructor(db: SqliteDatabase) {
@@ -1429,6 +1430,7 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM symbol_embeddings');
       this.db.exec('DELETE FROM symbol_summaries');
       this.db.exec('DELETE FROM directory_summaries');
+      this.db.exec('DELETE FROM node_coverage');
     })();
   }
 
@@ -2150,6 +2152,221 @@ export class QueryBuilder {
            embedding_model = excluded.embedding_model`
       )
       .run(nodeId, embedding, model);
+  }
+
+  // ==========================================================================
+  // Per-symbol Coverage (from external CI artifacts)
+  // ==========================================================================
+
+  /**
+   * Upsert one (node_id, source) row in `node_coverage`. Idempotent
+   * on the (node_id, source) PK.
+   *
+   * **Stale-row caveat**: re-running ingestion under the same source
+   * key only touches symbols present in the new report. If a file is
+   * excluded from a later run (renamed, scope narrowed), the previous
+   * row stays in the table until the symbol is deleted. To force a
+   * full refresh, either DELETE FROM node_coverage WHERE source = ?
+   * before ingestion, or pass a fresh source key per run.
+   */
+  upsertNodeCoverage(
+    nodeId: string,
+    source: string,
+    coveredLines: number,
+    totalLines: number,
+    coveredBranches: number | null,
+    totalBranches: number | null,
+    ingestedAt: number
+  ): void {
+    if (!this.stmts.upsertNodeCoverage) {
+      this.stmts.upsertNodeCoverage = this.db.prepare(
+        `INSERT INTO node_coverage
+           (node_id, source, covered_lines, total_lines,
+            covered_branches, total_branches, ingested_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(node_id, source) DO UPDATE SET
+           covered_lines    = excluded.covered_lines,
+           total_lines      = excluded.total_lines,
+           covered_branches = excluded.covered_branches,
+           total_branches   = excluded.total_branches,
+           ingested_at      = excluded.ingested_at`
+      );
+    }
+    this.stmts.upsertNodeCoverage.run(
+      nodeId, source, coveredLines, totalLines, coveredBranches, totalBranches, ingestedAt
+    );
+  }
+
+  /**
+   * Drop every `node_coverage` row for a given source. Used when a
+   * caller wants to force a full refresh under the same source key
+   * (e.g., the report scope changed and stale rows would mislead).
+   */
+  clearCoverageSource(source: string): number {
+    const result = this.db
+      .prepare('DELETE FROM node_coverage WHERE source = ?')
+      .run(source);
+    return result.changes;
+  }
+
+  /**
+   * Coverage rollup for a single symbol. Returns the highest-coverage
+   * row across all sources (so a function covered 100% by unit tests
+   * and 50% by e2e returns the 100% row). Useful when an agent just
+   * wants "is this tested at all?" without caring which suite.
+   */
+  getNodeCoverage(nodeId: string): {
+    source: string;
+    coveredLines: number;
+    totalLines: number;
+    coveredBranches: number | null;
+    totalBranches: number | null;
+    ingestedAt: number;
+  } | null {
+    const row = this.db
+      .prepare(
+        `SELECT source, covered_lines, total_lines, covered_branches,
+                total_branches, ingested_at
+         FROM node_coverage
+         WHERE node_id = ?
+         ORDER BY (CAST(covered_lines AS REAL) / NULLIF(total_lines, 0)) DESC
+         LIMIT 1`
+      )
+      .get(nodeId) as
+      | {
+          source: string;
+          covered_lines: number;
+          total_lines: number;
+          covered_branches: number | null;
+          total_branches: number | null;
+          ingested_at: number;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      source: row.source,
+      coveredLines: row.covered_lines,
+      totalLines: row.total_lines,
+      coveredBranches: row.covered_branches,
+      totalBranches: row.total_branches,
+      ingestedAt: row.ingested_at,
+    };
+  }
+
+  /**
+   * Symbols covered for at least one source ordered by *worst*
+   * coverage first. The killer agent query: pair this with a
+   * centrality filter to surface "high-impact untested code."
+   */
+  getCoverageRanked(options: {
+    minCentrality?: number;
+    maxPct?: number;
+    kinds?: ReadonlyArray<string>;
+    limit?: number;
+    source?: string;
+  } = {}): Array<{
+    nodeId: string;
+    name: string;
+    kind: string;
+    filePath: string;
+    pct: number;
+    coveredLines: number;
+    totalLines: number;
+    centrality: number | null;
+  }> {
+    const limit = options.limit ?? 50;
+    const params: Record<string, unknown> = { limit };
+    const where: string[] = [];
+
+    if (options.source !== undefined) {
+      where.push('c.source = @source');
+      params.source = options.source;
+    }
+    if (options.maxPct !== undefined) {
+      where.push('(CAST(c.covered_lines AS REAL) / NULLIF(c.total_lines, 0)) <= @maxPct');
+      params.maxPct = options.maxPct;
+    }
+    if (options.minCentrality !== undefined) {
+      where.push('n.centrality >= @minCentrality');
+      params.minCentrality = options.minCentrality;
+    }
+    if (options.kinds && options.kinds.length > 0) {
+      const placeholders = options.kinds.map((_, i) => `@kind${i}`).join(', ');
+      where.push(`n.kind IN (${placeholders})`);
+      options.kinds.forEach((k, i) => {
+        params[`kind${i}`] = k;
+      });
+    }
+
+    const sql = `
+      SELECT n.id AS node_id, n.name, n.kind, n.file_path,
+             c.covered_lines, c.total_lines, n.centrality,
+             (CAST(c.covered_lines AS REAL) / NULLIF(c.total_lines, 0)) AS pct
+      FROM nodes n
+      JOIN node_coverage c ON c.node_id = n.id
+      ${where.length > 0 ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY pct ASC, n.centrality DESC NULLS LAST
+      LIMIT @limit
+    `;
+    const rows = this.db.prepare(sql).all(params) as Array<{
+      node_id: string;
+      name: string;
+      kind: string;
+      file_path: string;
+      covered_lines: number;
+      total_lines: number;
+      // SQLite returns NULL for the pct expression when total_lines
+      // is 0 (NULLIF guards against div/0). The orchestrator filters
+      // those rows out before insert, but be defensive in case rows
+      // arrive via direct SQL.
+      pct: number | null;
+      centrality: number | null;
+    }>;
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      name: r.name,
+      kind: r.kind,
+      filePath: r.file_path,
+      pct: r.pct ?? 0,
+      coveredLines: r.covered_lines,
+      totalLines: r.total_lines,
+      centrality: r.centrality,
+    }));
+  }
+
+  /**
+   * Aggregate coverage across the whole project (or a single source).
+   * Used by `codegraph_status` when surfacing project-wide health.
+   */
+  getCoverageStats(source?: string): {
+    sources: string[];
+    symbolsWithCoverage: number;
+    weightedPct: number;
+    coveredLines: number;
+    totalLines: number;
+  } {
+    const where = source ? 'WHERE source = ?' : '';
+    const args = source ? [source] : [];
+    const sources = this.db
+      .prepare(`SELECT DISTINCT source FROM node_coverage`)
+      .all() as Array<{ source: string }>;
+    const agg = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n,
+                SUM(covered_lines) AS cov,
+                SUM(total_lines) AS tot
+         FROM node_coverage ${where}`
+      )
+      .get(...args) as { n: number; cov: number | null; tot: number | null };
+    const cov = agg.cov ?? 0;
+    const tot = agg.tot ?? 0;
+    return {
+      sources: sources.map((r) => r.source),
+      symbolsWithCoverage: agg.n,
+      weightedPct: tot > 0 ? cov / tot : 0,
+      coveredLines: cov,
+      totalLines: tot,
+    };
   }
 
   // ==========================================================================

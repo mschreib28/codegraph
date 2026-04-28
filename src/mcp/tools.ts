@@ -1253,6 +1253,101 @@ export class ToolHandler implements ToolHandlerLike {
     return this.textResult(this.truncateOutput(lines.join('\n')));
   }
 
+  async handleCoverage(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const mode = (args.mode as 'symbol' | 'ranked' | 'stats' | undefined) ?? 'ranked';
+
+    const fmtPct = (p: number) => `${(p * 100).toFixed(1)}%`;
+    const fmtAge = (ts: number) => {
+      const days = Math.floor((Date.now() - ts) / 86400000);
+      if (days <= 0) return 'today';
+      if (days === 1) return '1d ago';
+      if (days < 30) return `${days}d ago`;
+      const months = Math.floor(days / 30);
+      return months === 1 ? '1mo ago' : `${months}mo ago`;
+    };
+
+    if (mode === 'stats') {
+      const source = args.source as string | undefined;
+      const stats = cg.getCoverageStats(source);
+      if (stats.symbolsWithCoverage === 0) {
+        return this.textResult(
+          'No coverage data ingested yet. Run `codegraph coverage <lcov-path>` to ingest a report.'
+        );
+      }
+      const lines = [
+        `## Project coverage${source ? ` (source: ${source})` : ''}`,
+        '',
+        `- **Symbols with coverage:** ${stats.symbolsWithCoverage}`,
+        `- **Weighted coverage:** ${fmtPct(stats.weightedPct)} (${stats.coveredLines}/${stats.totalLines} lines)`,
+        `- **Sources:** ${stats.sources.length > 0 ? stats.sources.join(', ') : '(none)'}`,
+      ];
+      return this.textResult(lines.join('\n'));
+    }
+
+    if (mode === 'symbol') {
+      const symbol = args.symbol as string | undefined;
+      if (!symbol) return this.errorResult("mode='symbol' requires a `symbol` argument");
+      // Resolve to a node id: try as id first, fall back to search.
+      let nodeId: string | null = null;
+      const direct = cg.getNode(symbol);
+      if (direct) nodeId = direct.id;
+      else {
+        const hits = cg.searchNodes(symbol, { limit: 1 });
+        if (hits.length > 0) nodeId = hits[0]!.node.id;
+      }
+      if (!nodeId) {
+        return this.textResult(`No symbol matched "${symbol}".`);
+      }
+      const cov = cg.getNodeCoverage(nodeId);
+      if (!cov) {
+        return this.textResult(
+          `No coverage data for \`${symbol}\` (node ${nodeId}). Either it's not in any ingested report, or its span has no executable lines.`
+        );
+      }
+      const pct = cov.totalLines > 0 ? cov.coveredLines / cov.totalLines : 0;
+      const lines = [
+        `## Coverage for \`${symbol}\``,
+        '',
+        `- **Lines:** ${fmtPct(pct)} (${cov.coveredLines}/${cov.totalLines})`,
+      ];
+      if (cov.totalBranches != null && cov.totalBranches > 0) {
+        const bpct = (cov.coveredBranches ?? 0) / cov.totalBranches;
+        lines.push(`- **Branches:** ${fmtPct(bpct)} (${cov.coveredBranches}/${cov.totalBranches})`);
+      }
+      lines.push(`- **Source:** ${cov.source}`);
+      lines.push(`- **Ingested:** ${fmtAge(cov.ingestedAt)}`);
+      return this.textResult(lines.join('\n'));
+    }
+
+    // mode === 'ranked'
+    const limit = args.limit != null ? clamp(args.limit as number, 1, 200) : 30;
+    const minCentrality = args.minCentrality as number | undefined;
+    const maxPct = args.maxPct as number | undefined;
+    const source = args.source as string | undefined;
+    const kinds = Array.isArray(args.kinds) ? (args.kinds as string[]) : undefined;
+    const rows = cg.getCoverageRanked({ limit, minCentrality, maxPct, kinds, source });
+    if (rows.length === 0) {
+      return this.textResult(
+        'No coverage rows match those filters. Try lowering minCentrality, raising maxPct, or run `codegraph coverage <lcov-path>` to ingest more reports.'
+      );
+    }
+    const lines: string[] = [
+      `## Coverage — lowest first (top ${rows.length})`,
+      '',
+      'High-impact untested code = high centrality + low coverage. Tests for these protect the most callers per line of test written.',
+      '',
+      '| # | Symbol | Kind | File | Coverage | PR centrality |',
+      '|---|--------|------|------|---------:|---------------:|',
+    ];
+    rows.forEach((r, i) => {
+      lines.push(
+        `| ${i + 1} | \`${r.name}\` | ${r.kind} | \`${r.filePath}\` | ${fmtPct(r.pct)} (${r.coveredLines}/${r.totalLines}) | ${r.centrality != null ? r.centrality.toFixed(4) : '—'} |`
+      );
+    });
+    return this.textResult(this.truncateOutput(lines.join('\n')));
+  }
+
   /**
    * Convert glob pattern to regex
    */

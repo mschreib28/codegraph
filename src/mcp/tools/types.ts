@@ -42,7 +42,8 @@ export type HandlerKey =
   | 'handlePendingSummaries'
   | 'handleRole'
   | 'handleSaveSummaries'
-  | 'handleSimilar';
+  | 'handleSimilar'
+  | 'handleCoverage';
 
 /**
  * The minimum surface a `ToolHandler`-shaped object exposes for

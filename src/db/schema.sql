@@ -291,3 +291,21 @@ CREATE TABLE IF NOT EXISTS directory_summaries (
     generated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dir_summaries_model ON directory_summaries(model);
+
+-- Per-symbol code coverage from external CI artifacts (lcov, cobertura,
+-- jacoco, coverage.py). Multiple sources can coexist for the same node
+-- so a project running both unit and e2e suites keeps both rollups.
+CREATE TABLE IF NOT EXISTS node_coverage (
+    node_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    covered_lines INTEGER NOT NULL,
+    total_lines INTEGER NOT NULL,
+    covered_branches INTEGER,
+    total_branches INTEGER,
+    ingested_at INTEGER NOT NULL,
+    PRIMARY KEY (node_id, source),
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_node_coverage_source ON node_coverage(source);
+CREATE INDEX IF NOT EXISTS idx_node_coverage_pct
+    ON node_coverage(source, (CAST(covered_lines AS REAL) / NULLIF(total_lines, 0)));

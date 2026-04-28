@@ -44,6 +44,7 @@ describe('MCP tool registry — single source of truth', () => {
       'codegraph_callers',
       'codegraph_config',
       'codegraph_context',
+      'codegraph_coverage',
       'codegraph_dead_code',
       'codegraph_explore',
       'codegraph_files',
