@@ -271,6 +271,32 @@ async function awaitSummarisationWithProgress(
     process.exit(0);
   };
   process.once('SIGINT', onSigint);
+
+  // Poll the bg pass for progress and emit a heartbeat line so the
+  // user can tell "still working" from "stuck." Without this, a slow
+  // model on a large codebase looks identical to a hang for minutes
+  // or hours at a time.
+  const phaseLabels: Record<string, string> = {
+    summarise: 'symbol summaries',
+    embed: 'embeddings',
+    directory: 'directory summaries',
+    classify: 'role classification',
+  };
+  let lastMsg = '';
+  const tick = (): void => {
+    const p = cg.getSummarizationProgress();
+    if (!p || p.total === 0) return;
+    const pct = Math.round((p.done / p.total) * 100);
+    const msg = `${phaseLabels[p.phase] ?? p.phase}: ${formatNumber(p.done)}/${formatNumber(p.total)} (${pct}%)`;
+    if (msg !== lastMsg) {
+      clack.log.info(msg);
+      lastMsg = msg;
+    }
+  };
+  const ticker = setInterval(tick, 15_000);
+  // unref() so the timer doesn't keep Node alive past the await
+  ticker.unref?.();
+
   try {
     await cg.awaitBackgroundSummarization();
     const cov = cg.getSummaryCoverage();
@@ -279,6 +305,7 @@ async function awaitSummarisationWithProgress(
       clack.log.info(`Summary coverage: ${formatNumber(cov.summarised)}/${formatNumber(cov.total)} (${pct}%)`);
     }
   } finally {
+    clearInterval(ticker);
     process.removeListener('SIGINT', onSigint);
   }
 }

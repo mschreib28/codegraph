@@ -185,6 +185,16 @@ export class CodeGraph {
   // newly indexed symbols don't have to wait for the next sync to be
   // summarised.
   private bgSummaryDirty: boolean = false;
+  // Live progress for the background pass. Exposed via
+  // {@link getSummarizationProgress} so a CLI can render a heartbeat
+  // instead of a static "Summarising…" line — without that, a slow
+  // LLM (large model + huge codebase) is indistinguishable from a
+  // hang. Reset to nulls when no pass is running.
+  private bgSummaryProgress: {
+    phase: 'summarise' | 'embed' | 'directory' | 'classify';
+    done: number;
+    total: number;
+  } | null = null;
   // Auto-detected LLM config (populated lazily on first index/sync when
   // config.llm is absent). Cached per CodeGraph instance to avoid
   // probing localhost on every sync.
@@ -381,6 +391,7 @@ export class CodeGraph {
     }
     this.bgSummaryPromise = null;
     this.bgSummaryDirty = false;
+    this.bgSummaryProgress = null;
     // Release file lock if held
     this.fileLock.release();
     this.db.close();
@@ -858,12 +869,78 @@ export class CodeGraph {
           return;
         }
 
+        // Probe the chat model with one minimal request. `isReachable()`
+        // only confirms the server's `/models` endpoint answers — it
+        // can't tell us whether *this* model id actually responds. A
+        // mismatched/unpulled/broken model fails every chat call the
+        // same way; without this probe we'd burn hours discovering that
+        // across thousands of candidate symbols (the bug that prompted
+        // this gate). One probe = one bad-case minute saved per
+        // potentially-thousands of bad-case minutes.
+        const probeStart = Date.now();
+        try {
+          await client.chat(
+            [{ role: 'user', content: 'ok' }],
+            { temperature: 0, maxTokens: 1 }
+          );
+        } catch (err) {
+          logWarn('Background summarisation: chat probe failed; skipping pass', {
+            endpoint: llmConfig.endpoint,
+            chatModel: llmConfig.chatModel,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        if (controller.signal.aborted) return;
+
+        // Speed gate. The probe also tells us how fast the model is. A
+        // 1-token reply on a healthy model finishes in 1–3 s; >30 s means
+        // the model is loading from swap, GPU is starved, or the
+        // hardware just can't drive this size — and we'd be repeating
+        // that latency thousands of times with longer outputs. Only
+        // gate the auto-detected path: if the user explicitly set
+        // `config.llm.endpoint`, they've opted in to whatever speed
+        // they have and we don't second-guess them.
+        const probeMs = Date.now() - probeStart;
+        const isAutoDetected = !(this.config.llm?.endpoint && this.config.llm.chatModel);
+        const envThreshold = parseInt(process.env.CODEGRAPH_LLM_PROBE_THRESHOLD_MS ?? '', 10);
+        const probeLatencyThresholdMs =
+          Number.isFinite(envThreshold) && envThreshold > 0 ? envThreshold : 30_000;
+        if (isAutoDetected && probeMs > probeLatencyThresholdMs) {
+          logWarn(
+            'Background summarisation: auto-detected model too slow; skipping pass. ' +
+              'Set config.llm.endpoint explicitly to use this model anyway.',
+            {
+              endpoint: llmConfig.endpoint,
+              chatModel: llmConfig.chatModel,
+              probeMs,
+              thresholdMs: probeLatencyThresholdMs,
+            }
+          );
+          return;
+        }
+        logDebug('Background summarisation: probe ok', {
+          chatModel: llmConfig.chatModel,
+          probeMs,
+        });
+
+        const onPhaseProgress = (
+          phase: 'summarise' | 'embed' | 'directory' | 'classify'
+        ) => (done: number, total: number): void => {
+          this.bgSummaryProgress = { phase, done, total };
+        };
+
+        this.bgSummaryProgress = { phase: 'summarise', done: 0, total: 0 };
         const result = await summarizeAll(
           this.projectRoot,
           this.queries,
           client,
           llmConfig.chatModel!,
-          { signal: controller.signal, concurrency: 2 }
+          {
+            signal: controller.signal,
+            concurrency: 2,
+            onProgress: onPhaseProgress('summarise'),
+          }
         );
         logDebug('Background summarisation complete', {
           candidates: result.candidates,
@@ -876,11 +953,16 @@ export class CodeGraph {
         // Phase-2: embed the summaries so semantic search has data.
         // Only runs when an embedding model is configured/auto-detected.
         if (llmConfig.embeddingModel && !controller.signal.aborted) {
+          this.bgSummaryProgress = { phase: 'embed', done: 0, total: 0 };
           const eResult = await embedAllSummaries(
             this.queries,
             client,
             llmConfig.embeddingModel,
-            { signal: controller.signal, concurrency: 2 }
+            {
+              signal: controller.signal,
+              concurrency: 2,
+              onProgress: onPhaseProgress('embed'),
+            }
           );
           logDebug('Background embedding complete', {
             candidates: eResult.candidates,
@@ -894,11 +976,16 @@ export class CodeGraph {
         // directory. Cheap once symbol summaries exist (only dirs
         // whose content changed regenerate).
         if (!controller.signal.aborted) {
+          this.bgSummaryProgress = { phase: 'directory', done: 0, total: 0 };
           const dResult = await summarizeAllDirectories(
             this.queries,
             client,
             llmConfig.chatModel!,
-            { signal: controller.signal, concurrency: 1 }
+            {
+              signal: controller.signal,
+              concurrency: 1,
+              onProgress: onPhaseProgress('directory'),
+            }
           );
           logDebug('Background directory summarisation complete', {
             candidates: dResult.candidates,
@@ -912,11 +999,16 @@ export class CodeGraph {
         // Phase-4: role classification. One short call per symbol;
         // assigns a coarse label (api_endpoint, business_logic, ...).
         if (!controller.signal.aborted) {
+          this.bgSummaryProgress = { phase: 'classify', done: 0, total: 0 };
           const cResult = await classifyAllRoles(
             this.queries,
             client,
             llmConfig.chatModel!,
-            { signal: controller.signal, concurrency: 2 }
+            {
+              signal: controller.signal,
+              concurrency: 2,
+              onProgress: onPhaseProgress('classify'),
+            }
           );
           logDebug('Background role classification complete', {
             candidates: cResult.candidates,
@@ -938,6 +1030,7 @@ export class CodeGraph {
         }
         if (this.bgSummaryPromise === pending) {
           this.bgSummaryPromise = null;
+          this.bgSummaryProgress = null;
           // Re-queue if more work landed during the pass and we
           // weren't aborted — gives newly indexed symbols a fast
           // path without waiting for the next sync.
@@ -957,6 +1050,21 @@ export class CodeGraph {
   /** Whether a background summarisation pass is currently running. */
   isSummarizing(): boolean {
     return this.bgSummaryPromise !== null;
+  }
+
+  /**
+   * Live progress for the running background summarisation pass.
+   * Returns `null` when no pass is running. CLIs poll this so the
+   * user sees a heartbeat instead of a static "Summarising…" line —
+   * a slow LLM on a large codebase otherwise looks identical to a
+   * hang.
+   */
+  getSummarizationProgress(): {
+    phase: 'summarise' | 'embed' | 'directory' | 'classify';
+    done: number;
+    total: number;
+  } | null {
+    return this.bgSummaryProgress;
   }
 
   /**
