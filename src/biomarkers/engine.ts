@@ -11,7 +11,7 @@
  * metrics and decide whether to emit a Finding.
  */
 
-import type { Node as TsNode } from 'web-tree-sitter';
+import type { Node as TsNode, Tree } from 'web-tree-sitter';
 import { getParser } from '../extraction/grammars';
 import type { Language } from '../types';
 import { getLangMap, LangMap } from './lang-map';
@@ -149,16 +149,32 @@ const FUNCTION_CONTAINER_KINDS = new Set([
   'generator_function_declaration',
 ]);
 
-export function findNodeAt(
-  source: string,
-  language: Language,
+/**
+ * Parse a file once. Callers analysing many symbols in the same file
+ * should call this once and reuse the returned tree across
+ * `findNodeInTree` invocations — re-parsing on every symbol exhausts
+ * the WASM tree-sitter heap on large C/C++ files (hundreds of
+ * "memory access out of bounds" crashes per indexAll on real
+ * codebases).
+ *
+ * Returns null when the language has no loaded parser.
+ */
+export function parseSource(source: string, language: Language): Tree | null {
+  const parser = getParser(language);
+  if (!parser) return null;
+  return parser.parse(source) ?? null;
+}
+
+/**
+ * Locate the AST node corresponding to a symbol at `(line, column)`
+ * inside a pre-parsed tree. See {@link findNodeAt} for the legacy
+ * one-shot variant.
+ */
+export function findNodeInTree(
+  tree: Tree,
   line: number,
   column: number
 ): TsNode | null {
-  const parser = getParser(language);
-  if (!parser) return null;
-  const tree = parser.parse(source);
-  if (!tree) return null;
   // tree-sitter rows are 0-indexed; codegraph stores 1-indexed lines.
   const row = Math.max(0, line - 1);
   const target = tree.rootNode.descendantForPosition(
@@ -190,6 +206,17 @@ export function findNodeAt(
     candidate = candidate.parent;
   }
   return target;
+}
+
+export function findNodeAt(
+  source: string,
+  language: Language,
+  line: number,
+  column: number
+): TsNode | null {
+  const tree = parseSource(source, language);
+  if (!tree) return null;
+  return findNodeInTree(tree, line, column);
 }
 
 // -----------------------------------------------------------------------------

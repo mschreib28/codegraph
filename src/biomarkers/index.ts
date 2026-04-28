@@ -1,14 +1,17 @@
 /**
  * Biomarker analysis orchestrator.
  *
- * For every indexed function/method node, re-parses the source, finds
- * the AST node at its location, computes metrics, evaluates the rule
- * set, and writes findings to `code_health_findings`. Idempotent:
- * re-running clears the previous findings for each touched node.
+ * For every indexed function/method node, finds the AST node at its
+ * location, computes metrics, evaluates the rule set, and writes
+ * findings to `code_health_findings`. Idempotent: re-running clears
+ * the previous findings for each touched node.
  *
- * Designed to run as an `IndexHook` after extraction completes — the
- * heavy work is the re-parse, not the metric computation, so we
- * batch by file.
+ * Designed to run as an `IndexHook` after extraction completes. Each
+ * file is parsed *once* and the resulting tree is reused for every
+ * symbol in that file — re-parsing per symbol exhausts the WASM
+ * tree-sitter heap on real codebases (we observed thousands of
+ * "memory access out of bounds" crashes on Ollama's vendored
+ * llama.cpp before this).
  */
 
 import * as fs from 'fs';
@@ -16,13 +19,25 @@ import * as path from 'path';
 import { QueryBuilder } from '../db/queries';
 import type { Language } from '../types';
 import { logDebug, logWarn } from '../errors';
-import { computeMetrics, evaluateRules, findNodeAt } from './engine';
+import {
+  computeMetrics,
+  evaluateRules,
+  findNodeInTree,
+  parseSource,
+} from './engine';
 import { getLangMap } from './lang-map';
 import { loadGrammarsForLanguages } from '../extraction/grammars';
 import type { Finding } from './types';
 
 export type { BiomarkerName, Finding, Severity } from './types';
-export { computeMetrics, evaluateRules, codeHealthScore, findNodeAt } from './engine';
+export {
+  computeMetrics,
+  evaluateRules,
+  codeHealthScore,
+  findNodeAt,
+  findNodeInTree,
+  parseSource,
+} from './engine';
 
 /** Symbol kinds the engine analyses. Skipped: import/export/variable/etc. */
 const ANALYSABLE_KINDS: ReadonlySet<string> = new Set(['function', 'method']);
@@ -117,6 +132,29 @@ export async function analyseProject(
       continue;
     }
 
+    // Parse the file ONCE, reuse the tree across every symbol in it.
+    // Re-parsing per symbol used to allocate WASM tree-sitter memory
+    // unboundedly and crash with "memory access out of bounds" after
+    // a few thousand symbols on big C/C++ files.
+    let tree;
+    try {
+      tree = parseSource(src, language);
+    } catch (err) {
+      errors++;
+      logDebug('Biomarkers: parse failed', { path: relPath, err: String(err) });
+      filesScanned++;
+      options.onProgress?.(filesScanned, total);
+      continue;
+    }
+    if (!tree) {
+      // Grammar not loaded for this language — already reported as
+      // unsupportedLanguages above when the langMap is missing; for
+      // other "no parser" cases just skip silently.
+      filesScanned++;
+      options.onProgress?.(filesScanned, total);
+      continue;
+    }
+
     const findingsByNode = new Map<string, Finding[]>();
     for (const n of analysable) {
       const startLine = n.startLine;
@@ -125,7 +163,7 @@ export async function analyseProject(
       if (loc < MIN_LOC) continue;
 
       try {
-        const astNode = findNodeAt(src, language, startLine, n.startColumn);
+        const astNode = findNodeInTree(tree, startLine, n.startColumn);
         if (!astNode) continue;
         const metrics = computeMetrics(astNode, language, startLine, endLine);
         const findings = evaluateRules({ nodeId: n.id, language, metrics });
