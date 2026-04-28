@@ -257,8 +257,8 @@ describe('CodeGraph SQL refs', () => {
       'src/a.ts',
       [
         `export function multiTouch() {`,
-        `  db.prepare('SELECT * FROM a').all();`,
-        `  db.prepare('INSERT INTO b VALUES (?)').run(1);`,
+        `  db.prepare('SELECT * FROM users').all();`,
+        `  db.prepare('INSERT INTO orders VALUES (?)').run(1);`,
         `}`,
       ].join('\n')
     );
@@ -268,7 +268,7 @@ describe('CodeGraph SQL refs', () => {
     const node = cg.getNodesInFile('src/a.ts').find((n) => n.name === 'multiTouch')!;
     const touched = cg.getSqlTablesForNode(node.id);
     const summary = touched.map((r) => `${r.tableName}|${r.op}`).sort();
-    expect(summary).toEqual(['a|read', 'b|write']);
+    expect(summary).toEqual(['orders|write', 'users|read']);
   });
 
   it('case-insensitive table lookup', async () => {

@@ -115,9 +115,17 @@ const PATTERNS: PatternDef[] = [
  *   - `SELECT` / `INTO` (CTE-shaped or `SELECT ... INTO`)
  */
 const RESERVED_TABLE_NAMES = new Set<string>([
+  // SQL keywords (real reserved words)
   'where', 'on', 'group', 'order', 'limit', 'using', 'as',
   'select', 'into', 'values', 'set', 'and', 'or', 'not',
   'null', 'true', 'false',
+  // Common English words that survive the SQL-verb pre-filter when
+  // a sentence happens to contain a verb-like token. Stress test
+  // caught `from the list` in a code comment slipping through because
+  // "drop" appeared in "drop docs/config". These can never be real
+  // table names in production code, so reject early.
+  'a', 'an', 'the', 'of', 'to', 'in', 'is', 'it', 'for',
+  'this', 'that', 'these', 'those', 'with', 'by', 'at',
 ]);
 
 /**
