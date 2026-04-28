@@ -20,7 +20,18 @@
 
 import type { IndexHook, IndexHookContext, IndexHookOutcome } from './types';
 import type { SyncResult } from '../extraction';
-import { logDebug } from '../errors';
+import { logDebug, logWarn } from '../errors';
+
+/**
+ * Per-hook wall-clock budget. A hook awaiting a promise that never
+ * resolves (timed-out fetch with no AbortController, mis-handled
+ * worker IPC, etc.) used to hang the whole indexAll/sync forever.
+ * After this budget the runner gives up on the hook, surfaces it as
+ * a timeout in the outcome, and moves on so the rest of the pipeline
+ * still completes. Five minutes is generous enough for legitimate
+ * mining on a multi-million-LOC repo while bounding the worst case.
+ */
+const HOOK_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Static-import list of every registered hook.
@@ -36,6 +47,34 @@ const REGISTERED_HOOKS: readonly IndexHook[] = [
 ];
 
 /**
+ * Race a hook invocation against a wall-clock budget. The timeout
+ * branch only unwinds *async* hangs — fully synchronous code blocks
+ * the event loop and will still run to completion. That's
+ * acceptable: hooks that do heavy work typically shell out via
+ * `execFileSync` with their own per-call timeout, so a sync hang is
+ * bounded upstream.
+ */
+async function runWithTimeout(
+  fn: () => Promise<void> | void,
+  timeoutMs: number,
+  label: string
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const work = Promise.resolve().then(() => fn());
+  const timeout = new Promise<void>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} exceeded ${timeoutMs}ms budget; skipping`)),
+      timeoutMs
+    );
+  });
+  try {
+    await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Run `afterIndexAll` for every registered hook. Errors are
  * caught + logged so one broken hook never fails the whole
  * index. Returns per-hook outcomes for diagnostics.
@@ -47,12 +86,19 @@ export async function runAfterIndexAll(
   for (const hook of REGISTERED_HOOKS) {
     if (!hook.afterIndexAll) continue;
     const start = Date.now();
+    logDebug(`index-hook "${hook.name}" afterIndexAll: starting`);
     try {
-      await hook.afterIndexAll(ctx);
-      out.push({ name: hook.name, phase: 'indexAll', durationMs: Date.now() - start });
+      await runWithTimeout(
+        () => hook.afterIndexAll!(ctx),
+        HOOK_TIMEOUT_MS,
+        `index-hook "${hook.name}" afterIndexAll`
+      );
+      const durationMs = Date.now() - start;
+      logDebug(`index-hook "${hook.name}" afterIndexAll: done in ${durationMs}ms`);
+      out.push({ name: hook.name, phase: 'indexAll', durationMs });
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
-      logDebug(`index-hook "${hook.name}" afterIndexAll failed: ${e.message}`);
+      logWarn(`index-hook "${hook.name}" afterIndexAll failed: ${e.message}`);
       out.push({ name: hook.name, phase: 'indexAll', durationMs: Date.now() - start, error: e });
     }
   }
@@ -68,12 +114,19 @@ export async function runAfterSync(
   for (const hook of REGISTERED_HOOKS) {
     if (!hook.afterSync) continue;
     const start = Date.now();
+    logDebug(`index-hook "${hook.name}" afterSync: starting`);
     try {
-      await hook.afterSync(ctx, result);
-      out.push({ name: hook.name, phase: 'sync', durationMs: Date.now() - start });
+      await runWithTimeout(
+        () => hook.afterSync!(ctx, result),
+        HOOK_TIMEOUT_MS,
+        `index-hook "${hook.name}" afterSync`
+      );
+      const durationMs = Date.now() - start;
+      logDebug(`index-hook "${hook.name}" afterSync: done in ${durationMs}ms`);
+      out.push({ name: hook.name, phase: 'sync', durationMs });
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
-      logDebug(`index-hook "${hook.name}" afterSync failed: ${e.message}`);
+      logWarn(`index-hook "${hook.name}" afterSync failed: ${e.message}`);
       out.push({ name: hook.name, phase: 'sync', durationMs: Date.now() - start, error: e });
     }
   }

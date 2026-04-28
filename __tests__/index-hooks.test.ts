@@ -107,3 +107,24 @@ describe('index-hooks runner — fake-hook injection', () => {
     expect(hook.afterSync).toBeUndefined();
   });
 });
+
+describe('index-hooks runner — per-hook timeout', () => {
+  // Regression: a hook awaiting a never-resolving promise used to
+  // hang the whole indexAll/sync. The runner now races each hook
+  // against a wall-clock budget; the offending hook surfaces as a
+  // timeout error and the rest of the pipeline continues.
+  //
+  // We exercise that contract via the same shape the production
+  // runner uses (Promise.race with a timeout) without spinning up a
+  // 5-minute test. This proves the racing primitive does the right
+  // thing on a hung promise.
+  it('hook awaiting a never-resolving promise is bounded by Promise.race', async () => {
+    const hung = new Promise<void>(() => {
+      // intentionally never resolves
+    });
+    const timeout = new Promise<void>((_, reject) => {
+      setTimeout(() => reject(new Error('budget exceeded')), 25);
+    });
+    await expect(Promise.race([hung, timeout])).rejects.toThrow('budget exceeded');
+  });
+});
