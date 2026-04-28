@@ -86,9 +86,11 @@ export interface ResolutionContext {
   /**
    * Project import-path aliases (tsconfig/jsconfig `paths`). Returns
    * `null` when the project doesn't define any. Cached per resolver
-   * instance — safe to call from any resolver code path.
+   * instance — safe to call from any resolver code path. Optional so
+   * existing test fixtures and external context implementations
+   * compile without modification; production resolver implements it.
    */
-  getProjectAliases(): import('./path-aliases').AliasMap | null;
+  getProjectAliases?(): import('./path-aliases').AliasMap | null;
   /**
    * Re-exports declared by a file (`export { x } from './other'`,
    * `export * from './other'`). Empty array when the file has none.
