@@ -14,6 +14,7 @@ import { join } from 'path';
 import type { ToolDefinition, ToolResult } from './tool-types';
 import type { ToolHandlerLike } from './tools/types';
 import { getToolModule, tools as registryTools } from './tools/registry';
+import { codeHealthScore } from '../biomarkers';
 
 // Re-export shared types so existing consumers (`import { ToolDefinition,
 // ToolResult } from './tools'`) keep working unchanged.
@@ -1706,6 +1707,110 @@ export class ToolHandler implements ToolHandlerLike {
       content: [{ type: 'text', text: `Error: ${message}` }],
       isError: true,
     };
+  }
+
+  async handleBiomarkers(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const mode = (args.mode as 'symbol' | 'ranked' | 'stats' | undefined) ?? 'ranked';
+
+    const fmtSev = (s: 'info' | 'warning' | 'error'): string =>
+      s === 'error' ? '🔴 error' : s === 'warning' ? '🟡 warning' : '🔵 info';
+
+    if (mode === 'stats') {
+      const stats = cg.getFindingsStats();
+      if (stats.totalFindings === 0) {
+        return this.textResult(
+          'No biomarker findings — either the analysis hasn\'t run yet (it does after `codegraph index`/`sync`), or the project is in great shape. If unexpected, check `enableBiomarkers` in config.'
+        );
+      }
+      const biomarkerLines = Object.entries(stats.byBiomarker)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `  - ${k}: ${v}`);
+      const sevLines = Object.entries(stats.bySeverity)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `  - ${k}: ${v}`);
+      const lines = [
+        '## Code Health rollup',
+        '',
+        `- **Total findings:** ${stats.totalFindings}`,
+        `- **Symbols with findings:** ${stats.nodesWithFindings}`,
+        '',
+        '### By biomarker',
+        ...biomarkerLines,
+        '',
+        '### By severity',
+        ...sevLines,
+      ];
+      return this.textResult(lines.join('\n'));
+    }
+
+    if (mode === 'symbol') {
+      const symbol = args.symbol as string | undefined;
+      if (!symbol) return this.errorResult("mode='symbol' requires a `symbol` argument");
+      let nodeId: string | null = null;
+      const direct = cg.getNode(symbol);
+      if (direct) nodeId = direct.id;
+      else {
+        const hits = cg.searchNodes(symbol, { limit: 1 });
+        if (hits.length > 0) nodeId = hits[0]!.node.id;
+      }
+      if (!nodeId) return this.textResult(`No symbol matched "${symbol}".`);
+      const findings = cg.getFindingsForNode(nodeId);
+      if (findings.length === 0) {
+        return this.textResult(`\`${symbol}\` has no biomarker findings — Code Health 10/10 for this symbol.`);
+      }
+      const score = codeHealthScore(findings);
+      const lines = [
+        `## Findings for \`${symbol}\``,
+        '',
+        `- **Code Health:** ${score}/10`,
+        '',
+        '| Biomarker | Severity | Metric |',
+        '|-----------|----------|-------:|',
+      ];
+      for (const f of findings) {
+        lines.push(`| ${f.biomarker} | ${fmtSev(f.severity)} | ${f.metric} |`);
+      }
+      return this.textResult(this.truncateOutput(lines.join('\n')));
+    }
+
+    // mode === 'ranked'
+    const limit = args.limit != null ? clamp(args.limit as number, 1, 200) : 30;
+    const biomarker = args.biomarker as string | undefined;
+    const minSeverity =
+      (args.minSeverity as 'info' | 'warning' | 'error' | undefined) ?? 'warning';
+    const minCentrality = args.minCentrality as number | undefined;
+    const rows = cg.getFindingsRanked({ biomarker, minSeverity, minCentrality, limit });
+    if (rows.length === 0) {
+      const hints: string[] = [];
+      if (minCentrality !== undefined) {
+        // Centrality is NULL until the centrality hook computes it; a
+        // minCentrality filter against a project that's never had
+        // centrality run silently filters everything out. Surface that.
+        const stats = cg.getFindingsStats();
+        if (stats.totalFindings > 0) {
+          hints.push(
+            'A `minCentrality` filter was set, but findings exist that have no centrality computed yet. Try without `minCentrality` or run a fresh `codegraph index` so the centrality hook fires.'
+          );
+        }
+      }
+      hints.push('Drop minSeverity to "info", lower minCentrality, or run a fresh `codegraph index` if you suspect the analysis hasn\'t run.');
+      return this.textResult(`No findings match those filters.\n\n- ${hints.join('\n- ')}`);
+    }
+    const lines: string[] = [
+      `## Code Health findings — ${minSeverity}+ severity (top ${rows.length})`,
+      '',
+      'Worst-severity first. The agent angle: pair this with `codegraph_callers` on a flagged symbol to gauge how much code touches the unhealthy region before deciding whether to refactor it.',
+      '',
+      '| # | Symbol | Kind | File | Biomarker | Severity | Metric | Centrality |',
+      '|---|--------|------|------|-----------|----------|-------:|-----------:|',
+    ];
+    rows.forEach((r, i) => {
+      lines.push(
+        `| ${i + 1} | \`${r.name}\` | ${r.kind} | \`${r.filePath}\` | ${r.biomarker} | ${fmtSev(r.severity)} | ${r.metric} | ${r.centrality != null ? r.centrality.toFixed(4) : '—'} |`
+      );
+    });
+    return this.textResult(this.truncateOutput(lines.join('\n')));
   }
 }
 

@@ -41,6 +41,7 @@ import { MIGRATION as MIG_015 } from './015-prune-co-changes-index';
 import { MIGRATION as MIG_016 } from './016-split-symbol-embeddings';
 import { MIGRATION as MIG_017 } from './017-drop-redundant-edge-indexes';
 import { MIGRATION as MIG_018 } from './018-node-coverage';
+import { MIGRATION as MIG_019 } from './019-code-health-findings';
 
 interface ModuleRef {
   /**
@@ -78,6 +79,7 @@ const REGISTERED_MODULES: readonly ModuleRef[] = [
   { filename: '016-split-symbol-embeddings.ts', module: MIG_016 },
   { filename: '017-drop-redundant-edge-indexes.ts', module: MIG_017 },
   { filename: '018-node-coverage.ts', module: MIG_018 },
+  { filename: '019-code-health-findings.ts', module: MIG_019 },
 ];
 
 /** Strict 3-digit prefix on each migration filename. */

@@ -750,6 +750,26 @@ export class CodeGraph {
     return ingestCoverage(this.queries, this.projectRoot, reportPath, options);
   }
 
+  /** Biomarker findings on a single symbol. */
+  getFindingsForNode(nodeId: string): ReturnType<QueryBuilder['getFindingsForNode']> {
+    return this.queries.getFindingsForNode(nodeId);
+  }
+
+  /** Project-wide ranked biomarker findings — worst-severity first. */
+  getFindingsRanked(opts: {
+    biomarker?: string;
+    minSeverity?: 'info' | 'warning' | 'error';
+    minCentrality?: number;
+    limit?: number;
+  } = {}): ReturnType<QueryBuilder['getFindingsRanked']> {
+    return this.queries.getFindingsRanked(opts);
+  }
+
+  /** Project-wide biomarker rollup. */
+  getFindingsStats(): ReturnType<QueryBuilder['getFindingsStats']> {
+    return this.queries.getFindingsStats();
+  }
+
   getIssuesForNode(nodeId: string): Array<{
     issueNumber: number;
     kind: 'modified' | 'added' | 'removed';

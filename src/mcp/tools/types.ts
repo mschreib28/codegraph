@@ -43,7 +43,8 @@ export type HandlerKey =
   | 'handleRole'
   | 'handleSaveSummaries'
   | 'handleSimilar'
-  | 'handleCoverage';
+  | 'handleCoverage'
+  | 'handleBiomarkers';
 
 /**
  * The minimum surface a `ToolHandler`-shaped object exposes for

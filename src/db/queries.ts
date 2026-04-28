@@ -1431,6 +1431,7 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM symbol_summaries');
       this.db.exec('DELETE FROM directory_summaries');
       this.db.exec('DELETE FROM node_coverage');
+      this.db.exec('DELETE FROM code_health_findings');
     })();
   }
 
@@ -2366,6 +2367,190 @@ export class QueryBuilder {
       weightedPct: tot > 0 ? cov / tot : 0,
       coveredLines: cov,
       totalLines: tot,
+    };
+  }
+
+  // ==========================================================================
+  // Biomarker findings (Code Health)
+  // ==========================================================================
+
+  /**
+   * Replace every finding for the nodes belonging to `filePath`.
+   * Atomic — readers never see a half-written file.
+   *
+   * The map is `node_id → findings[]`. Nodes in `filePath` not present
+   * in the map have their findings cleared (turning warnings into
+   * green is a real outcome; we want it reflected immediately).
+   */
+  replaceFindingsForFile(
+    filePath: string,
+    findingsByNode: ReadonlyMap<string, ReadonlyArray<{
+      biomarker: string;
+      severity: 'info' | 'warning' | 'error';
+      metric: number;
+      detail?: unknown;
+    }>>
+  ): void {
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `DELETE FROM code_health_findings
+           WHERE node_id IN (SELECT id FROM nodes WHERE file_path = ?)`
+        )
+        .run(filePath);
+
+      const ins = this.db.prepare(
+        `INSERT INTO code_health_findings
+           (node_id, biomarker, severity, metric, detail, detected_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const [nodeId, findings] of findingsByNode) {
+        for (const f of findings) {
+          ins.run(
+            nodeId,
+            f.biomarker,
+            f.severity,
+            f.metric,
+            f.detail !== undefined ? JSON.stringify(f.detail) : null,
+            now
+          );
+        }
+      }
+    })();
+  }
+
+  /** All findings on a single symbol, ordered by severity then biomarker. */
+  getFindingsForNode(nodeId: string): Array<{
+    biomarker: string;
+    severity: 'info' | 'warning' | 'error';
+    metric: number;
+    detail: unknown | null;
+    detectedAt: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT biomarker, severity, metric, detail, detected_at
+         FROM code_health_findings
+         WHERE node_id = ?
+         ORDER BY CASE severity
+                    WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2
+                  END, biomarker`
+      )
+      .all(nodeId) as Array<{
+      biomarker: string;
+      severity: 'info' | 'warning' | 'error';
+      metric: number;
+      detail: string | null;
+      detected_at: number;
+    }>;
+    return rows.map((r) => ({
+      biomarker: r.biomarker,
+      severity: r.severity,
+      metric: r.metric,
+      detail: r.detail !== null ? JSON.parse(r.detail) : null,
+      detectedAt: r.detected_at,
+    }));
+  }
+
+  /**
+   * Symbols ranked by severity of their worst finding. Joins centrality
+   * so the agent can ask "what's the worst-health, highest-impact code
+   * in the project?" with one query.
+   */
+  getFindingsRanked(options: {
+    biomarker?: string;
+    minSeverity?: 'info' | 'warning' | 'error';
+    minCentrality?: number;
+    limit?: number;
+  } = {}): Array<{
+    nodeId: string;
+    name: string;
+    kind: string;
+    filePath: string;
+    biomarker: string;
+    severity: 'info' | 'warning' | 'error';
+    metric: number;
+    centrality: number | null;
+  }> {
+    const limit = options.limit ?? 50;
+    const params: Record<string, unknown> = { limit };
+    const where: string[] = [];
+
+    if (options.biomarker !== undefined) {
+      where.push('f.biomarker = @biomarker');
+      params.biomarker = options.biomarker;
+    }
+    if (options.minSeverity !== undefined) {
+      where.push(
+        `CASE f.severity WHEN 'error' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END >=
+         CASE @minSev WHEN 'error' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END`
+      );
+      params.minSev = options.minSeverity;
+    }
+    if (options.minCentrality !== undefined) {
+      where.push('n.centrality >= @minCentrality');
+      params.minCentrality = options.minCentrality;
+    }
+
+    const sql = `
+      SELECT n.id AS node_id, n.name, n.kind, n.file_path,
+             f.biomarker, f.severity, f.metric, n.centrality
+      FROM code_health_findings f
+      JOIN nodes n ON n.id = f.node_id
+      ${where.length > 0 ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY
+        CASE f.severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+        n.centrality DESC NULLS LAST,
+        f.metric DESC
+      LIMIT @limit
+    `;
+    const rows = this.db.prepare(sql).all(params) as Array<{
+      node_id: string;
+      name: string;
+      kind: string;
+      file_path: string;
+      biomarker: string;
+      severity: 'info' | 'warning' | 'error';
+      metric: number;
+      centrality: number | null;
+    }>;
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      name: r.name,
+      kind: r.kind,
+      filePath: r.file_path,
+      biomarker: r.biomarker,
+      severity: r.severity,
+      metric: r.metric,
+      centrality: r.centrality,
+    }));
+  }
+
+  /** Project-wide rollup: per-biomarker counts and per-severity counts. */
+  getFindingsStats(): {
+    totalFindings: number;
+    byBiomarker: Record<string, number>;
+    bySeverity: Record<string, number>;
+    nodesWithFindings: number;
+  } {
+    const total = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM code_health_findings`)
+      .get() as { n: number };
+    const byBiomarker = this.db
+      .prepare(`SELECT biomarker, COUNT(*) AS n FROM code_health_findings GROUP BY biomarker`)
+      .all() as Array<{ biomarker: string; n: number }>;
+    const bySeverity = this.db
+      .prepare(`SELECT severity, COUNT(*) AS n FROM code_health_findings GROUP BY severity`)
+      .all() as Array<{ severity: string; n: number }>;
+    const nodes = this.db
+      .prepare(`SELECT COUNT(DISTINCT node_id) AS n FROM code_health_findings`)
+      .get() as { n: number };
+    return {
+      totalFindings: total.n,
+      byBiomarker: Object.fromEntries(byBiomarker.map((r) => [r.biomarker, r.n])),
+      bySeverity: Object.fromEntries(bySeverity.map((r) => [r.severity, r.n])),
+      nodesWithFindings: nodes.n,
     };
   }
 

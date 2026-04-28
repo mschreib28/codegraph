@@ -19,6 +19,7 @@ import type { ToolDefinition } from '../tool-types';
 import type { ToolModule } from './types';
 
 import { ASK_TOOL } from './ask';
+import { BIOMARKERS_TOOL } from './biomarkers';
 import { CALLEES_TOOL } from './callees';
 import { CALLERS_TOOL } from './callers';
 import { CONFIG_TOOL } from './config';
@@ -42,6 +43,7 @@ import { STATUS_TOOL } from './status';
 
 const ALL_TOOLS: readonly ToolModule[] = [
   ASK_TOOL,
+  BIOMARKERS_TOOL,
   CALLEES_TOOL,
   CALLERS_TOOL,
   CONFIG_TOOL,

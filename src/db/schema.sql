@@ -309,3 +309,19 @@ CREATE TABLE IF NOT EXISTS node_coverage (
 CREATE INDEX IF NOT EXISTS idx_node_coverage_source ON node_coverage(source);
 CREATE INDEX IF NOT EXISTS idx_node_coverage_pct
     ON node_coverage(source, (CAST(covered_lines AS REAL) / NULLIF(total_lines, 0)));
+
+-- Per-symbol biomarker findings produced by `src/biomarkers/`. The
+-- aggregate Code Health score is computed at query time from this
+-- table, so adding a new biomarker does not require a backfill.
+CREATE TABLE IF NOT EXISTS code_health_findings (
+    node_id TEXT NOT NULL,
+    biomarker TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error')),
+    metric INTEGER NOT NULL,
+    detail TEXT,
+    detected_at INTEGER NOT NULL,
+    PRIMARY KEY (node_id, biomarker),
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_findings_biomarker ON code_health_findings(biomarker);
+CREATE INDEX IF NOT EXISTS idx_findings_severity ON code_health_findings(severity);

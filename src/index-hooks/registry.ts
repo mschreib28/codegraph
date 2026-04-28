@@ -22,6 +22,7 @@ import type { IndexHook, IndexHookContext, IndexHookOutcome } from './types';
 import type { SyncResult } from '../extraction';
 import { logDebug } from '../errors';
 
+import { HOOK as BIOMARKERS_HOOK } from './biomarkers';
 import { HOOK as CENTRALITY_HOOK } from './centrality';
 import { HOOK as CHURN_HOOK } from './churn';
 import { HOOK as COCHANGE_HOOK } from './cochange';
@@ -39,6 +40,7 @@ import { HOOK as TESTS_EDGES_HOOK } from './tests-edges';
  * config flag inside its `afterIndexAll`/`afterSync`.
  */
 const REGISTERED_HOOKS: readonly IndexHook[] = [
+  BIOMARKERS_HOOK,
   CENTRALITY_HOOK,
   CHURN_HOOK,
   COCHANGE_HOOK,

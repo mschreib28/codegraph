@@ -521,6 +521,15 @@ export interface CodeGraphConfig {
   enableCoChange?: boolean;
 
   /**
+   * Run the static-analysis biomarker engine after every indexAll/sync
+   * (Brain Method, Complex Method, Nested Complexity, Complex
+   * Conditional, Large Method). Cheap on sync (only re-analyses
+   * touched files); enabled by default. Set false on environments
+   * where the extra parser run is unwanted.
+   */
+  enableBiomarkers?: boolean;
+
+  /**
    * Optional local LLM endpoint for value-add features (symbol
    * summarisation, semantic search, dead-code judging, role classification,
    * RAG Q&A). OpenAI-compatible HTTP: Ollama, llama.cpp, LM Studio, vLLM.

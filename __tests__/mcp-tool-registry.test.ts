@@ -40,6 +40,7 @@ describe('MCP tool registry — single source of truth', () => {
   it('all main-line tools are registered (regression guard)', () => {
     const expected = [
       'codegraph_ask',
+      'codegraph_biomarkers',
       'codegraph_callees',
       'codegraph_callers',
       'codegraph_config',
