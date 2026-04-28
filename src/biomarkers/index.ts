@@ -193,6 +193,32 @@ export async function analyseProject(
     options.onProgress?.(filesScanned, total);
   }
 
+  // Cross-file rule: unused_export. Single graph query over the whole
+  // database — far cheaper than checking incoming-edge count per node.
+  // Skipped on partial scans (sync runs with filePaths set) because the
+  // result depends on global graph state, not the touched-file subset.
+  if (!fileFilter) {
+    try {
+      // Always clear before re-emitting so deletions/refactors that
+      // turned a previously-unused export back into a referenced one
+      // don't keep a stale finding on the node.
+      queries.clearFindingsByKind('unused_export');
+      const dead = queries.findUnusedExports();
+      const findings = dead.map((sym) => ({
+        nodeId: sym.id,
+        biomarker: 'unused_export' as const,
+        severity: 'warning' as const,
+        metric: 0,
+        detail: { kind: sym.kind, name: sym.name },
+      }));
+      queries.appendFindings(findings);
+      findingsEmitted += findings.length;
+    } catch (err) {
+      errors++;
+      logDebug('Biomarkers: findUnusedExports failed', { err: String(err) });
+    }
+  }
+
   return {
     filesScanned,
     symbolsAnalysed,

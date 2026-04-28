@@ -12,7 +12,11 @@ export type BiomarkerName =
   | 'complex_method'
   | 'nested_complexity'
   | 'complex_conditional'
-  | 'brain_method';
+  | 'brain_method'
+  | 'long_parameter_list'
+  | 'magic_number'
+  | 'hardcoded_url'
+  | 'unused_export';
 
 export type Severity = 'info' | 'warning' | 'error';
 

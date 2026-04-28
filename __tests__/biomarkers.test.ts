@@ -210,15 +210,22 @@ describe('end-to-end through CodeGraph', () => {
 
   it('clean code produces no findings', async () => {
     fs.mkdirSync(path.join(dir, 'src'));
+    // Non-exported helpers in a single file — the test asserts that
+    // per-symbol complexity rules don't fire on simple code. Avoiding
+    // `export` keeps the cross-file `unused_export` rule out of scope
+    // (which is exercised by its own test).
     fs.writeFileSync(
       path.join(dir, 'src', 'clean.ts'),
-      `export function add(a: number, b: number): number {
+      `function add(a: number, b: number): number {
   return a + b;
 }
 
-export function double(n: number): number {
+function double(n: number): number {
   return n * 2;
 }
+
+function compute(): number { return add(double(1), 2); }
+compute();
 `
     );
     fs.writeFileSync(

@@ -515,6 +515,36 @@ export class QueryBuilder {
   }
 
   /**
+   * Find exported nodes that have no incoming graph edge from outside
+   * their own file. Used by the `unused_export` biomarker to flag
+   * dead public API after refactors. Excludes file/import/parameter
+   * nodes (never meaningful here) and the `contains` edge kind (which
+   * is purely structural — every exported method is "contained" by
+   * its class).
+   */
+  findUnusedExports(): Array<{ id: string; name: string; filePath: string; kind: string }> {
+    const sql = `
+      SELECT n.id, n.name, n.file_path AS filePath, n.kind
+      FROM nodes n
+      WHERE n.is_exported = 1
+        AND n.kind NOT IN ('file', 'import', 'parameter', 'enum_member', 'field')
+        AND NOT EXISTS (
+          SELECT 1 FROM edges e
+          JOIN nodes src ON e.source = src.id
+          WHERE e.target = n.id
+            AND src.file_path != n.file_path
+            AND e.kind != 'contains'
+        )
+    `;
+    return this.db.prepare(sql).all() as Array<{
+      id: string;
+      name: string;
+      filePath: string;
+      kind: string;
+    }>;
+  }
+
+  /**
    * Get nodes by exact name match (uses idx_nodes_name index)
    */
   getNodesByName(name: string): Node[] {
@@ -2373,6 +2403,54 @@ export class QueryBuilder {
   // ==========================================================================
   // Biomarker findings (Code Health)
   // ==========================================================================
+
+  /**
+   * Append findings without touching existing ones. Used by cross-file
+   * rules (like `unused_export`) that compute findings AFTER the
+   * per-file replace pass has already written, and so can't go through
+   * `replaceFindingsForFile` without clobbering. Atomic per call.
+   *
+   * Caller must ensure the same finding isn't appended twice — this
+   * method does no dedup. For `unused_export` that's safe because
+   * each scan starts by globally clearing the kind: see
+   * `clearFindingsByKind`.
+   */
+  appendFindings(
+    findings: ReadonlyArray<{
+      nodeId: string;
+      biomarker: string;
+      severity: 'info' | 'warning' | 'error';
+      metric: number;
+      detail?: unknown;
+    }>
+  ): void {
+    if (findings.length === 0) return;
+    const now = Date.now();
+    const ins = this.db.prepare(
+      `INSERT INTO code_health_findings
+         (node_id, biomarker, severity, metric, detail, detected_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    this.db.transaction(() => {
+      for (const f of findings) {
+        ins.run(
+          f.nodeId,
+          f.biomarker,
+          f.severity,
+          f.metric,
+          f.detail !== undefined ? JSON.stringify(f.detail) : null,
+          now
+        );
+      }
+    })();
+  }
+
+  /** Drop all findings of a single biomarker kind across the project.
+   *  Used by cross-file rules before re-scanning so old hits don't
+   *  linger when the underlying graph state changes. */
+  clearFindingsByKind(biomarker: string): void {
+    this.db.prepare('DELETE FROM code_health_findings WHERE biomarker = ?').run(biomarker);
+  }
 
   /**
    * Replace every finding for the nodes belonging to `filePath`.
