@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 export const springResolver: FrameworkResolver = {
   name: 'spring',
@@ -122,13 +123,14 @@ export const springResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'java');
 
     // @GetMapping("/path"), @PostMapping(value = "/path"), @RequestMapping("/path")
     const mappingRegex = /@(GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|RequestMapping)\s*\(\s*(?:value\s*=\s*|path\s*=\s*)?["']([^"']+)["'][^)]*\)/g;
     let match: RegExpExecArray | null;
-    while ((match = mappingRegex.exec(content)) !== null) {
+    while ((match = mappingRegex.exec(safe)) !== null) {
       const [, mappingName, routePath] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const method =
         mappingName === 'RequestMapping' ? 'ANY' : mappingName!.replace(/Mapping$/, '').toUpperCase();
 
@@ -148,7 +150,7 @@ export const springResolver: FrameworkResolver = {
       nodes.push(routeNode);
 
       // Look for the next public/private/protected method after the annotation
-      const tail = content.slice(match.index + match[0].length);
+      const tail = safe.slice(match.index + match[0].length);
       const methodMatch = tail.match(/\b(?:public|private|protected)\s+[^;{]*?\s+(\w+)\s*\(/);
       if (methodMatch) {
         references.push({

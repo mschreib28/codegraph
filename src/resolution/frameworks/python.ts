@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolutionContext, FrameworkExtractionResult } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 export const djangoResolver: FrameworkResolver = {
   name: 'django',
@@ -43,6 +44,7 @@ export const djangoResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'python');
 
     // path('url', handler, name=...) / re_path(r'...', handler) / url(r'...', handler)
     // Capture groups: 1=function name, 2=url string, 3=handler expr
@@ -50,9 +52,9 @@ export const djangoResolver: FrameworkResolver = {
     const routeRegex = /\b(path|re_path|url)\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*([\w.]+(?:\s*\([^)]*\))?)/g;
 
     let match: RegExpExecArray | null;
-    while ((match = routeRegex.exec(content)) !== null) {
+    while ((match = routeRegex.exec(safe)) !== null) {
       const [, _fn, urlPath, handlerExpr] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       const routeNode: Node = {
         id: `route:${filePath}:${line}:${urlPath}`,
@@ -136,7 +138,7 @@ export const flaskResolver: FrameworkResolver = {
 
   extract(filePath, content) {
     if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
-    return extractDecoratorRoutes(filePath, content, {
+    return extractDecoratorRoutes(filePath, stripCommentsForRegex(content, 'python'), {
       // Flask: @x.route('/path', methods=[...])
       decoratorRegex: /@(\w+)\.route\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*methods\s*=\s*\[([^\]]+)\])?\s*\)\s*\n\s*(?:async\s+)?def\s+(\w+)/g,
       defaultMethod: 'GET',
@@ -178,7 +180,7 @@ export const fastapiResolver: FrameworkResolver = {
 
   extract(filePath, content) {
     if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
-    return extractDecoratorRoutes(filePath, content, {
+    return extractDecoratorRoutes(filePath, stripCommentsForRegex(content, 'python'), {
       // FastAPI: @x.METHOD('/path') -> handler on the next def line
       decoratorRegex: /@(\w+)\.(get|post|put|patch|delete|options|head)\s*\(\s*['"]([^'"]+)['"]/g,
       defaultMethod: '',

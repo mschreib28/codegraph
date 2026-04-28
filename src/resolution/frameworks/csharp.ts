@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 export const aspnetResolver: FrameworkResolver = {
   name: 'aspnet',
@@ -120,14 +121,15 @@ export const aspnetResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'csharp');
 
     // [HttpGet("path")], [HttpPost("path")], etc.
     const attrRegex = /\[(HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete)\s*\(\s*"([^"]+)"\s*\)\]/g;
     let match: RegExpExecArray | null;
-    while ((match = attrRegex.exec(content)) !== null) {
+    while ((match = attrRegex.exec(safe)) !== null) {
       const [, verb, routePath] = match;
       const method = verb!.replace(/^Http/, '').toUpperCase();
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       const routeNode: Node = {
         id: `route:${filePath}:${line}:${method}:${routePath}`,
@@ -145,7 +147,7 @@ export const aspnetResolver: FrameworkResolver = {
       nodes.push(routeNode);
 
       // Capture the next method declaration
-      const tail = content.slice(match.index + match[0].length);
+      const tail = safe.slice(match.index + match[0].length);
       const methodMatch = tail.match(/(?:public|private|protected|internal)\s+[\w<>,\s\[\]]+?\s+(\w+)\s*\(/);
       if (methodMatch) {
         references.push({
@@ -162,10 +164,10 @@ export const aspnetResolver: FrameworkResolver = {
 
     // Minimal APIs: app.MapGet("/path", handler)
     const minimalRegex = /\.Map(Get|Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"\s*,\s*([^,)]+)/g;
-    while ((match = minimalRegex.exec(content)) !== null) {
+    while ((match = minimalRegex.exec(safe)) !== null) {
       const [, verb, routePath, handlerExpr] = match;
       const method = verb!.toUpperCase();
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       const routeNode: Node = {
         id: `route:${filePath}:${line}:${method}:${routePath}`,

@@ -84,7 +84,15 @@ real = 1
     const src = '// r.GET("/fake", h)\nr.GET(`/real`, h2)\n';
     const out = stripCommentsForRegex(src, 'go');
     expect(out).not.toMatch(/fake/);
+    // backtick raw string contents preserved
     expect(out).toMatch(/`\/real`/);
+  });
+
+  it('go: strips block comments containing route-shaped text', () => {
+    const src = '/* r.GET("/fake", h) */\nr.GET("/real", h2)\n';
+    const out = stripCommentsForRegex(src, 'go');
+    expect(out).not.toMatch(/fake/);
+    expect(out).toMatch(/"\/real"/);
   });
 
   it('java: strips // and /* */ comments', () => {

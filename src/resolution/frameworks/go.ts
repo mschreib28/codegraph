@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 export const goResolver: FrameworkResolver = {
   name: 'go',
@@ -84,14 +85,15 @@ export const goResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'go');
 
     // (router|r|mux|app).METHOD("/path", handler)
     // Handles Gin (GET/POST/...), Chi (Get/Post/...), net/http (HandleFunc/Handle).
     const routeRegex = /\b(?:router|r|mux|app|e)\.(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|Get|Post|Put|Patch|Delete|Handle|HandleFunc)\s*\(\s*"([^"]+)"\s*,\s*([^)]+)\)/g;
     let match: RegExpExecArray | null;
-    while ((match = routeRegex.exec(content)) !== null) {
+    while ((match = routeRegex.exec(safe)) !== null) {
       const [, rawMethod, routePath, handlerExpr] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const method =
         rawMethod === 'Handle' || rawMethod === 'HandleFunc'
           ? 'ANY'

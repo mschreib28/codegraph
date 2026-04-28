@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 export const rustResolver: FrameworkResolver = {
   name: 'rust',
@@ -77,14 +78,15 @@ export const rustResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'rust');
 
     // Actix-web / Rocket attribute: #[get("/path")] fn handler(..)
     // Capture the method, path, and the fn identifier that follows.
     const attrRegex = /#\[(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["'][^\]]*\)\]/g;
     let match: RegExpExecArray | null;
-    while ((match = attrRegex.exec(content)) !== null) {
+    while ((match = attrRegex.exec(safe)) !== null) {
       const [, method, routePath] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const upper = method!.toUpperCase();
 
       const routeNode: Node = {
@@ -102,7 +104,7 @@ export const rustResolver: FrameworkResolver = {
       };
       nodes.push(routeNode);
 
-      const tail = content.slice(match.index + match[0].length);
+      const tail = safe.slice(match.index + match[0].length);
       const fnMatch = tail.match(/\n\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/);
       if (fnMatch) {
         references.push({
@@ -119,9 +121,9 @@ export const rustResolver: FrameworkResolver = {
 
     // Axum: .route("/path", get(handler))
     const axumRegex = /\.route\s*\(\s*"([^"]+)"\s*,\s*(get|post|put|patch|delete)\s*\(\s*(\w+)/g;
-    while ((match = axumRegex.exec(content)) !== null) {
+    while ((match = axumRegex.exec(safe)) !== null) {
       const [, routePath, method, handler] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const upper = method!.toUpperCase();
 
       const routeNode: Node = {

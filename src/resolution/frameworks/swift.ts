@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 export const swiftUIResolver: FrameworkResolver = {
   name: 'swiftui',
@@ -80,15 +81,16 @@ export const swiftUIResolver: FrameworkResolver = {
     if (!filePath.endsWith('.swift')) return { nodes: [], references: [] };
     const nodes: Node[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'swift');
 
     // Extract SwiftUI View structs
     // struct ContentView: View { ... }
     const viewPattern = /struct\s+(\w+)\s*:\s*(?:\w+\s*,\s*)*View/g;
 
     let match: RegExpExecArray | null;
-    while ((match = viewPattern.exec(content)) !== null) {
+    while ((match = viewPattern.exec(safe)) !== null) {
       const [, viewName] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `view:${filePath}:${viewName}:${line}`,
@@ -108,9 +110,9 @@ export const swiftUIResolver: FrameworkResolver = {
     // Extract @main App entry point
     const appPattern = /@main\s+struct\s+(\w+)\s*:\s*App/g;
 
-    while ((match = appPattern.exec(content)) !== null) {
+    while ((match = appPattern.exec(safe)) !== null) {
       const [, appName] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `app:${filePath}:${appName}:${line}`,
@@ -213,14 +215,15 @@ export const uikitResolver: FrameworkResolver = {
     if (!filePath.endsWith('.swift')) return { nodes: [], references: [] };
     const nodes: Node[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'swift');
 
     // Extract UIViewController subclasses
     const vcPattern = /class\s+(\w+)\s*:\s*(?:\w+\s*,\s*)*UIViewController/g;
 
     let match: RegExpExecArray | null;
-    while ((match = vcPattern.exec(content)) !== null) {
+    while ((match = vcPattern.exec(safe)) !== null) {
       const [, vcName] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `viewcontroller:${filePath}:${vcName}:${line}`,
@@ -240,9 +243,9 @@ export const uikitResolver: FrameworkResolver = {
     // Extract UIView subclasses
     const viewPattern = /class\s+(\w+)\s*:\s*(?:\w+\s*,\s*)*UIView[^C]/g;
 
-    while ((match = viewPattern.exec(content)) !== null) {
+    while ((match = viewPattern.exec(safe)) !== null) {
       const [, viewName] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
 
       nodes.push({
         id: `uiview:${filePath}:${viewName}:${line}`,
@@ -336,13 +339,14 @@ export const vaporResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'swift');
 
     // Vapor: (app|router|routes).METHOD("path", use: handler)
     const routeRegex = /\b(?:app|router|routes)\.(get|post|put|patch|delete)\s*\(\s*"([^"]+)"\s*,\s*use:\s*([A-Za-z_][A-Za-z0-9_.]*)/g;
     let match: RegExpExecArray | null;
-    while ((match = routeRegex.exec(content)) !== null) {
+    while ((match = routeRegex.exec(safe)) !== null) {
       const [, method, routePath, handlerExpr] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const upper = method!.toUpperCase();
 
       const routeNode: Node = {

@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 function extractTailIdent(expr: string): string | null {
   const cleaned = expr.replace(/\s+/g, '').replace(/\(\)$/, '');
@@ -102,13 +103,15 @@ export const expressResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const lang = detectLanguage(filePath);
+    const safe = stripCommentsForRegex(content, lang);
     // (app|router).METHOD('/path', handler-expr)
     const regex = /\b(app|router)\.(get|post|put|patch|delete|all|use)\s*\(\s*['"]([^'"]+)['"]\s*,\s*([^)]+)\)/g;
     let match: RegExpExecArray | null;
-    while ((match = regex.exec(content)) !== null) {
+    while ((match = regex.exec(safe)) !== null) {
       const [, _obj, method, routePath, handlers] = match;
       if (method === 'use' && !routePath!.startsWith('/')) continue;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const routeNode: Node = {
         id: `route:${filePath}:${line}:${method!.toUpperCase()}:${routePath}`,
         kind: 'route',

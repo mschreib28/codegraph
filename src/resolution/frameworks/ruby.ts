@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 export const railsResolver: FrameworkResolver = {
   name: 'rails',
@@ -91,14 +92,15 @@ export const railsResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'ruby');
 
     // get/post/put/patch/delete/match '/path', to: 'controller#action'
     // Also: get '/path' => 'controller#action'
     const routeRegex = /\b(get|post|put|patch|delete|match)\s+['"]([^'"]+)['"]\s*(?:,\s*to:\s*|=>\s*)['"]([^#'"]+)#([^'"]+)['"]/g;
     let match: RegExpExecArray | null;
-    while ((match = routeRegex.exec(content)) !== null) {
+    while ((match = routeRegex.exec(safe)) !== null) {
       const [, method, routePath, _controller, action] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const upper = method!.toUpperCase();
       const routeNode: Node = {
         id: `route:${filePath}:${line}:${upper}:${routePath}`,

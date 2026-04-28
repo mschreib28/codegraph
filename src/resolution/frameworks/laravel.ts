@@ -6,6 +6,7 @@
 
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
+import { stripCommentsForRegex } from '../strip-comments';
 
 /**
  * Laravel facade mappings to underlying classes
@@ -96,14 +97,15 @@ export const laravelResolver: FrameworkResolver = {
     const nodes: Node[] = [];
     const references: UnresolvedRef[] = [];
     const now = Date.now();
+    const safe = stripCommentsForRegex(content, 'php');
 
     // Route::METHOD('/path', handler-expr)
     // handler-expr can be: [Class::class, 'method'] | 'Controller@method' | Closure | Class::class
     const routeRegex = /Route::(get|post|put|patch|delete|options|any)\s*\(\s*['"]([^'"]+)['"]\s*,\s*([^)]+)\)/g;
     let match: RegExpExecArray | null;
-    while ((match = routeRegex.exec(content)) !== null) {
+    while ((match = routeRegex.exec(safe)) !== null) {
       const [, method, routePath, handlerExpr] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const upper = method!.toUpperCase();
       const routeNode: Node = {
         id: `route:${filePath}:${line}:${upper}:${routePath}`,
@@ -136,9 +138,9 @@ export const laravelResolver: FrameworkResolver = {
 
     // Route::resource('name', Controller::class) / Route::apiResource('name', Controller::class)
     const resourceRegex = /Route::(resource|apiResource)\s*\(\s*['"]([^'"]+)['"]\s*(?:,\s*([^)]+))?\)/g;
-    while ((match = resourceRegex.exec(content)) !== null) {
+    while ((match = resourceRegex.exec(safe)) !== null) {
       const [, _fn, resourceName, handlerExpr] = match;
-      const line = content.slice(0, match.index).split('\n').length;
+      const line = safe.slice(0, match.index).split('\n').length;
       const routeNode: Node = {
         id: `route:${filePath}:${line}:RESOURCE:${resourceName}`,
         kind: 'route',
