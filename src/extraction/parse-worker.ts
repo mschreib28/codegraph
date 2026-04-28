@@ -17,6 +17,17 @@ import type { Language, ExtractionResult } from '../types';
 // already handles the failure cleanly. Filter these specific lines
 // out at the source. Real diagnostic output (anything we log
 // ourselves) goes through console.* / parentPort and is unaffected.
+//
+// Caveats deliberately accepted:
+//   - Per-call match: each `write()` call is matched in isolation.
+//     If Emscripten ever splits `Aborted(` across two write()s (it
+//     doesn't today — synchronous abort prints the whole line at
+//     once via libc puts) the first fragment would leak. Buffering
+//     across calls would add complexity for a hypothetical case.
+//   - Substring exactness: the prefix `Aborted(` is the literal
+//     Emscripten signature. Any user code that legitimately writes
+//     a stderr line starting with that prefix would also be filtered;
+//     in practice no real diagnostic does.
 {
   const realWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((
@@ -29,6 +40,10 @@ import type { Language, ExtractionResult } from '../types';
       s.startsWith('Aborted(') ||
       s.includes('Build with -sASSERTIONS for more info')
     ) {
+      // Honour the Writable stream contract: callbacks must always
+      // fire even when the write is suppressed, or upstream code
+      // waiting on the drain signal would hang. Both overload forms
+      // are handled (`(chunk, cb)` and `(chunk, encoding, cb)`).
       if (typeof encoding === 'function') encoding();
       else if (cb) cb();
       return true;

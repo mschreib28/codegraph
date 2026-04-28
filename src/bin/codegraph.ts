@@ -270,12 +270,16 @@ function printIndexResult(clack: typeof import('@clack/prompts'), result: IndexR
   // Without this the CLI falls through to "No files found to index",
   // which is actively misleading — the index DID run, it just couldn't
   // get the lock.
+  //
+  // If success is false but no severity:'error' entry exists in
+  // `result.errors` (degenerate case — shouldn't happen in practice
+  // but worth guarding because the result shape is plumbed through
+  // multiple call sites), fall back to a generic message rather than
+  // continuing to the misleading "No files found" branch or throwing.
   if (!result.success && !hasErrors && result.filesIndexed === 0) {
     const generic = result.errors.find((e) => e.severity === 'error');
-    if (generic) {
-      clack.log.error(generic.message);
-      return;
-    }
+    clack.log.error(generic?.message ?? 'Indexing failed — no further details available');
+    return;
   }
 
   if (result.filesIndexed > 0) {
