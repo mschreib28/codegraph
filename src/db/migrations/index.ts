@@ -37,6 +37,8 @@ import { MIGRATION as MIG_011 } from './011-symbol-summaries';
 import { MIGRATION as MIG_012 } from './012-summary-embeddings';
 import { MIGRATION as MIG_013 } from './013-directory-summaries';
 import { MIGRATION as MIG_014 } from './014-summary-roles';
+import { MIGRATION as MIG_015 } from './015-prune-co-changes-index';
+import { MIGRATION as MIG_016 } from './016-split-symbol-embeddings';
 
 interface ModuleRef {
   /**
@@ -70,6 +72,8 @@ const REGISTERED_MODULES: readonly ModuleRef[] = [
   { filename: '012-summary-embeddings.ts', module: MIG_012 },
   { filename: '013-directory-summaries.ts', module: MIG_013 },
   { filename: '014-summary-roles.ts', module: MIG_014 },
+  { filename: '015-prune-co-changes-index.ts', module: MIG_015 },
+  { filename: '016-split-symbol-embeddings.ts', module: MIG_016 },
 ];
 
 /** Strict 3-digit prefix on each migration filename. */

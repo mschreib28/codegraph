@@ -7,8 +7,10 @@
  * way the chat model is — see `detect.ts`.
  *
  * Storage shape: 768-dim (or whatever the model emits) Float32 bytes
- * stored as a BLOB on `symbol_summaries`. L2-normalised at write time
- * so the search-side cosine similarity is a pure dot product.
+ * stored as a BLOB on `symbol_embeddings` (a separate table from
+ * `symbol_summaries` so common-path summary scans don't drag the
+ * BLOB along their page chain). L2-normalised at write time so the
+ * search-side cosine similarity is a pure dot product.
  *
  * No native deps, no in-process inference. The original embeddings
  * removal in #87 was about WASM Zone OOM crashes; this design routes
@@ -180,6 +182,106 @@ export function topKByCosine(
     }
   }
   return heap.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Top-K cosine search over a flat decoded matrix. Used by the
+ * EmbeddingCache to avoid per-query SQLite fetch + Float32Array
+ * decode. The matrix is `ids.length * dim` floats laid out row-major
+ * (row i for `ids[i]` starts at offset `i * dim`).
+ */
+export function topKByCosineMatrix(
+  query: Float32Array,
+  matrix: Float32Array,
+  ids: ReadonlyArray<string>,
+  dim: number,
+  k: number
+): SemanticHit[] {
+  const heap: SemanticHit[] = [];
+  const n = ids.length;
+  const qLen = Math.min(query.length, dim);
+  for (let i = 0; i < n; i++) {
+    const off = i * dim;
+    let score = 0;
+    for (let d = 0; d < qLen; d++) score += matrix[off + d]! * query[d]!;
+    if (heap.length < k) {
+      heap.push({ nodeId: ids[i]!, score });
+      heap.sort((a, b) => a.score - b.score);
+    } else if (score > heap[0]!.score) {
+      heap[0] = { nodeId: ids[i]!, score };
+      heap.sort((a, b) => a.score - b.score);
+    }
+  }
+  return heap.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * In-memory cache of every embedding for a given model, decoded once
+ * into a flat `Float32Array` matrix. Avoids re-fetching from SQLite
+ * and re-decoding `Float32Array` views on every similarity query.
+ *
+ * Lifetime: instance-scoped (one per CodeGraph). Invalidated by:
+ *   - `indexAll` and `sync` finishing (new embeddings may exist).
+ *   - `clear()` / `clearCoChanges()` (the table was emptied).
+ *   - `embedAllSummaries()` finishing inside the same process.
+ *
+ * This is a best-effort cache: a stale cache costs at most one
+ * iteration of "ranked by mostly-fresh-but-missing-the-newest
+ * embeddings" — never wrong, just a bit out of date until the next
+ * invalidation.
+ */
+export interface CachedEmbeddings {
+  matrix: Float32Array;
+  ids: string[];
+  dim: number;
+  model: string;
+}
+
+export interface EmbeddingFetcher {
+  getAllEmbeddings(model: string): Array<{ nodeId: string; embedding: Buffer | Uint8Array }>;
+}
+
+export class EmbeddingCache {
+  private cached: CachedEmbeddings | null = null;
+
+  /**
+   * Return the cached matrix for `model`, rebuilding from `fetcher`
+   * on miss. The returned matrix is owned by the cache — callers
+   * must not mutate it.
+   */
+  get(fetcher: EmbeddingFetcher, model: string): CachedEmbeddings {
+    if (this.cached && this.cached.model === model) {
+      return this.cached;
+    }
+    const rows = fetcher.getAllEmbeddings(model);
+    if (rows.length === 0) {
+      this.cached = { matrix: new Float32Array(0), ids: [], dim: 0, model };
+      return this.cached;
+    }
+    const firstVec = bytesToVector(rows[0]!.embedding);
+    const dim = firstVec.length;
+    // Skip mismatched-dim rows (a model upgrade in flight could leave
+    // some old vectors). Build a packed matrix of only the kept rows
+    // so `ids[i]` always lines up with row `i` in the matrix.
+    const ids: string[] = [];
+    const buf = new Float32Array(rows.length * dim);
+    let written = 0;
+    for (const row of rows) {
+      const v = bytesToVector(row.embedding);
+      if (v.length !== dim) continue;
+      buf.set(v, written * dim);
+      ids.push(row.nodeId);
+      written++;
+    }
+    const matrix = written === rows.length ? buf : buf.slice(0, written * dim);
+    this.cached = { matrix, ids, dim, model };
+    return this.cached;
+  }
+
+  /** Drop the cache. Next `get()` rebuilds from SQLite. */
+  invalidate(): void {
+    this.cached = null;
+  }
 }
 
 /**

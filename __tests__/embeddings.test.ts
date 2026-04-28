@@ -19,6 +19,8 @@ import {
   cosineNormalised,
   reciprocalRankFusion,
   topKByCosine,
+  topKByCosineMatrix,
+  EmbeddingCache,
 } from '../src/llm/embeddings';
 
 const EMBED_DIM = 8;
@@ -156,6 +158,84 @@ describe('embedding helpers', () => {
     // y appears at rank 2 in fts (1/62) + rank 1 in sem (1/61) = highest
     const sorted = [...fused.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
     expect(sorted[0]).toBe('y');
+  });
+
+  it('topKByCosineMatrix matches topKByCosine on the same data', () => {
+    const query = l2(Float32Array.from([1, 0, 0, 0, 0, 0, 0, 0]));
+    const vecs = [
+      { id: 'a', v: l2(Float32Array.from([0.9, 0.1, 0, 0, 0, 0, 0, 0])) },
+      { id: 'b', v: l2(Float32Array.from([0, 1, 0, 0, 0, 0, 0, 0])) },
+      { id: 'c', v: l2(Float32Array.from([0.5, 0.5, 0, 0, 0, 0, 0, 0])) },
+    ];
+    const candidates = vecs.map((e) => ({ nodeId: e.id, embedding: vectorToBytes(e.v) }));
+    const matrix = new Float32Array(vecs.length * EMBED_DIM);
+    const ids = vecs.map((e) => e.id);
+    for (let i = 0; i < vecs.length; i++) matrix.set(vecs[i]!.v, i * EMBED_DIM);
+
+    const a = topKByCosine(query, candidates, 3).map((h) => h.nodeId);
+    const b = topKByCosineMatrix(query, matrix, ids, EMBED_DIM, 3).map((h) => h.nodeId);
+    expect(b).toEqual(a);
+  });
+
+  it('EmbeddingCache returns the same result on hit and miss; invalidate forces refetch', () => {
+    let fetchCalls = 0;
+    const v = vectorToBytes(l2(Float32Array.from([1, 0, 0, 0, 0, 0, 0, 0])));
+    const fetcher = {
+      getAllEmbeddings: (_model: string) => {
+        fetchCalls++;
+        return [{ nodeId: 'a', embedding: v }];
+      },
+    };
+
+    const cache = new EmbeddingCache();
+    const r1 = cache.get(fetcher, 'm');
+    const r2 = cache.get(fetcher, 'm');
+    expect(fetchCalls).toBe(1);
+    expect(r1).toBe(r2);
+    expect(r1.ids).toEqual(['a']);
+    expect(r1.dim).toBe(EMBED_DIM);
+
+    cache.invalidate();
+    cache.get(fetcher, 'm');
+    expect(fetchCalls).toBe(2);
+
+    // Switching models also forces a refetch.
+    cache.get(fetcher, 'other-model');
+    expect(fetchCalls).toBe(3);
+  });
+
+  it('EmbeddingCache skips rows whose dimension does not match the first row', () => {
+    const v3 = vectorToBytes(l2(Float32Array.from([1, 0, 0, 0, 0, 0, 0, 0])));
+    // Different shape: 4-dim vector. Should be skipped.
+    const v4 = Buffer.from(new Float32Array([1, 0, 0, 0]).buffer);
+    const fetcher = {
+      getAllEmbeddings: (_model: string) => [
+        { nodeId: 'good', embedding: v3 },
+        { nodeId: 'bad', embedding: v4 },
+        { nodeId: 'good2', embedding: v3 },
+      ],
+    };
+    const cache = new EmbeddingCache();
+    const r = cache.get(fetcher, 'm');
+    expect(r.ids).toEqual(['good', 'good2']);
+    expect(r.matrix.length).toBe(2 * EMBED_DIM);
+    expect(r.dim).toBe(EMBED_DIM);
+  });
+
+  it('EmbeddingCache returns an empty result without calling the fetcher again on hit', () => {
+    let fetchCalls = 0;
+    const fetcher = {
+      getAllEmbeddings: (_model: string) => {
+        fetchCalls++;
+        return [];
+      },
+    };
+    const cache = new EmbeddingCache();
+    const r = cache.get(fetcher, 'm');
+    expect(r.ids).toEqual([]);
+    expect(r.dim).toBe(0);
+    cache.get(fetcher, 'm');
+    expect(fetchCalls).toBe(1);
   });
 });
 

@@ -1426,6 +1426,7 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
       this.db.exec('DELETE FROM co_changes');
+      this.db.exec('DELETE FROM symbol_embeddings');
       this.db.exec('DELETE FROM symbol_summaries');
       this.db.exec('DELETE FROM directory_summaries');
     })();
@@ -1960,6 +1961,7 @@ export class QueryBuilder {
   clearCoChanges(): void {
     this.db.transaction(() => {
       this.db.exec('DELETE FROM co_changes');
+      this.db.exec('DELETE FROM symbol_embeddings');
       this.db.exec('DELETE FROM symbol_summaries');
       this.db.exec('DELETE FROM directory_summaries');
       this.db.exec('UPDATE files SET commit_count = 0');
@@ -2099,9 +2101,9 @@ export class QueryBuilder {
         `SELECT s.node_id AS node_id, n.name AS name, n.signature AS signature, s.summary AS summary
          FROM symbol_summaries s
          JOIN nodes n ON n.id = s.node_id
-         WHERE s.embedding IS NULL
-            OR s.embedding_model IS NULL
-            OR s.embedding_model != ?`
+         LEFT JOIN symbol_embeddings e ON e.node_id = s.node_id
+         WHERE e.embedding_model IS NULL
+            OR e.embedding_model != ?`
       )
       .all(embeddingModel) as Array<{
       node_id: string;
@@ -2127,8 +2129,8 @@ export class QueryBuilder {
   ): Array<{ nodeId: string; embedding: Buffer }> {
     const rows = this.db
       .prepare(
-        `SELECT node_id, embedding FROM symbol_summaries
-         WHERE embedding IS NOT NULL AND embedding_model = ?`
+        `SELECT node_id, embedding FROM symbol_embeddings
+         WHERE embedding_model = ?`
       )
       .all(embeddingModel) as Array<{ node_id: string; embedding: Buffer }>;
     return rows.map((r) => ({ nodeId: r.node_id, embedding: r.embedding }));
@@ -2141,11 +2143,13 @@ export class QueryBuilder {
   upsertSymbolEmbedding(nodeId: string, embedding: Buffer | Uint8Array, model: string): void {
     this.db
       .prepare(
-        `UPDATE symbol_summaries
-         SET embedding = ?, embedding_model = ?
-         WHERE node_id = ?`
+        `INSERT INTO symbol_embeddings (node_id, embedding, embedding_model)
+         VALUES (?, ?, ?)
+         ON CONFLICT(node_id) DO UPDATE SET
+           embedding = excluded.embedding,
+           embedding_model = excluded.embedding_model`
       )
-      .run(embedding, model, nodeId);
+      .run(nodeId, embedding, model);
   }
 
   // ==========================================================================

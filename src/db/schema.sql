@@ -86,8 +86,7 @@ CREATE TABLE IF NOT EXISTS co_changes (
     PRIMARY KEY (file_a, file_b),
     CHECK (file_a < file_b)
 );
-CREATE INDEX IF NOT EXISTS idx_co_changes_a ON co_changes(file_a);
-CREATE INDEX IF NOT EXISTS idx_co_changes_b ON co_changes(file_b);
+-- Co-change indexes are declared together below in the indexes section.
 
 -- Unresolved References: References that need resolution after full indexing
 CREATE TABLE IF NOT EXISTS unresolved_refs (
@@ -175,8 +174,8 @@ CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
 CREATE INDEX IF NOT EXISTS idx_files_commit_count ON files(commit_count DESC);
 CREATE INDEX IF NOT EXISTS idx_files_last_touched ON files(last_touched_ts DESC);
 
--- Co-change indexes (one per side so we can look up either direction efficiently)
-CREATE INDEX IF NOT EXISTS idx_co_changes_a ON co_changes(file_a);
+-- Co-change index for file_b lookups (file_a is covered by the
+-- (file_a, file_b) PK above).
 CREATE INDEX IF NOT EXISTS idx_co_changes_b ON co_changes(file_b);
 
 -- Unresolved refs indexes
@@ -260,10 +259,6 @@ CREATE TABLE IF NOT EXISTS symbol_summaries (
     summary TEXT NOT NULL,
     model TEXT NOT NULL,
     generated_at INTEGER NOT NULL,
-    -- Embeddings of the summary text for semantic search. Float32Array
-    -- bytes (LE), L2-normalised so dot product == cosine similarity.
-    embedding BLOB,
-    embedding_model TEXT,
     -- Role classification (api_endpoint | business_logic | data_model |
     -- util | framework_glue | test_helper | unknown).
     role TEXT,
@@ -271,8 +266,19 @@ CREATE TABLE IF NOT EXISTS symbol_summaries (
     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_summaries_model ON symbol_summaries(model);
-CREATE INDEX IF NOT EXISTS idx_summaries_embedding_model ON symbol_summaries(embedding_model);
 CREATE INDEX IF NOT EXISTS idx_summaries_role ON symbol_summaries(role);
+
+-- Embeddings live in their own table so common-path summary scans
+-- (FTS-anchor lookups, role filters, freshness checks) don't drag
+-- the 768-dim Float32 BLOB along their page chain. Bytes are LE
+-- Float32Array, L2-normalised so dot product == cosine similarity.
+CREATE TABLE IF NOT EXISTS symbol_embeddings (
+    node_id TEXT PRIMARY KEY,
+    embedding BLOB NOT NULL,
+    embedding_model TEXT NOT NULL,
+    FOREIGN KEY (node_id) REFERENCES symbol_summaries(node_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON symbol_embeddings(embedding_model);
 
 -- Directory-level LLM summaries: one paragraph synthesised from the
 -- symbol summaries inside the directory.
