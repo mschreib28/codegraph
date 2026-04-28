@@ -20,6 +20,7 @@ import CodeGraph, { findNearestCodeGraphRoot } from '../index';
 import { StdioTransport, JsonRpcRequest, JsonRpcNotification, ErrorCodes } from './transport';
 import { ToolHandler } from './tools';
 import { getToolModule } from './tools/registry';
+import { SERVER_INSTRUCTIONS } from './server-instructions';
 
 /**
  * Convert a file:// URI to a filesystem path.
@@ -35,8 +36,10 @@ function fileUriToPath(uri: string): string {
     }
     return path.resolve(filePath);
   } catch {
-    // Fallback for non-standard URIs
-    return uri.replace(/^file:\/\/\/?/, '');
+    // Fallback for non-standard URIs — still resolve through path.resolve
+    // so a malformed `file:///../etc/passwd` is normalized rather than
+    // returned raw to downstream filesystem code.
+    return path.resolve(uri.replace(/^file:\/\/\/?/, ''));
   }
 }
 
@@ -269,13 +272,18 @@ export class MCPServer {
     // Try to initialize the default project (non-fatal if it fails)
     await this.tryInitializeDefault(projectPath);
 
-    // We accept the client's protocol version but respond with our supported version
+    // We accept the client's protocol version but respond with our supported version.
+    // `instructions` is a protocol-level field that MCP clients surface in the
+    // agent's system prompt, giving the agent a high-level playbook for the
+    // toolset before it sees individual tool descriptions. See
+    // ./server-instructions.ts.
     this.transport.sendResult(request.id, {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {
         tools: {},
       },
       serverInfo: SERVER_INFO,
+      instructions: SERVER_INSTRUCTIONS,
     });
   }
 
