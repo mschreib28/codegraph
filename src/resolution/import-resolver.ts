@@ -6,7 +6,8 @@
 
 import * as path from 'path';
 import { Language, Node } from '../types';
-import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping } from './types';
+import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping, ReExport } from './types';
+import { applyAliases } from './path-aliases';
 
 /**
  * Extension resolution order by language
@@ -124,18 +125,45 @@ function resolveRelativeImport(
 }
 
 /**
- * Resolve an aliased/absolute import
+ * Resolve an aliased/absolute import.
+ *
+ * Tries, in order:
+ *   1. Project-defined `compilerOptions.paths` (tsconfig/jsconfig).
+ *      Each pattern can have multiple replacements; tried in tsconfig
+ *      priority order with extension permutations.
+ *   2. The legacy hard-coded fallback list (`@/`, `~/`, `src/`, ...)
+ *      for projects that have aliases but no tsconfig paths block.
+ *   3. Direct path lookup (with extensions).
  */
 function resolveAliasedImport(
   importPath: string,
-  _projectRoot: string,
+  projectRoot: string,
   language: Language,
   context: ResolutionContext
 ): string | null {
   const extensions = EXTENSION_RESOLUTION[language] || [];
+  const tryWithExt = (basePath: string): string | null => {
+    for (const ext of extensions) {
+      const candidate = basePath + ext;
+      if (context.fileExists(candidate)) return candidate;
+    }
+    if (context.fileExists(basePath)) return basePath;
+    return null;
+  };
 
-  // Common aliases
-  const aliases: Record<string, string> = {
+  // 1. Project tsconfig/jsconfig paths.
+  const aliasMap = context.getProjectAliases();
+  if (aliasMap) {
+    const candidates = applyAliases(importPath, aliasMap, projectRoot);
+    for (const c of candidates) {
+      const hit = tryWithExt(c);
+      if (hit) return hit;
+    }
+  }
+
+  // 2. Hard-coded fallback list. Kept for projects that use these
+  //    conventional aliases without declaring them in tsconfig.
+  const fallbackAliases: Record<string, string> = {
     '@/': 'src/',
     '~/': 'src/',
     '@src/': 'src/',
@@ -143,36 +171,15 @@ function resolveAliasedImport(
     '@app/': 'app/',
     'app/': 'app/',
   };
-
-  // Try each alias
-  for (const [alias, replacement] of Object.entries(aliases)) {
+  for (const [alias, replacement] of Object.entries(fallbackAliases)) {
     if (importPath.startsWith(alias)) {
-      const resolvedPath = importPath.replace(alias, replacement);
-
-      // Try with extensions
-      for (const ext of extensions) {
-        const candidatePath = resolvedPath + ext;
-        if (context.fileExists(candidatePath)) {
-          return candidatePath;
-        }
-      }
-
-      // Try as-is
-      if (context.fileExists(resolvedPath)) {
-        return resolvedPath;
-      }
+      const hit = tryWithExt(importPath.replace(alias, replacement));
+      if (hit) return hit;
     }
   }
 
-  // Try direct path
-  for (const ext of extensions) {
-    const candidatePath = importPath + ext;
-    if (context.fileExists(candidatePath)) {
-      return candidatePath;
-    }
-  }
-
-  return null;
+  // 3. Direct path.
+  return tryWithExt(importPath);
 }
 
 /**
@@ -436,6 +443,69 @@ export function clearImportMappingCache(): void {
 }
 
 /**
+ * Extract JS/TS re-export declarations from `content`.
+ *
+ * Recognised forms:
+ *   export { foo } from './a';
+ *   export { foo as bar } from './a';
+ *   export * from './a';
+ *   export * as ns from './a';   (treated as wildcard for chasing)
+ *   export { default as Foo } from './a';
+ *
+ * The walker intentionally stays regex-based — the import-resolver
+ * elsewhere in this file already chooses regex over a fresh
+ * tree-sitter pass, and this function shares that trade-off. Errors
+ * fall through silently; resolution simply skips the broken file.
+ */
+export function extractReExports(content: string, language: Language): ReExport[] {
+  if (
+    language !== 'typescript' &&
+    language !== 'javascript' &&
+    language !== 'tsx' &&
+    language !== 'jsx'
+  ) {
+    return [];
+  }
+  const out: ReExport[] = [];
+
+  // Wildcard: `export * from '...'` or `export * as ns from '...'`
+  const wildcardRe = /export\s*\*(?:\s+as\s+\w+)?\s*from\s*['"]([^'"]+)['"]/g;
+  let m: RegExpExecArray | null;
+  while ((m = wildcardRe.exec(content)) !== null) {
+    out.push({ kind: 'wildcard', source: m[1]! });
+  }
+
+  // Named: `export { a, b as c } from '...'`
+  const namedRe = /export\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g;
+  while ((m = namedRe.exec(content)) !== null) {
+    const inner = m[1]!;
+    const source = m[2]!;
+    for (const raw of inner.split(',')) {
+      const item = raw.trim();
+      if (!item) continue;
+      const aliasMatch = item.match(/^(\w+)\s+as\s+(\w+)$/);
+      if (aliasMatch) {
+        out.push({
+          kind: 'named',
+          exportedName: aliasMatch[2]!,
+          originalName: aliasMatch[1]!,
+          source,
+        });
+      } else if (/^\w+$/.test(item)) {
+        out.push({
+          kind: 'named',
+          exportedName: item,
+          originalName: item,
+          source,
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
  * Resolve a reference using import mappings
  */
 export function resolveViaImport(
@@ -460,30 +530,18 @@ export function resolveViaImport(
       );
 
       if (resolvedPath) {
-        // Find the exported symbol in the resolved file
-        const nodesInFile = context.getNodesInFile(resolvedPath);
         const exportedName = imp.isDefault ? 'default' : imp.exportedName;
+        const memberName = imp.isNamespace
+          ? ref.referenceName.replace(imp.localName + '.', '')
+          : null;
 
-        // Look for the symbol
-        let targetNode: Node | undefined;
-
-        if (imp.isDefault) {
-          // Find default export or main class/function
-          targetNode = nodesInFile.find(
-            (n) => n.isExported && (n.kind === 'function' || n.kind === 'class')
-          );
-        } else if (imp.isNamespace) {
-          // Namespace import - look for the specific member
-          const memberName = ref.referenceName.replace(imp.localName + '.', '');
-          targetNode = nodesInFile.find(
-            (n) => n.name === memberName && n.isExported
-          );
-        } else {
-          // Named import
-          targetNode = nodesInFile.find(
-            (n) => n.name === exportedName && n.isExported
-          );
-        }
+        const targetNode = findExportedSymbol(
+          resolvedPath,
+          { isDefault: imp.isDefault, isNamespace: imp.isNamespace, exportedName, memberName },
+          ref.language,
+          context,
+          new Set()
+        );
 
         if (targetNode) {
           return {
@@ -498,4 +556,99 @@ export function resolveViaImport(
   }
 
   return null;
+}
+
+/** Recursive depth cap for re-export chain following. Real codebases
+ *  rarely chain barrels more than 2–3 deep; 8 is a generous safety
+ *  net that still bounds worst-case work. */
+const REEXPORT_MAX_DEPTH = 8;
+
+/**
+ * Find an exported symbol in `filePath`, following `export { x } from
+ * './other'` and `export * from './other'` chains until the original
+ * declaration is reached. Cycle-safe via the `visited` set.
+ *
+ * Without this, every barrel-style import (`import { Foo } from
+ * './index'` where `index.ts` only re-exports) used to resolve to
+ * nothing — the existing code only looked for declarations IN the
+ * resolved file, not declarations the file forwarded.
+ */
+function findExportedSymbol(
+  filePath: string,
+  want: {
+    isDefault: boolean;
+    isNamespace: boolean;
+    exportedName: string;
+    memberName: string | null;
+  },
+  language: Language,
+  context: ResolutionContext,
+  visited: Set<string>,
+  depth = 0
+): Node | undefined {
+  if (depth > REEXPORT_MAX_DEPTH) return undefined;
+  if (visited.has(filePath)) return undefined;
+  visited.add(filePath);
+
+  const nodesInFile = context.getNodesInFile(filePath);
+
+  // 1. Direct hit: the symbol is declared in this file.
+  if (want.isDefault) {
+    const direct = nodesInFile.find(
+      (n) => n.isExported && (n.kind === 'function' || n.kind === 'class')
+    );
+    if (direct) return direct;
+  } else if (want.isNamespace && want.memberName) {
+    const direct = nodesInFile.find(
+      (n) => n.name === want.memberName && n.isExported
+    );
+    if (direct) return direct;
+  } else {
+    const direct = nodesInFile.find(
+      (n) => n.name === want.exportedName && n.isExported
+    );
+    if (direct) return direct;
+  }
+
+  // 2. Re-export hit: the file forwards the symbol to another module.
+  const reExports = context.getReExports?.(filePath, language) ?? [];
+  if (reExports.length === 0) return undefined;
+
+  // Look for explicit `export { want } from './other'` (with optional rename).
+  const targetName = want.isDefault ? 'default' : want.exportedName;
+  for (const rex of reExports) {
+    if (rex.kind === 'named' && rex.exportedName === targetName) {
+      const next = resolveImportPath(rex.source, filePath, language, context);
+      if (!next) continue;
+      // After rename: `export { foo as bar } from './x'` — to chase
+      // `bar`, we look for `foo` in `./x`.
+      const chained = findExportedSymbol(
+        next,
+        {
+          isDefault: rex.originalName === 'default',
+          isNamespace: false,
+          exportedName: rex.originalName,
+          memberName: null,
+        },
+        language,
+        context,
+        visited,
+        depth + 1
+      );
+      if (chained) return chained;
+    }
+  }
+
+  // 3. Wildcard re-export: `export * from './other'` — try every
+  //    forwarding source. This is the barrel-of-barrels case.
+  for (const rex of reExports) {
+    if (rex.kind === 'wildcard') {
+      const next = resolveImportPath(rex.source, filePath, language, context);
+      if (!next) continue;
+      const chained = findExportedSymbol(next, want, language, context, visited, depth + 1);
+      if (chained) return chained;
+    }
+  }
+
+  return undefined;
 }
