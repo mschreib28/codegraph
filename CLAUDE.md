@@ -117,6 +117,7 @@ codegraph query <search>    # Search symbols
 codegraph context <task>    # Build context for AI
 codegraph hooks install     # Install git auto-sync
 codegraph serve --mcp       # Start MCP server
+codegraph serve --ui        # Start web UI (D3 force-directed graph, default port 7777)
 ```
 
 ## MCP Tools Best Practices

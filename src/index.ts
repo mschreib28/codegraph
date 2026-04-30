@@ -937,6 +937,32 @@ export class CodeGraph {
   // ===========================================================================
 
   /**
+   * Run language-appropriate complexity tools (ESLint/madge/radon) and persist
+   * results in `complexity_metrics`. Replaces any prior data.
+   */
+  async analyzeComplexity(
+    options: import('./complexity').AnalyzeOptions = {}
+  ): Promise<import('./complexity').ComplexityRunSummary> {
+    const { ComplexityAnalyzer } = await import('./complexity');
+    const analyzer = new ComplexityAnalyzer(this.projectRoot, this.config, this.queries);
+    return analyzer.analyze(options);
+  }
+
+  /**
+   * Get every persisted complexity row.
+   */
+  getComplexityMetrics(): ReturnType<QueryBuilder['getAllComplexityMetrics']> {
+    return this.queries.getAllComplexityMetrics();
+  }
+
+  /**
+   * Get complexity rows for a single file.
+   */
+  getComplexityForFile(filePath: string): ReturnType<QueryBuilder['getComplexityForFile']> {
+    return this.queries.getComplexityForFile(filePath);
+  }
+
+  /**
    * Optimize the database (vacuum and analyze)
    */
   optimize(): void {

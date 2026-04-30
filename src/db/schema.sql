@@ -146,3 +146,28 @@ CREATE TABLE IF NOT EXISTS project_metadata (
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+-- =============================================================================
+-- Complexity Metrics
+-- =============================================================================
+
+-- Long-format complexity store: one row per (file, optional symbol, tool, metric).
+-- Allows new tools/metrics to be added without schema changes.
+CREATE TABLE IF NOT EXISTS complexity_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL,
+    node_id TEXT,                    -- nullable; NULL = file-level metric
+    symbol_name TEXT,                -- function/class name when node_id is NULL or unmatchable
+    start_line INTEGER,              -- where the symbol starts, when applicable
+    language TEXT NOT NULL,
+    tool TEXT NOT NULL,              -- 'eslint' | 'madge' | 'radon'
+    metric TEXT NOT NULL,            -- 'cyclomatic' | 'maintainability' | 'fan_in' | 'fan_out' | 'is_circular'
+    value REAL NOT NULL,
+    computed_at INTEGER NOT NULL,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_complexity_file ON complexity_metrics(file_path);
+CREATE INDEX IF NOT EXISTS idx_complexity_node ON complexity_metrics(node_id);
+CREATE INDEX IF NOT EXISTS idx_complexity_metric ON complexity_metrics(metric, value);
+CREATE INDEX IF NOT EXISTS idx_complexity_tool ON complexity_metrics(tool);

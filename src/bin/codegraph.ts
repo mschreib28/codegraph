@@ -11,6 +11,7 @@
  *   codegraph uninit [path]      Remove CodeGraph from a project
  *   codegraph index [path]       Index all files in the project
  *   codegraph sync [path]        Sync changes since last index
+ *   codegraph complexity [path]  Analyze code complexity per language
  *   codegraph status [path]      Show index status
  *   codegraph query <search>     Search for symbols
  *   codegraph files [options]    Show project file structure
@@ -600,6 +601,69 @@ program
   });
 
 /**
+ * codegraph complexity [path]
+ *
+ * Run language-appropriate complexity tools (ESLint + madge for JS/TS,
+ * radon for Python) and persist results to the `complexity_metrics` table.
+ * Tools that are not installed are skipped with a warning.
+ */
+program
+  .command('complexity [path]')
+  .description('Analyze code complexity (ESLint/madge for JS/TS, radon for Python)')
+  .option('-l, --language <lang>', 'Restrict to a single language (e.g. python, typescript)')
+  .option('-q, --quiet', 'Suppress progress output')
+  .option('-j, --json', 'Output a JSON summary')
+  .action(async (pathArg: string | undefined, options: { language?: string; quiet?: boolean; json?: boolean }) => {
+    const projectPath = resolveProjectPath(pathArg);
+
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        info('Run "codegraph init" first');
+        process.exit(1);
+      }
+
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+
+      const summary = await cg.analyzeComplexity({
+        language: options.language as never,
+        onProgress: options.quiet ? undefined : (p) => {
+          if (p.phase === 'analyzing' && p.tool && p.current === p.total) {
+            info(`${p.tool} done`);
+          }
+        },
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(summary, null, 2));
+        cg.destroy();
+        return;
+      }
+
+      if (summary.metricsRecorded === 0 && summary.toolsRun.length === 0) {
+        warn('No complexity tools available. Install one or more:');
+        for (const skip of summary.toolsSkipped) {
+          info(`  ${skip.tool}: ${skip.reason}`);
+        }
+      } else {
+        success(`Recorded ${formatNumber(summary.metricsRecorded)} metrics across ${formatNumber(summary.filesAnalyzed)} files`);
+        if (summary.toolsRun.length > 0) {
+          info(`Tools: ${summary.toolsRun.join(', ')} — ${formatDuration(summary.durationMs)}`);
+        }
+        for (const skip of summary.toolsSkipped) {
+          warn(`Skipped ${skip.tool}: ${skip.reason}`);
+        }
+      }
+
+      cg.destroy();
+    } catch (err) {
+      error(`Failed to analyze complexity: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * codegraph status [path]
  */
 program
@@ -1027,14 +1091,44 @@ program
  */
 program
   .command('serve')
-  .description('Start CodeGraph as an MCP server for AI assistants')
+  .description('Start CodeGraph as an MCP server or web UI')
   .option('-p, --path <path>', 'Project path (optional for MCP mode, uses rootUri from client)')
   .option('--mcp', 'Run as MCP server (stdio transport)')
-  .action(async (options: { path?: string; mcp?: boolean }) => {
+  .option('--ui', 'Run as web UI server (HTTP)')
+  .option('--port <port>', 'Port for --ui mode', '7777')
+  .option('--host <host>', 'Host for --ui mode', '127.0.0.1')
+  .action(async (options: { path?: string; mcp?: boolean; ui?: boolean; port?: string; host?: string }) => {
     const projectPath = options.path ? resolveProjectPath(options.path) : undefined;
 
     try {
-      if (options.mcp) {
+      if (options.ui) {
+        // Web UI mode requires a resolved project path up front (unlike MCP,
+        // which can lazy-init from rootUri sent by the client).
+        const resolvedPath = projectPath ?? resolveProjectPath();
+        if (!isInitialized(resolvedPath)) {
+          error(`CodeGraph not initialized in ${resolvedPath}. Run \`codegraph init\` first.`);
+          process.exit(1);
+        }
+        const port = Number.parseInt(options.port ?? '7777', 10);
+        if (!Number.isFinite(port) || port < 1 || port > 65535) {
+          error(`Invalid port: ${options.port}`);
+          process.exit(1);
+        }
+        const { CodeGraph } = await loadCodeGraph();
+        const cg = await CodeGraph.open(resolvedPath);
+        const { startUiServer } = await import('../server/index');
+        const handle = await startUiServer(cg, { port, host: options.host ?? '127.0.0.1' });
+        info(`CodeGraph UI running at ${chalk.cyan(handle.url)}`);
+        info(`Project: ${chalk.dim(resolvedPath)}`);
+        info('Press Ctrl+C to stop');
+        const shutdown = async () => {
+          try { await handle.close(); } catch { /* ignore */ }
+          try { cg.close(); } catch { /* ignore */ }
+          process.exit(0);
+        };
+        process.on('SIGINT', shutdown);
+        process.on('SIGTERM', shutdown);
+      } else if (options.mcp) {
         // Start MCP server - it handles initialization lazily based on rootUri from client
         const { MCPServer } = await import('../mcp/index');
         const server = new MCPServer(projectPath);
@@ -1043,8 +1137,9 @@ program
       } else {
         // Default: show info about MCP mode.
         // Use stderr so stdout stays clean for any piped/stdio usage.
-        console.error(chalk.bold('\nCodeGraph MCP Server\n'));
+        console.error(chalk.bold('\nCodeGraph Server\n'));
         console.error(chalk.blue('ℹ') + ' Use --mcp flag to start the MCP server');
+        console.error(chalk.blue('ℹ') + ' Use --ui flag to start the web UI (default port 7777)');
         console.error('\nTo use with Claude Code, add to your MCP configuration:');
         console.error(chalk.dim(`
 {

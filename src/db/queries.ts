@@ -1199,6 +1199,158 @@ export class QueryBuilder {
   }
 
   // ===========================================================================
+  // Complexity Metrics
+  // ===========================================================================
+
+  /**
+   * Insert a batch of complexity records inside a transaction.
+   */
+  insertComplexityRecords(records: Array<{
+    filePath: string;
+    nodeId?: string | null;
+    symbolName?: string | null;
+    startLine?: number | null;
+    language: string;
+    tool: string;
+    metric: string;
+    value: number;
+    computedAt: number;
+  }>): void {
+    if (records.length === 0) return;
+    const stmt = this.db.prepare(`
+      INSERT INTO complexity_metrics (
+        file_path, node_id, symbol_name, start_line,
+        language, tool, metric, value, computed_at
+      ) VALUES (
+        @filePath, @nodeId, @symbolName, @startLine,
+        @language, @tool, @metric, @value, @computedAt
+      )
+    `);
+    this.db.transaction(() => {
+      for (const r of records) {
+        stmt.run({
+          filePath: r.filePath,
+          nodeId: r.nodeId ?? null,
+          symbolName: r.symbolName ?? null,
+          startLine: r.startLine ?? null,
+          language: r.language,
+          tool: r.tool,
+          metric: r.metric,
+          value: r.value,
+          computedAt: r.computedAt,
+        });
+      }
+    })();
+  }
+
+  /**
+   * Remove every complexity row (full re-compute on `codegraph complexity`).
+   */
+  clearComplexityMetrics(): void {
+    this.db.exec('DELETE FROM complexity_metrics');
+  }
+
+  /**
+   * Best-effort link of complexity rows to graph nodes via (file_path, symbol_name, start_line).
+   * Updates only rows where node_id is currently NULL.
+   */
+  linkComplexityToNodes(): void {
+    // Match by file + name + start line first (most precise).
+    this.db.exec(`
+      UPDATE complexity_metrics
+      SET node_id = (
+        SELECT n.id FROM nodes n
+        WHERE n.file_path = complexity_metrics.file_path
+          AND n.name = complexity_metrics.symbol_name
+          AND n.start_line = complexity_metrics.start_line
+        LIMIT 1
+      )
+      WHERE node_id IS NULL
+        AND symbol_name IS NOT NULL
+        AND start_line IS NOT NULL
+    `);
+    // Fallback: file + name (when line numbers diverge).
+    this.db.exec(`
+      UPDATE complexity_metrics
+      SET node_id = (
+        SELECT n.id FROM nodes n
+        WHERE n.file_path = complexity_metrics.file_path
+          AND n.name = complexity_metrics.symbol_name
+        LIMIT 1
+      )
+      WHERE node_id IS NULL AND symbol_name IS NOT NULL
+    `);
+  }
+
+  /**
+   * Return every complexity row.
+   */
+  getAllComplexityMetrics(): Array<{
+    filePath: string;
+    nodeId: string | null;
+    symbolName: string | null;
+    startLine: number | null;
+    language: string;
+    tool: string;
+    metric: string;
+    value: number;
+    computedAt: number;
+  }> {
+    const rows = this.db.prepare(`
+      SELECT file_path, node_id, symbol_name, start_line,
+             language, tool, metric, value, computed_at
+      FROM complexity_metrics
+    `).all() as Array<{
+      file_path: string; node_id: string | null; symbol_name: string | null;
+      start_line: number | null; language: string; tool: string;
+      metric: string; value: number; computed_at: number;
+    }>;
+    return rows.map(r => ({
+      filePath: r.file_path,
+      nodeId: r.node_id,
+      symbolName: r.symbol_name,
+      startLine: r.start_line,
+      language: r.language,
+      tool: r.tool,
+      metric: r.metric,
+      value: r.value,
+      computedAt: r.computed_at,
+    }));
+  }
+
+  /**
+   * Get all complexity rows for a single file.
+   */
+  getComplexityForFile(filePath: string): Array<{
+    nodeId: string | null;
+    symbolName: string | null;
+    startLine: number | null;
+    language: string;
+    tool: string;
+    metric: string;
+    value: number;
+  }> {
+    const rows = this.db.prepare(`
+      SELECT node_id, symbol_name, start_line, language, tool, metric, value
+      FROM complexity_metrics
+      WHERE file_path = ?
+      ORDER BY metric, value DESC
+    `).all(filePath) as Array<{
+      node_id: string | null; symbol_name: string | null; start_line: number | null;
+      language: string; tool: string; metric: string; value: number;
+    }>;
+    return rows.map(r => ({
+      nodeId: r.node_id,
+      symbolName: r.symbol_name,
+      startLine: r.start_line,
+      language: r.language,
+      tool: r.tool,
+      metric: r.metric,
+      value: r.value,
+    }));
+  }
+
+  // ===========================================================================
   // Statistics
   // ===========================================================================
 
@@ -1293,6 +1445,7 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM edges');
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
+      this.db.exec('DELETE FROM complexity_metrics');
     })();
   }
 }

@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * Migration definition
@@ -51,6 +51,31 @@ const migrations: Migration[] = [
     up: (db) => {
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
+      `);
+    },
+  },
+  {
+    version: 4,
+    description: 'Add complexity_metrics table for codegraph complexity analysis',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS complexity_metrics (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_path TEXT NOT NULL,
+          node_id TEXT,
+          symbol_name TEXT,
+          start_line INTEGER,
+          language TEXT NOT NULL,
+          tool TEXT NOT NULL,
+          metric TEXT NOT NULL,
+          value REAL NOT NULL,
+          computed_at INTEGER NOT NULL,
+          FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_complexity_file ON complexity_metrics(file_path);
+        CREATE INDEX IF NOT EXISTS idx_complexity_node ON complexity_metrics(node_id);
+        CREATE INDEX IF NOT EXISTS idx_complexity_metric ON complexity_metrics(metric, value);
+        CREATE INDEX IF NOT EXISTS idx_complexity_tool ON complexity_metrics(tool);
       `);
     },
   },

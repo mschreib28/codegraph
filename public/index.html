@@ -1,0 +1,1229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CodeGraph</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1d242d;
+    --border: #2a313c;
+    --text: #d6deeb;
+    --muted: #8b97a8;
+    --accent: #4cc9f0;
+    --accent-2: #f72585;
+    --warn: #f9c74f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  #tabs {
+    display: flex; gap: 2px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 0 8px;
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    background: transparent; border: none; color: var(--muted);
+    padding: 9px 14px 8px; font: inherit; cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  #views { flex: 1; min-height: 0; position: relative; }
+  .view { display: none; height: 100%; }
+  .view.active { display: block; }
+
+  #app { grid-template-columns: 260px 1fr 320px; height: 100%; }
+  #app.active { display: grid; }
+  #graph-pane { position: relative; overflow: hidden; }
+
+  #tree-pane {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 10px 0 14px 0;
+    user-select: none;
+  }
+  #tree-pane h2 {
+    margin: 4px 12px 8px 12px; font-size: 13px; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.6px;
+  }
+  #tree-empty { color: var(--muted); font-style: italic; padding: 0 12px; font-size: 12px; }
+  .tree-row {
+    display: flex; align-items: center;
+    padding: 2px 8px 2px 0;
+    font-size: 12px; line-height: 1.4;
+    cursor: pointer; white-space: nowrap;
+    border-left: 2px solid transparent;
+  }
+  .tree-row:hover { background: var(--panel-2); }
+  .tree-row.selected {
+    background: rgba(76,201,240,0.12);
+    border-left-color: var(--accent);
+    color: var(--accent);
+  }
+  .tree-toggle {
+    display: inline-block; width: 14px; flex-shrink: 0;
+    text-align: center; color: var(--muted); font-size: 10px;
+  }
+  .tree-row.file .tree-toggle { color: transparent; }
+  .tree-icon {
+    display: inline-block; width: 14px; flex-shrink: 0;
+    text-align: center; margin-right: 4px;
+    color: var(--muted); font-size: 11px;
+  }
+  .tree-row.dir .tree-icon { color: var(--accent); }
+  .tree-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+  .tree-row.dir .tree-name { font-weight: 500; }
+  .tree-row.selected .tree-name { color: var(--accent); }
+  .tree-children { display: none; }
+  .tree-children.open { display: block; }
+  .tree-meta { color: var(--muted); font-size: 10px; margin-left: 6px; }
+  svg { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg:active { cursor: grabbing; }
+
+  #header {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: 10px 14px;
+    display: flex; align-items: center; gap: 12px;
+    background: linear-gradient(180deg, rgba(14,17,22,0.92), rgba(14,17,22,0));
+    pointer-events: none;
+    z-index: 5;
+  }
+  #header > * { pointer-events: auto; }
+  #brand {
+    font-weight: 600; letter-spacing: 0.5px; color: var(--accent);
+  }
+  #brand small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  #search {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 11px;
+    border-radius: 6px;
+    font: inherit;
+    outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+  #stats { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #legend {
+    position: absolute; bottom: 12px; left: 14px;
+    background: rgba(22,27,34,0.85);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px; color: var(--muted);
+    z-index: 5;
+  }
+  #legend .swatch {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 5px; vertical-align: middle;
+  }
+  #legend > div { margin: 2px 0; }
+  .legend-cols { display: flex; gap: 18px; }
+  .legend-cols .col { min-width: 130px; }
+  .legend-cols .col h4 {
+    margin: 0 0 4px 0; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.6px; color: var(--text); opacity: 0.7;
+  }
+  .legend-cols .row { margin: 2px 0; }
+  .legend-foot { margin-top: 6px; opacity: 0.85; }
+
+  #side {
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 14px;
+  }
+  #side h2 {
+    margin: 0 0 8px 0; font-size: 13px; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.6px;
+  }
+  #side .empty { color: var(--muted); font-style: italic; }
+  .field { margin: 6px 0; font-size: 12px; }
+  .field .key { color: var(--muted); margin-right: 6px; }
+  .field .val { color: var(--text); word-break: break-all; }
+  .symbol-row {
+    padding: 6px 8px; border-radius: 4px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .symbol-row:hover { background: var(--panel-2); border-color: var(--border); }
+  .symbol-row .name { color: var(--text); }
+  .symbol-row .meta { color: var(--muted); font-size: 11px; }
+  .pill {
+    display: inline-block; padding: 1px 6px; border-radius: 10px;
+    font-size: 10px; background: var(--panel-2); color: var(--muted);
+    margin-right: 4px;
+  }
+  .clear-btn {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    padding: 4px 8px; border-radius: 4px; cursor: pointer; font: inherit;
+  }
+  .clear-btn:hover { color: var(--text); border-color: var(--accent); }
+
+  .breadcrumb {
+    margin: -4px 0 10px 0; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px; line-height: 1.6;
+    word-break: break-all;
+  }
+  .crumb {
+    color: var(--muted); cursor: pointer;
+    padding: 1px 4px; border-radius: 3px;
+  }
+  .crumb:hover { color: var(--text); background: var(--panel-2); }
+  .crumb.current { color: var(--accent); cursor: default; }
+  .crumb.current:hover { background: transparent; }
+  .crumb-sep { color: var(--border); margin: 0 2px; }
+
+  /* D3 elements */
+  .link { stroke: #2f3a4a; stroke-opacity: 0.55; }
+  .link.matched { stroke: var(--accent); stroke-opacity: 0.9; }
+  .link.contains { stroke-dasharray: 2 3; stroke: #44506b; }
+  .node { cursor: pointer; }
+  .node circle { stroke: #0a0d12; stroke-width: 1.2; }
+  .node.dim { opacity: 0.18; }
+  .node.matched circle { stroke: var(--warn); stroke-width: 2; }
+  .node text {
+    fill: var(--text); font-size: 10px; pointer-events: none;
+    text-shadow: 0 0 3px var(--bg), 0 0 3px var(--bg);
+  }
+  .tooltip {
+    position: absolute; pointer-events: none;
+    background: rgba(13,16,21,0.96); border: 1px solid var(--border);
+    color: var(--text); padding: 6px 9px; border-radius: 4px;
+    font-size: 11px; max-width: 320px;
+    z-index: 10;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+  }
+  .tooltip .qn { color: var(--accent); font-weight: 600; }
+  .tooltip .loc { color: var(--muted); }
+
+  /* Complexity view */
+  #complexity-view { display: none; flex-direction: column; height: 100%; }
+  #complexity-view.active { display: flex; }
+  #complexity-toolbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    background: var(--panel); flex-shrink: 0;
+  }
+  #complexity-toolbar .group { display: flex; gap: 2px; background: var(--panel-2); border-radius: 6px; padding: 2px; }
+  #complexity-toolbar .group button {
+    background: transparent; border: none; color: var(--muted);
+    padding: 5px 12px; font: inherit; cursor: pointer; border-radius: 4px;
+  }
+  #complexity-toolbar .group button.active { background: var(--accent); color: #0a0d12; }
+  #complexity-toolbar select {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 8px; font: inherit;
+  }
+  #complexity-toolbar .meta { color: var(--muted); font-size: 12px; margin-left: auto; }
+  #complexity-body { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+  #complexity-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-style: italic; padding: 20px; text-align: center;
+  }
+
+  #treemap-svg { width: 100%; height: 100%; display: block; }
+  .tm-cell rect { stroke: var(--bg); stroke-width: 1; cursor: pointer; }
+  .tm-cell text {
+    fill: #0a0d12; font-size: 11px; font-weight: 500;
+    pointer-events: none;
+    text-shadow: 0 0 2px rgba(255,255,255,0.4);
+  }
+  .risk-low      { fill: #4cc26e; }
+  .risk-medium   { fill: #f9c74f; }
+  .risk-high     { fill: #f08a3e; }
+  .risk-critical { fill: #ef476f; }
+
+  #complexity-table-wrap { width: 100%; height: 100%; overflow: auto; }
+  table.cx-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.cx-table th, table.cx-table td {
+    text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.cx-table th {
+    background: var(--panel); position: sticky; top: 0;
+    color: var(--muted); font-weight: 500; cursor: pointer; user-select: none;
+    text-transform: uppercase; font-size: 10px; letter-spacing: 0.6px;
+  }
+  table.cx-table th.sorted { color: var(--accent); }
+  table.cx-table tbody tr:hover { background: var(--panel-2); }
+  table.cx-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.cx-table td.path { color: var(--text); }
+  table.cx-table td .lang-pill {
+    display: inline-block; padding: 1px 6px; border-radius: 10px;
+    font-size: 10px; background: var(--panel-2); color: var(--muted);
+  }
+  table.cx-table td.risk { font-weight: 500; }
+  table.cx-table td.risk.low      { color: #4cc26e; }
+  table.cx-table td.risk.medium   { color: #f9c74f; }
+  table.cx-table td.risk.high     { color: #f08a3e; }
+  table.cx-table td.risk.critical { color: #ef476f; }
+  .cx-circular { color: #ef476f; font-weight: 600; }
+</style>
+</head>
+<body>
+<nav id="tabs">
+  <button class="tab-btn active" data-tab="graph">Graph</button>
+  <button class="tab-btn" data-tab="complexity">Complexity</button>
+</nav>
+<div id="views">
+<div id="app" class="view active">
+  <aside id="tree-pane">
+    <h2>Files</h2>
+    <div id="tree-root"><div id="tree-empty">loading…</div></div>
+  </aside>
+  <div id="graph-pane">
+    <div id="header">
+      <div id="brand">CodeGraph <small>UI</small></div>
+      <input id="search" placeholder="Search symbols (e.g. searchNodes, GraphTraverser)…" autocomplete="off" />
+      <button id="clear" class="clear-btn">Clear</button>
+      <button id="lang-toggle" class="clear-btn" title="Color file nodes by programming language">Lang colors: off</button>
+      <div id="stats">loading…</div>
+    </div>
+    <svg id="canvas"></svg>
+    <div id="legend">
+      <div id="legend-cols" class="legend-cols"></div>
+      <div class="legend-foot">edge length ∝ inverse similarity</div>
+    </div>
+  </div>
+  <aside id="side">
+    <h2>Details</h2>
+    <div id="detail" class="empty">Click a node to see details. Click a file to expand its symbols. Click a selected node again to deselect.</div>
+  </aside>
+</div>
+
+<section id="complexity-view" class="view">
+  <div id="complexity-toolbar">
+    <div class="group" id="complexity-mode">
+      <button data-mode="treemap" class="active">Treemap</button>
+      <button data-mode="table">Table</button>
+    </div>
+    <select id="complexity-language"><option value="">All languages</option></select>
+    <select id="complexity-risk">
+      <option value="">All risk levels</option>
+      <option value="low">Low (≤10)</option>
+      <option value="medium">Medium (11–20)</option>
+      <option value="high">High (21–50)</option>
+      <option value="critical">Critical (&gt;50)</option>
+    </select>
+    <span class="meta" id="complexity-meta">loading…</span>
+  </div>
+  <div id="complexity-body">
+    <div id="complexity-empty">No complexity data yet. Run <code>codegraph complexity</code> in your project first.</div>
+    <svg id="treemap-svg" style="display:none"></svg>
+    <div id="complexity-table-wrap" style="display:none">
+      <table class="cx-table" id="complexity-table"></table>
+    </div>
+  </div>
+</section>
+</div>
+<div id="tooltip" class="tooltip" style="display:none"></div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+(function () {
+  const svg = d3.select('#canvas');
+  const tooltip = document.getElementById('tooltip');
+  const detail = document.getElementById('detail');
+  const statsEl = document.getElementById('stats');
+  const searchInput = document.getElementById('search');
+  const clearBtn = document.getElementById('clear');
+
+  const TREE_WIDTH = 260;
+  const SIDE_WIDTH = 320;
+  let width = window.innerWidth - TREE_WIDTH - SIDE_WIDTH;
+  let height = window.innerHeight;
+  svg.attr('viewBox', [0, 0, width, height]);
+
+  const root = svg.append('g');
+  const linkLayer = root.append('g').attr('class', 'links');
+  const nodeLayer = root.append('g').attr('class', 'nodes');
+
+  const zoomBehavior = d3.zoom().scaleExtent([0.1, 5]).on('zoom', (event) => {
+    root.attr('transform', event.transform);
+  });
+  svg.call(zoomBehavior);
+
+  // Mutable graph state. Symbol expansions are spliced in alongside file nodes.
+  const state = {
+    nodes: [],
+    links: [],
+    nodeById: new Map(),
+    expandedFiles: new Set(),
+    searchHits: null, // Map<fileId, weight>
+    selectedId: null,
+    // Selection-history breadcrumb. Each entry: { kind: 'search'|'file'|'symbol', id, label, data }
+    breadcrumb: [],
+    // File tree state
+    tree: null,                    // root TreeDir built from file nodes
+    expandedDirs: new Set(),       // directory paths currently open
+  };
+
+  const EMPTY_DETAIL = 'Click a node to see details. Click a file to expand its symbols. Click a selected node again to deselect.';
+
+  // ---- Palette ----------------------------------------------------------
+  // 7 semantic buckets covering every NodeKind (see src/types.ts:14-36).
+  const BUCKETS = [
+    { label: 'File',             color: '#4cc9f0', kinds: ['file'] },
+    { label: 'Type / container', color: '#f72585', kinds: ['class', 'struct', 'interface', 'trait', 'protocol', 'enum', 'type_alias'] },
+    { label: 'Callable',         color: '#f9c74f', kinds: ['function', 'method'] },
+    { label: 'Data',             color: '#90be6d', kinds: ['variable', 'constant', 'property', 'field', 'parameter', 'enum_member'] },
+    { label: 'Module / ns',      color: '#4ecdc4', kinds: ['module', 'namespace'] },
+    { label: 'Boundary (I/O)',   color: '#b388ff', kinds: ['import', 'export'] },
+    { label: 'Web primitive',    color: '#ff9e3d', kinds: ['route', 'component'] },
+  ];
+  const KIND_COLOR = {};
+  for (const b of BUCKETS) for (const k of b.kinds) KIND_COLOR[k] = b.color;
+
+  const FILE_COLOR = '#4cc9f0';
+  const LANG_COLOR = {
+    typescript: '#3178c6', javascript: '#f7df1e', tsx: '#58c4dc', jsx: '#f0d44e',
+    python: '#3572a5', go: '#00add8', rust: '#dea584', java: '#b07219',
+    kotlin: '#a97bff', swift: '#f05138', ruby: '#701516', php: '#787cb5',
+    c: '#555555', cpp: '#f34b7d', csharp: '#178600', dart: '#00b4ab',
+    svelte: '#ff3e00',
+  };
+
+  let colorByLanguage = false;
+  try { colorByLanguage = localStorage.getItem('cg-color-by-lang') === '1'; } catch (_) {}
+
+  function colorFor(n) {
+    if (n.kind === 'file' && colorByLanguage) {
+      return LANG_COLOR[n.language] || FILE_COLOR;
+    }
+    return KIND_COLOR[n.kind] || '#90be6d';
+  }
+
+  const sim = d3.forceSimulation()
+    .force('link', d3.forceLink().id(d => d.id).distance(d => d.distance || 80).strength(0.5))
+    .force('charge', d3.forceManyBody().strength(-130))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 4))
+    .on('tick', tick);
+
+  function nodeRadius(n) {
+    if (n.kind === 'file') {
+      const base = 5 + Math.sqrt(n.symbolCount || 1) * 1.6;
+      const boost = state.searchHits?.get(n.id);
+      if (boost) return base + Math.min(18, Math.sqrt(boost) * 2.2);
+      return base;
+    }
+    return 4; // symbol-level
+  }
+
+  let linkSel = linkLayer.selectAll('line');
+  let nodeSel = nodeLayer.selectAll('g.node');
+
+  function tick() {
+    linkSel
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+    nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+  }
+
+  function update() {
+    // Edges
+    linkSel = linkLayer.selectAll('line').data(state.links, d => `${d.source.id || d.source}|${d.target.id || d.target}|${d.kind || ''}`);
+    linkSel.exit().remove();
+    const linkEnter = linkSel.enter().append('line')
+      .attr('class', d => 'link' + (d.containment ? ' contains' : ''))
+      .attr('stroke-width', d => Math.max(0.6, Math.min(3, Math.log2((d.weight || 1) + 1))));
+    linkSel = linkEnter.merge(linkSel);
+
+    // Nodes
+    nodeSel = nodeLayer.selectAll('g.node').data(state.nodes, d => d.id);
+    nodeSel.exit().remove();
+    const nodeEnter = nodeSel.enter().append('g').attr('class', 'node');
+    nodeEnter.append('circle');
+    nodeEnter.append('title');
+    nodeEnter.append('text').attr('dy', '-0.7em').attr('text-anchor', 'middle');
+    nodeEnter.call(drag(sim));
+    nodeEnter.on('click', (_event, d) => onNodeClick(d));
+    nodeEnter.on('mouseenter', (event, d) => showTooltip(event, d));
+    nodeEnter.on('mousemove', (event) => moveTooltip(event));
+    nodeEnter.on('mouseleave', hideTooltip);
+
+    nodeSel = nodeEnter.merge(nodeSel);
+    nodeSel.select('circle')
+      .attr('r', nodeRadius)
+      .attr('fill', colorFor);
+    nodeSel.select('title').text(d => d.qualifiedName || d.id);
+    nodeSel.select('text')
+      .attr('display', d => (d.kind === 'file' && nodeRadius(d) > 8) ? null : 'none')
+      .text(d => d.name);
+
+    applySearchClasses();
+
+    sim.nodes(state.nodes);
+    sim.force('link').links(state.links);
+    sim.alpha(0.6).restart();
+  }
+
+  function applySearchClasses() {
+    const hits = state.searchHits;
+    nodeSel
+      .classed('matched', d => !!(hits && hits.get(d.id)))
+      .classed('dim', d => !!(hits && d.kind === 'file' && !hits.get(d.id)));
+    linkSel
+      .classed('matched', d => {
+        if (!hits) return false;
+        const s = d.source.id || d.source;
+        const t = d.target.id || d.target;
+        return hits.get(s) && hits.get(t);
+      });
+  }
+
+  function drag(simulation) {
+    return d3.drag()
+      .on('start', (event, d) => {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on('end', (event, d) => {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      });
+  }
+
+  function showTooltip(event, d) {
+    const lines = [];
+    if (d.kind === 'file') {
+      lines.push(`<span class="qn">${escape(d.id)}</span>`);
+      lines.push(`<span class="loc">${d.symbolCount} symbols · ${escape(d.language || '')}</span>`);
+    } else {
+      lines.push(`<span class="pill">${escape(d.kind)}</span><span class="qn">${escape(d.qualifiedName || d.name)}</span>`);
+      lines.push(`<span class="loc">${escape(d.filePath || '')}:${d.startLine || ''}</span>`);
+      if (d.signature) lines.push(`<code>${escape(d.signature)}</code>`);
+    }
+    tooltip.innerHTML = lines.join('<br/>');
+    tooltip.style.display = 'block';
+    moveTooltip(event);
+  }
+  function moveTooltip(event) {
+    tooltip.style.left = (event.clientX + 14) + 'px';
+    tooltip.style.top = (event.clientY + 14) + 'px';
+  }
+  function hideTooltip() { tooltip.style.display = 'none'; }
+
+  function escape(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---------------------------------------------------------------------
+  // File tree (left pane)
+  // ---------------------------------------------------------------------
+  const treeRootEl = document.getElementById('tree-root');
+
+  function buildTree() {
+    // Root is a synthetic dir whose children are the top-level entries.
+    const root = { name: '', path: '', dirs: new Map(), files: [] };
+    const fileNodes = state.nodes.filter(n => n.kind === 'file');
+    for (const f of fileNodes) {
+      const parts = String(f.id).split('/').filter(Boolean);
+      let cursor = root;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const seg = parts[i];
+        let next = cursor.dirs.get(seg);
+        if (!next) {
+          const path = cursor.path ? cursor.path + '/' + seg : seg;
+          next = { name: seg, path, dirs: new Map(), files: [] };
+          cursor.dirs.set(seg, next);
+        }
+        cursor = next;
+      }
+      cursor.files.push({ id: f.id, name: parts[parts.length - 1] || f.id, language: f.language });
+    }
+    sortTree(root);
+    state.tree = root;
+    // Default: only the root level is "open" — i.e. top-level dirs are visible
+    // but their interiors are collapsed (VSCode-style).
+    state.expandedDirs = new Set(['']);
+  }
+
+  function sortTree(dir) {
+    dir.files.sort((a, b) => a.name.localeCompare(b.name));
+    const sortedDirs = new Map([...dir.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+    dir.dirs = sortedDirs;
+    for (const child of dir.dirs.values()) sortTree(child);
+  }
+
+  function renderTree() {
+    if (!state.tree) {
+      treeRootEl.innerHTML = '<div id="tree-empty">no files</div>';
+      return;
+    }
+    treeRootEl.innerHTML = '';
+    treeRootEl.appendChild(renderDirChildren(state.tree, 0));
+    bindTreeHandlers();
+    if (state.selectedId && state.nodeById.get(state.selectedId)?.kind === 'file') {
+      highlightTreeFile(state.selectedId);
+    }
+  }
+
+  function renderDirChildren(dir, depth) {
+    const frag = document.createDocumentFragment();
+    for (const child of dir.dirs.values()) frag.appendChild(renderDir(child, depth));
+    for (const file of dir.files) frag.appendChild(renderFileRow(file, depth));
+    return frag;
+  }
+
+  function renderDir(dir, depth) {
+    const wrap = document.createElement('div');
+    const open = state.expandedDirs.has(dir.path);
+    const row = document.createElement('div');
+    row.className = 'tree-row dir';
+    row.dataset.dir = dir.path;
+    row.style.paddingLeft = (8 + depth * 12) + 'px';
+    row.innerHTML = `
+      <span class="tree-toggle">${open ? '▾' : '▸'}</span>
+      <span class="tree-icon">${open ? '📂' : '📁'}</span>
+      <span class="tree-name">${escape(dir.name)}</span>
+    `;
+    wrap.appendChild(row);
+    const childrenWrap = document.createElement('div');
+    childrenWrap.className = 'tree-children' + (open ? ' open' : '');
+    if (open) childrenWrap.appendChild(renderDirChildren(dir, depth + 1));
+    wrap.appendChild(childrenWrap);
+    return wrap;
+  }
+
+  function renderFileRow(file, depth) {
+    const row = document.createElement('div');
+    row.className = 'tree-row file';
+    row.dataset.fileId = file.id;
+    row.style.paddingLeft = (8 + depth * 12) + 'px';
+    row.innerHTML = `
+      <span class="tree-toggle">·</span>
+      <span class="tree-icon">📄</span>
+      <span class="tree-name" title="${escape(file.id)}">${escape(file.name)}</span>
+    `;
+    return row;
+  }
+
+  function bindTreeHandlers() {
+    treeRootEl.querySelectorAll('.tree-row.dir').forEach(el => {
+      el.addEventListener('click', () => toggleDir(el.dataset.dir));
+    });
+    treeRootEl.querySelectorAll('.tree-row.file').forEach(el => {
+      el.addEventListener('click', () => selectFileFromTree(el.dataset.fileId));
+    });
+  }
+
+  function toggleDir(dirPath) {
+    if (state.expandedDirs.has(dirPath)) state.expandedDirs.delete(dirPath);
+    else state.expandedDirs.add(dirPath);
+    renderTree();
+  }
+
+  function selectFileFromTree(fileId) {
+    const node = state.nodeById.get(fileId);
+    if (!node) return;
+    expandFile(fileId);
+    pushFileCrumb(node);
+    state.selectedId = fileId;
+    renderFileDetail(node);
+    centerOnNode(node);
+    highlightTreeFile(fileId);
+  }
+
+  function revealInTree(fileId) {
+    // Open every ancestor directory so the file row is visible.
+    const parts = String(fileId).split('/').filter(Boolean);
+    let acc = '';
+    let changed = false;
+    // Root is always considered open.
+    if (!state.expandedDirs.has('')) { state.expandedDirs.add(''); changed = true; }
+    for (let i = 0; i < parts.length - 1; i++) {
+      acc = acc ? acc + '/' + parts[i] : parts[i];
+      if (!state.expandedDirs.has(acc)) {
+        state.expandedDirs.add(acc);
+        changed = true;
+      }
+    }
+    if (changed) renderTree();
+    highlightTreeFile(fileId);
+    const el = treeRootEl.querySelector(`.tree-row.file[data-file-id="${cssEscape(fileId)}"]`);
+    if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  function highlightTreeFile(fileId) {
+    treeRootEl.querySelectorAll('.tree-row.selected').forEach(el => el.classList.remove('selected'));
+    if (!fileId) return;
+    const el = treeRootEl.querySelector(`.tree-row.file[data-file-id="${cssEscape(fileId)}"]`);
+    if (el) el.classList.add('selected');
+  }
+
+  function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/["\\]/g, '\\$&');
+  }
+
+  function centerOnNode(node) {
+    if (node == null || node.x == null || node.y == null) return;
+    const k = 1.6;
+    const t = d3.zoomIdentity
+      .translate(width / 2 - k * node.x, height / 2 - k * node.y)
+      .scale(k);
+    svg.transition().duration(450).call(zoomBehavior.transform, t);
+  }
+
+  // ---------------------------------------------------------------------
+  // Data loading
+  // ---------------------------------------------------------------------
+  async function loadGraph() {
+    const [graph, stats] = await Promise.all([
+      fetch('/api/graph').then(r => r.json()),
+      fetch('/api/stats').then(r => r.json()).catch(() => null),
+    ]);
+    state.nodes = graph.nodes.map(n => Object.assign({}, n));
+    state.links = graph.edges.map(e => ({
+      source: e.source,
+      target: e.target,
+      distance: e.distance,
+      weight: e.weight,
+      kinds: e.kinds,
+    }));
+    state.nodeById = new Map(state.nodes.map(n => [n.id, n]));
+    buildTree();
+    renderTree();
+    update();
+    renderLegend();
+    if (stats) {
+      statsEl.textContent = `${stats.totalNodes ?? state.nodes.length} symbols · ${state.nodes.length} files · ${state.links.length} edges`;
+    }
+  }
+
+  async function expandFile(fileId) {
+    if (state.expandedFiles.has(fileId)) return;
+    state.expandedFiles.add(fileId);
+    const data = await fetch(`/api/file/${encodeURIComponent(fileId)}/expand`).then(r => r.json());
+    const fileNode = state.nodeById.get(fileId);
+    for (const sym of data.symbols) {
+      if (state.nodeById.has(sym.id)) continue;
+      const n = Object.assign({}, sym, {
+        x: (fileNode?.x || 0) + (Math.random() - 0.5) * 30,
+        y: (fileNode?.y || 0) + (Math.random() - 0.5) * 30,
+      });
+      state.nodes.push(n);
+      state.nodeById.set(sym.id, n);
+      // contains edge from file → symbol
+      state.links.push({ source: fileId, target: sym.id, distance: 25, weight: 1, containment: true, kind: 'contains' });
+    }
+    for (const e of data.internalEdges) {
+      state.links.push({ source: e.source, target: e.target, distance: 35, weight: 1, kind: e.kind });
+    }
+    update();
+  }
+
+  async function onNodeClick(d) {
+    // Click selected node again -> pop it from breadcrumb (go back one level / clear).
+    if (state.selectedId === d.id) {
+      const top = state.breadcrumb[state.breadcrumb.length - 1];
+      if (top && top.id === d.id) state.breadcrumb.pop();
+      state.selectedId = null;
+      if (d.kind === 'file') highlightTreeFile(null);
+      rerenderForBreadcrumbTop();
+      return;
+    }
+
+    if (d.kind === 'file') {
+      expandFile(d.id);
+      pushFileCrumb(d);
+      state.selectedId = d.id;
+      renderFileDetail(d);
+      revealInTree(d.id);
+    } else {
+      const data = await fetch(`/api/node/${encodeURIComponent(d.id)}`).then(r => r.json());
+      pushSymbolCrumb(d, data);
+      state.selectedId = d.id;
+      renderNodeDetail(data);
+      // If the symbol's parent file is in our graph, mirror that in the tree.
+      const filePath = data.node?.filePath;
+      if (filePath && state.nodeById.has(filePath)) revealInTree(filePath);
+    }
+  }
+
+  function shortFileLabel(fileId) {
+    const parts = String(fileId).split('/');
+    return parts[parts.length - 1] || fileId;
+  }
+
+  function pushCrumb(crumb) {
+    const top = state.breadcrumb[state.breadcrumb.length - 1];
+    if (top && top.id === crumb.id) return;
+    state.breadcrumb.push(crumb);
+  }
+
+  function pushFileCrumb(file) {
+    pushCrumb({ kind: 'file', id: file.id, label: shortFileLabel(file.id), data: file });
+  }
+
+  function pushSymbolCrumb(symbol, data) {
+    const label = symbol.name || data.node?.name || symbol.id;
+    pushCrumb({ kind: 'symbol', id: symbol.id, label, data });
+  }
+
+  function renderBreadcrumb() {
+    if (!state.breadcrumb.length) return '';
+    const parts = state.breadcrumb.map((c, i) => {
+      const isLast = i === state.breadcrumb.length - 1;
+      return `<span class="crumb${isLast ? ' current' : ''}" data-idx="${i}">${escape(c.label)}</span>`;
+    });
+    return `<div class="breadcrumb">${parts.join('<span class="crumb-sep">›</span>')}</div>`;
+  }
+
+  function attachBreadcrumbHandlers() {
+    detail.querySelectorAll('.crumb').forEach(el => {
+      el.addEventListener('click', () => {
+        const idx = parseInt(el.getAttribute('data-idx'), 10);
+        if (Number.isNaN(idx)) return;
+        // Clicking the current crumb deselects it (consistent with click-same-node).
+        if (idx === state.breadcrumb.length - 1) {
+          state.breadcrumb.pop();
+        } else {
+          state.breadcrumb = state.breadcrumb.slice(0, idx + 1);
+        }
+        const top = state.breadcrumb[state.breadcrumb.length - 1];
+        state.selectedId = (top && (top.kind === 'file' || top.kind === 'symbol')) ? top.id : null;
+        rerenderForBreadcrumbTop();
+      });
+    });
+  }
+
+  function rerenderForBreadcrumbTop() {
+    const top = state.breadcrumb[state.breadcrumb.length - 1];
+    if (!top) { clearDetail(); return; }
+    if (top.kind === 'search') renderSearchPanel(top.data);
+    else if (top.kind === 'file') {
+      const file = state.nodeById.get(top.id) || top.data;
+      if (file) renderFileDetail(file);
+    } else if (top.kind === 'symbol') {
+      renderNodeDetail(top.data);
+    }
+  }
+
+  function clearDetail() {
+    state.selectedId = null;
+    state.breadcrumb = [];
+    detail.classList.add('empty');
+    detail.textContent = EMPTY_DETAIL;
+  }
+
+  function renderFileDetail(file) {
+    detail.classList.remove('empty');
+    detail.innerHTML = `
+      ${renderBreadcrumb()}
+      <div class="field"><span class="key">file</span><span class="val">${escape(file.id)}</span></div>
+      <div class="field"><span class="key">language</span><span class="val">${escape(file.language || '')}</span></div>
+      <div class="field"><span class="key">symbols</span><span class="val">${file.symbolCount}</span></div>
+      <div class="field" style="color:var(--muted);font-style:italic">Click a symbol node to inspect, or click this file again to deselect.</div>
+    `;
+    attachBreadcrumbHandlers();
+  }
+
+  function renderNodeDetail(data) {
+    const n = data.node;
+    detail.classList.remove('empty');
+    detail.innerHTML = `
+      ${renderBreadcrumb()}
+      <div class="field"><span class="pill">${escape(n.kind)}</span><span class="val" style="font-weight:600">${escape(n.qualifiedName || n.name)}</span></div>
+      <div class="field"><span class="key">file</span><span class="val">${escape(n.filePath)}:${n.startLine}</span></div>
+      ${n.signature ? `<div class="field"><span class="key">signature</span><div class="val"><code>${escape(n.signature)}</code></div></div>` : ''}
+      ${n.docstring ? `<div class="field"><span class="key">doc</span><div class="val">${escape(n.docstring)}</div></div>` : ''}
+      <div class="field"><span class="key">incoming</span><span class="val">${data.incoming.length}</span></div>
+      <div class="field"><span class="key">outgoing</span><span class="val">${data.outgoing.length}</span></div>
+    `;
+    attachBreadcrumbHandlers();
+  }
+
+  // ---------------------------------------------------------------------
+  // Search
+  // ---------------------------------------------------------------------
+  let searchTimer = null;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const q = searchInput.value.trim();
+    if (!q) { clearSearch(); return; }
+    searchTimer = setTimeout(() => runSearch(q), 200);
+  });
+  clearBtn.addEventListener('click', () => {
+    searchInput.value = '';
+    clearSearch();
+  });
+
+  async function runSearch(q) {
+    const data = await fetch(`/api/search?q=${encodeURIComponent(q)}`).then(r => r.json());
+    const hits = new Map();
+    for (const f of data.matchedFiles) hits.set(f.fileId, f.weight);
+    state.searchHits = hits;
+    state.selectedId = null;
+    state.breadcrumb = [{ kind: 'search', id: `search:${q}`, label: `Search "${q}"`, data }];
+    update();
+    renderSearchPanel(data);
+  }
+
+  function clearSearch() {
+    state.searchHits = null;
+    update();
+    clearDetail();
+  }
+
+  function renderSearchPanel(data) {
+    detail.classList.remove('empty');
+    if (!data.matchedFiles.length) {
+      detail.innerHTML = `${renderBreadcrumb()}<div class="empty">No matches for "${escape(data.query)}"</div>`;
+      attachBreadcrumbHandlers();
+      return;
+    }
+    const rows = data.matchedFiles.slice(0, 25).map(f => {
+      const symList = f.topSymbols.map(s => `<span class="pill">${escape(s.kind)}</span>${escape(s.name)}`).join(' ');
+      return `<div class="symbol-row" data-file="${escape(f.fileId)}">
+        <div class="name">${escape(f.fileId)}</div>
+        <div class="meta">${f.matchCount} matches · weight ${f.weight.toFixed(1)}</div>
+        <div class="meta">${symList}</div>
+      </div>`;
+    }).join('');
+    detail.innerHTML = `${renderBreadcrumb()}<div class="field"><span class="key">query</span><span class="val">${escape(data.query)}</span></div>${rows}`;
+    attachBreadcrumbHandlers();
+    detail.querySelectorAll('.symbol-row').forEach(el => {
+      el.addEventListener('click', () => {
+        const fileId = el.getAttribute('data-file');
+        const fileNode = state.nodeById.get(fileId);
+        if (fileNode) {
+          expandFile(fileId);
+          pushFileCrumb(fileNode);
+          state.selectedId = fileId;
+          renderFileDetail(fileNode);
+          centerOnNode(fileNode);
+          revealInTree(fileId);
+        }
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Color toggle + legend
+  // ---------------------------------------------------------------------
+  const langToggleBtn = document.getElementById('lang-toggle');
+  const legendCols = document.getElementById('legend-cols');
+
+  function recolor() {
+    nodeSel.select('circle').attr('fill', colorFor);
+  }
+
+  function renderLegend() {
+    const symbolCol = BUCKETS.map(b =>
+      `<div class="row"><span class="swatch" style="background:${b.color}"></span>${escape(b.label)}</div>`
+    ).join('');
+
+    let langCol = '';
+    if (colorByLanguage) {
+      const present = new Set();
+      for (const n of state.nodes) if (n.kind === 'file' && n.language) present.add(n.language);
+      const langs = Array.from(present).sort();
+      const rows = langs.map(l => {
+        const c = LANG_COLOR[l] || FILE_COLOR;
+        return `<div class="row"><span class="swatch" style="background:${c}"></span>${escape(l)}</div>`;
+      }).join('') || '<div class="row" style="opacity:0.6">(none yet)</div>';
+      langCol = `<div class="col"><h4>Files by language</h4>${rows}</div>`;
+    }
+
+    legendCols.innerHTML = `<div class="col"><h4>Symbols</h4>${symbolCol}</div>${langCol}`;
+  }
+
+  function syncToggleLabel() {
+    langToggleBtn.textContent = `Lang colors: ${colorByLanguage ? 'on' : 'off'}`;
+  }
+
+  langToggleBtn.addEventListener('click', () => {
+    colorByLanguage = !colorByLanguage;
+    try { localStorage.setItem('cg-color-by-lang', colorByLanguage ? '1' : '0'); } catch (_) {}
+    syncToggleLabel();
+    recolor();
+    renderLegend();
+  });
+
+  syncToggleLabel();
+  renderLegend();
+
+  // ---------------------------------------------------------------------
+  // Resize
+  // ---------------------------------------------------------------------
+  window.addEventListener('resize', () => {
+    width = window.innerWidth - TREE_WIDTH - SIDE_WIDTH;
+    height = window.innerHeight;
+    svg.attr('viewBox', [0, 0, width, height]);
+    sim.force('center', d3.forceCenter(width / 2, height / 2));
+    sim.alpha(0.3).restart();
+  });
+
+  loadGraph().catch(err => {
+    statsEl.textContent = 'failed to load: ' + err.message;
+    detail.textContent = String(err);
+  });
+})();
+
+// =============================================================================
+// Tab switching + Complexity view
+// =============================================================================
+(function () {
+  const tabButtons = document.querySelectorAll('#tabs .tab-btn');
+  const views = {
+    graph: document.getElementById('app'),
+    complexity: document.getElementById('complexity-view'),
+  };
+
+  let complexityLoaded = false;
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabButtons.forEach(b => b.classList.toggle('active', b === btn));
+      const tab = btn.dataset.tab;
+      Object.entries(views).forEach(([name, el]) => {
+        el.classList.toggle('active', name === tab);
+      });
+      if (tab === 'complexity' && !complexityLoaded) {
+        complexityLoaded = true;
+        loadComplexity().catch(err => {
+          document.getElementById('complexity-empty').textContent = 'Failed to load: ' + err.message;
+        });
+      } else if (tab === 'complexity') {
+        renderComplexity();
+      }
+    });
+  });
+
+  // -------- State -------- //
+  const state = {
+    report: null,
+    mode: 'treemap',
+    languageFilter: '',
+    riskFilter: '',
+    sortKey: 'cyclomaticMax',
+    sortDir: 'desc',
+  };
+
+  const meta = document.getElementById('complexity-meta');
+  const empty = document.getElementById('complexity-empty');
+  const treemapSvg = d3.select('#treemap-svg');
+  const tableWrap = document.getElementById('complexity-table-wrap');
+  const table = document.getElementById('complexity-table');
+  const langSel = document.getElementById('complexity-language');
+  const riskSel = document.getElementById('complexity-risk');
+
+  document.querySelectorAll('#complexity-mode button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#complexity-mode button').forEach(b =>
+        b.classList.toggle('active', b === btn));
+      state.mode = btn.dataset.mode;
+      renderComplexity();
+    });
+  });
+  langSel.addEventListener('change', () => { state.languageFilter = langSel.value; renderComplexity(); });
+  riskSel.addEventListener('change', () => { state.riskFilter = riskSel.value; renderComplexity(); });
+  window.addEventListener('resize', () => {
+    if (document.getElementById('complexity-view').classList.contains('active') && state.mode === 'treemap') {
+      renderTreemap();
+    }
+  });
+
+  async function loadComplexity() {
+    meta.textContent = 'loading…';
+    const res = await fetch('/api/complexity');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    state.report = await res.json();
+    populateLanguageSelector();
+    renderComplexity();
+  }
+
+  function populateLanguageSelector() {
+    if (!state.report) return;
+    const langs = Array.from(new Set(state.report.files.map(f => f.language))).sort();
+    langSel.innerHTML = '<option value="">All languages</option>' +
+      langs.map(l => `<option value="${l}">${l}</option>`).join('');
+  }
+
+  function filteredFiles() {
+    if (!state.report) return [];
+    return state.report.files.filter(f => {
+      if (state.languageFilter && f.language !== state.languageFilter) return false;
+      if (state.riskFilter && f.risk !== state.riskFilter) return false;
+      return true;
+    });
+  }
+
+  function renderComplexity() {
+    if (!state.report) return;
+    const files = filteredFiles();
+    const noData = state.report.files.length === 0;
+
+    empty.style.display = noData ? 'flex' : 'none';
+    treemapSvg.style('display', !noData && state.mode === 'treemap' ? 'block' : 'none');
+    tableWrap.style.display = !noData && state.mode === 'table' ? 'block' : 'none';
+
+    const computed = state.report.computedAt
+      ? new Date(state.report.computedAt).toLocaleString()
+      : '—';
+    meta.textContent = `${files.length} file(s) shown · ${state.report.totals.metrics} metrics · tools: ${state.report.toolsPresent.join(', ') || 'none'} · ${computed}`;
+
+    if (noData) return;
+    if (state.mode === 'treemap') renderTreemap(files);
+    else renderTable(files);
+  }
+
+  function renderTreemap(filesIn) {
+    const files = filesIn || filteredFiles();
+    treemapSvg.selectAll('*').remove();
+    const body = document.getElementById('complexity-body');
+    const W = body.clientWidth;
+    const H = body.clientHeight;
+    treemapSvg.attr('viewBox', `0 0 ${W} ${H}`).attr('width', W).attr('height', H);
+
+    if (files.length === 0) return;
+
+    // Build hierarchy from filtered files (rebuild rather than reuse server tree
+    // so filters apply correctly).
+    const root = { name: '', path: '', children: [] };
+    for (const f of files) {
+      const segs = f.filePath.split('/');
+      let node = root, acc = '';
+      for (let i = 0; i < segs.length; i++) {
+        const seg = segs[i];
+        acc = acc ? acc + '/' + seg : seg;
+        const isLeaf = i === segs.length - 1;
+        let child = node.children?.find(c => c.name === seg);
+        if (!child) {
+          child = isLeaf
+            ? { name: seg, path: acc, value: Math.max(1, f.cyclomaticTotal || f.cyclomaticMax || 1),
+                language: f.language, risk: f.risk, cyclomaticMax: f.cyclomaticMax,
+                fanIn: f.fanIn, fanOut: f.fanOut, isCircular: f.isCircular }
+            : { name: seg, path: acc, children: [] };
+          (node.children = node.children || []).push(child);
+        }
+        node = child;
+      }
+    }
+
+    const hierarchy = d3.hierarchy(root)
+      .sum(d => d.value || 0)
+      .sort((a, b) => (b.value || 0) - (a.value || 0));
+    d3.treemap().size([W, H]).paddingInner(2).paddingOuter(2).round(true)(hierarchy);
+
+    const leaves = hierarchy.leaves();
+    const cells = treemapSvg.selectAll('g.tm-cell').data(leaves)
+      .enter().append('g').attr('class', 'tm-cell')
+      .attr('transform', d => `translate(${d.x0},${d.y0})`);
+
+    cells.append('rect')
+      .attr('class', d => 'risk-' + (d.data.risk || 'low'))
+      .attr('width', d => Math.max(0, d.x1 - d.x0))
+      .attr('height', d => Math.max(0, d.y1 - d.y0))
+      .attr('stroke', d => d.data.isCircular ? '#ffffff' : null)
+      .attr('stroke-dasharray', d => d.data.isCircular ? '4 2' : null)
+      .on('mousemove', (ev, d) => showTreemapTip(ev, d))
+      .on('mouseleave', hideTip);
+
+    cells.append('text')
+      .attr('x', 4).attr('y', 14)
+      .each(function (d) {
+        const w = d.x1 - d.x0, h = d.y1 - d.y0;
+        if (w < 38 || h < 18) return;
+        const sel = d3.select(this);
+        sel.text(d.data.name);
+        if (h >= 32 && w >= 60) {
+          sel.append('tspan').attr('x', 4).attr('dy', 12)
+            .style('font-weight', 400).style('font-size', '10px')
+            .text('cc=' + (d.data.cyclomaticMax || 0));
+        }
+      });
+  }
+
+  function showTreemapTip(ev, d) {
+    const tip = document.getElementById('tooltip');
+    tip.innerHTML = `<div class="qn">${escapeHtml(d.data.path)}</div>
+      <div class="loc">${escapeHtml(d.data.language || '')}</div>
+      <div>cyclomatic max: <b>${d.data.cyclomaticMax}</b></div>
+      <div>fan-in: ${d.data.fanIn ?? '—'} · fan-out: ${d.data.fanOut ?? '—'}</div>
+      ${d.data.isCircular ? '<div class="cx-circular">⚠ in circular dependency</div>' : ''}`;
+    tip.style.display = 'block';
+    tip.style.left = (ev.pageX + 12) + 'px';
+    tip.style.top = (ev.pageY + 12) + 'px';
+  }
+  function hideTip() {
+    document.getElementById('tooltip').style.display = 'none';
+  }
+
+  const COLUMNS = [
+    { key: 'filePath', label: 'File', cls: 'path', fmt: v => escapeHtml(v) },
+    { key: 'language', label: 'Lang', cls: '', fmt: v => `<span class="lang-pill">${escapeHtml(v)}</span>` },
+    { key: 'risk', label: 'Risk', cls: 'risk', fmtCell: r => `<td class="risk ${r.risk}">${r.risk}</td>` },
+    { key: 'cyclomaticMax', label: 'CC max', cls: 'num', fmt: v => v.toFixed(0) },
+    { key: 'cyclomaticAvg', label: 'CC avg', cls: 'num', fmt: v => v ? v.toFixed(1) : '—' },
+    { key: 'symbolCount', label: 'Funcs', cls: 'num', fmt: v => v.toFixed(0) },
+    { key: 'fanIn', label: 'Fan-in', cls: 'num', fmt: v => v.toFixed(0) },
+    { key: 'fanOut', label: 'Fan-out', cls: 'num', fmt: v => v.toFixed(0) },
+    { key: 'maintainability', label: 'MI', cls: 'num', fmt: v => (v ?? null) === null ? '—' : v.toFixed(0) },
+    { key: 'isCircular', label: 'Circular', cls: '', fmt: v => v ? '<span class="cx-circular">⚠</span>' : '' },
+  ];
+
+  function renderTable(files) {
+    const sorted = files.slice().sort((a, b) => {
+      const av = a[state.sortKey], bv = b[state.sortKey];
+      const ax = av == null ? -Infinity : av, bx = bv == null ? -Infinity : bv;
+      const cmp = typeof ax === 'string' ? ax.localeCompare(bx) : ax - bx;
+      return state.sortDir === 'asc' ? cmp : -cmp;
+    });
+
+    const head = '<thead><tr>' + COLUMNS.map(c => {
+      const sortedCls = c.key === state.sortKey ? ' sorted' : '';
+      const arrow = c.key === state.sortKey ? (state.sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+      return `<th data-key="${c.key}" class="${sortedCls.trim()}">${c.label}${arrow}</th>`;
+    }).join('') + '</tr></thead>';
+
+    const body = '<tbody>' + sorted.map(r => {
+      return '<tr>' + COLUMNS.map(c => {
+        if (c.fmtCell) return c.fmtCell(r);
+        const v = r[c.key];
+        const html = v == null ? '—' : c.fmt(v);
+        return `<td class="${c.cls}">${html}</td>`;
+      }).join('') + '</tr>';
+    }).join('') + '</tbody>';
+
+    table.innerHTML = head + body;
+    table.querySelectorAll('th[data-key]').forEach(th => {
+      th.addEventListener('click', () => {
+        const k = th.dataset.key;
+        if (state.sortKey === k) state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+        else { state.sortKey = k; state.sortDir = 'desc'; }
+        renderTable(files);
+      });
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[c]);
+  }
+})();
+</script>
+</body>
+</html>
