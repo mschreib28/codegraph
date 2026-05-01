@@ -2,7 +2,8 @@
  * Complexity tests
  *
  * Covers:
- *   - tool detection (mocked execFile)
+ *   - tool detection (only madge is externally probed now)
+ *   - native AST cyclomatic-complexity analyzer (the primary analyzer)
  *   - complexity_metrics schema/migration applied to fresh + legacy DBs
  *   - QueryBuilder insert / get / clear / linkComplexityToNodes
  *   - server projection: buildComplexityReport risk classification + treemap
@@ -43,35 +44,148 @@ describe('Complexity tool detection', () => {
     vi.mocked(execFile).mockReset();
   });
 
-  it('reports all tools available when probes succeed', async () => {
+  it('reports madge available when its probe succeeds', async () => {
     vi.mocked(execFile).mockImplementation(((_cmd: string, _args: any, _opts: any, cb: any) => {
-      // signature: execFile(cmd, args, opts, cb)
       const callback = typeof _opts === 'function' ? _opts : cb;
       const child = { on: () => {} };
-      setImmediate(() => callback(null, '1.0.0', ''));
+      setImmediate(() => callback(null, '6.1.0', ''));
       return child as any;
     }) as any);
 
     const { detectAvailableTools } = await import('../src/complexity/tool-detection');
     const result = await detectAvailableTools('/tmp');
-    expect(result).toEqual({ eslint: true, madge: true, radon: true });
+    expect(result.madge).toBe(true);
   });
 
-  it('reports tool unavailable when probe errors', async () => {
-    vi.mocked(execFile).mockImplementation(((_cmd: string, args: any, _opts: any, cb: any) => {
+  it('reports madge unavailable when probe errors', async () => {
+    vi.mocked(execFile).mockImplementation(((_cmd: string, _args: any, _opts: any, cb: any) => {
       const callback = typeof _opts === 'function' ? _opts : cb;
       const child = { on: () => {} };
-      const tool = Array.isArray(args) ? args.find((a: string) => ['eslint', 'madge'].includes(a)) ?? _cmd : _cmd;
-      const fail = tool === 'eslint' || tool === 'radon';
-      setImmediate(() => callback(fail ? new Error('not found') : null, '', ''));
+      setImmediate(() => callback(new Error('not found'), '', ''));
       return child as any;
     }) as any);
 
     const { detectAvailableTools } = await import('../src/complexity/tool-detection');
     const result = await detectAvailableTools('/tmp');
-    expect(result.eslint).toBe(false);
-    expect(result.madge).toBe(true);
-    expect(result.radon).toBe(false);
+    expect(result.madge).toBe(false);
+  });
+});
+
+describe('Native AST analyzer', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = tempDir();
+  });
+
+  afterEach(() => {
+    cleanup(dir);
+  });
+
+  async function runOn(relPath: string, content: string) {
+    const full = path.join(dir, relPath);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content, 'utf-8');
+    const { createNativeAnalyzer } = await import('../src/complexity/analyzers/native');
+    const analyzer = createNativeAnalyzer();
+    return analyzer.analyze({ projectRoot: dir, files: [relPath], computedAt: 12345 });
+  }
+
+  it('reports CC=1 for a function with no decisions', async () => {
+    const records = await runOn('a.ts', `
+      function plain() { return 42; }
+    `);
+    const plain = records.find((r) => r.symbolName === 'plain');
+    expect(plain).toBeDefined();
+    expect(plain!.value).toBe(1);
+    expect(plain!.tool).toBe('native');
+    expect(plain!.metric).toBe('cyclomatic');
+    expect(plain!.language).toBe('typescript');
+  });
+
+  it('counts a single if as +1 (CC=2)', async () => {
+    const records = await runOn('b.ts', `
+      function branchy(x: number) { if (x > 0) return 1; return 2; }
+    `);
+    const fn = records.find((r) => r.symbolName === 'branchy');
+    expect(fn?.value).toBe(2);
+  });
+
+  it('counts && and || as decisions', async () => {
+    const records = await runOn('c.ts', `
+      function combo(a: boolean, b: boolean, c: boolean) {
+        if (a && b || c) return 1;
+        return 0;
+      }
+    `);
+    // 1 (base) + 1 (if) + 1 (&&) + 1 (||) = 4
+    const fn = records.find((r) => r.symbolName === 'combo');
+    expect(fn?.value).toBe(4);
+  });
+
+  it('counts each switch case', async () => {
+    const records = await runOn('d.ts', `
+      function pick(n: number) {
+        switch (n) {
+          case 1: return 'a';
+          case 2: return 'b';
+          case 3: return 'c';
+          default: return 'z';
+        }
+      }
+    `);
+    // tree-sitter-typescript emits `switch_case` for `case` and `switch_default`
+    // for `default`. We follow ESLint/McCabe and only count `case` clauses, since
+    // `default` is the fallthrough path rather than a true decision point.
+    // 1 (base) + 3 (cases) = 4.
+    const fn = records.find((r) => r.symbolName === 'pick');
+    expect(fn?.value).toBe(4);
+  });
+
+  it('does not inflate outer CC with nested function decisions', async () => {
+    const records = await runOn('e.ts', `
+      function outer() {
+        function inner(x: number) {
+          if (x) return 1;
+          if (x > 1) return 2;
+          return 0;
+        }
+        return inner(0);
+      }
+    `);
+    const outer = records.find((r) => r.symbolName === 'outer');
+    const inner = records.find((r) => r.symbolName === 'inner');
+    expect(outer?.value).toBe(1);
+    expect(inner?.value).toBe(3);
+  });
+
+  it('emits a record with null name for anonymous arrow functions', async () => {
+    const records = await runOn('f.ts', `
+      const fn = (x: number) => x > 0 ? 1 : -1;
+    `);
+    // arrow_function — anonymous, no name field
+    const arrow = records.find((r) => r.symbolName === null && r.value === 2);
+    expect(arrow).toBeDefined();
+  });
+
+  it('handles Python: if/elif/and produces expected CC', async () => {
+    const records = await runOn('g.py', [
+      'def check(x, y):',
+      '    if x and y:',
+      '        return 1',
+      '    elif x or y:',
+      '        return 2',
+      '    return 0',
+    ].join('\n'));
+    // 1 (base) + 1 (if) + 1 (and) + 1 (elif) + 1 (or) = 5
+    const fn = records.find((r) => r.symbolName === 'check');
+    expect(fn?.language).toBe('python');
+    expect(fn?.value).toBe(5);
+  });
+
+  it('skips files in unsupported languages without throwing', async () => {
+    const records = await runOn('readme.txt', 'plain text');
+    expect(records).toEqual([]);
   });
 });
 
@@ -111,7 +225,6 @@ describe('complexity_metrics schema', () => {
     const dbPath = path.join(dir, 'legacy.db');
     const raw = createDatabase(dbPath);
 
-    // Bootstrap a minimal v3 schema: schema_versions + nodes (referenced by FK).
     raw.exec(`
       CREATE TABLE schema_versions (
         version INTEGER PRIMARY KEY,
@@ -138,7 +251,6 @@ describe('complexity_metrics schema', () => {
       INSERT INTO schema_versions (version, applied_at, description) VALUES (3, ${Date.now()}, 'legacy');
     `);
 
-    // Verify table doesn't exist yet
     let exists = raw
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='complexity_metrics'")
       .get();
@@ -184,7 +296,7 @@ describe('QueryBuilder complexity methods', () => {
         symbolName: 'foo',
         startLine: 10,
         language: 'typescript',
-        tool: 'eslint',
+        tool: 'native',
         metric: 'cyclomatic',
         value: 7,
         computedAt: now,
@@ -204,7 +316,7 @@ describe('QueryBuilder complexity methods', () => {
         symbolName: 'bar',
         startLine: 1,
         language: 'python',
-        tool: 'radon',
+        tool: 'native',
         metric: 'cyclomatic',
         value: 12,
         computedAt: now,
@@ -229,7 +341,7 @@ describe('QueryBuilder complexity methods', () => {
         symbolName: 'fn',
         startLine: 1,
         language: 'typescript',
-        tool: 'eslint',
+        tool: 'native',
         metric: 'cyclomatic',
         value: 4,
         computedAt: Date.now(),
@@ -241,7 +353,6 @@ describe('QueryBuilder complexity methods', () => {
   });
 
   it('linkComplexityToNodes resolves node_id by file+name+line then file+name', () => {
-    // Insert a graph node we can link against.
     db.getDb()
       .prepare(
         `INSERT INTO nodes (id, kind, name, qualified_name, file_path, language,
@@ -267,7 +378,7 @@ describe('QueryBuilder complexity methods', () => {
         symbolName: 'precise',
         startLine: 10,
         language: 'typescript',
-        tool: 'eslint',
+        tool: 'native',
         metric: 'cyclomatic',
         value: 5,
         computedAt: Date.now(),
@@ -277,7 +388,7 @@ describe('QueryBuilder complexity methods', () => {
         symbolName: 'loose',
         startLine: 999, // line mismatch — should still link via name fallback
         language: 'typescript',
-        tool: 'eslint',
+        tool: 'native',
         metric: 'cyclomatic',
         value: 8,
         computedAt: Date.now(),
@@ -287,7 +398,7 @@ describe('QueryBuilder complexity methods', () => {
         symbolName: 'unknown_symbol',
         startLine: 1,
         language: 'typescript',
-        tool: 'eslint',
+        tool: 'native',
         metric: 'cyclomatic',
         value: 2,
         computedAt: Date.now(),
@@ -328,10 +439,10 @@ describe('buildComplexityReport projection', () => {
 
     q.insertComplexityRecords([
       // low-risk file (max cc = 5)
-      { filePath: 'src/low.ts', symbolName: 'a', startLine: 1, language: 'typescript', tool: 'eslint', metric: 'cyclomatic', value: 3, computedAt: now },
-      { filePath: 'src/low.ts', symbolName: 'b', startLine: 5, language: 'typescript', tool: 'eslint', metric: 'cyclomatic', value: 5, computedAt: now },
+      { filePath: 'src/low.ts', symbolName: 'a', startLine: 1, language: 'typescript', tool: 'native', metric: 'cyclomatic', value: 3, computedAt: now },
+      { filePath: 'src/low.ts', symbolName: 'b', startLine: 5, language: 'typescript', tool: 'native', metric: 'cyclomatic', value: 5, computedAt: now },
       // critical file (max cc = 75)
-      { filePath: 'src/hot.ts', symbolName: 'big', startLine: 1, language: 'typescript', tool: 'eslint', metric: 'cyclomatic', value: 75, computedAt: now },
+      { filePath: 'src/hot.ts', symbolName: 'big', startLine: 1, language: 'typescript', tool: 'native', metric: 'cyclomatic', value: 75, computedAt: now },
       // file-level madge metrics
       { filePath: 'src/hot.ts', symbolName: null, startLine: null, language: 'typescript', tool: 'madge', metric: 'fan_in', value: 4, computedAt: now },
       { filePath: 'src/hot.ts', symbolName: null, startLine: null, language: 'typescript', tool: 'madge', metric: 'fan_out', value: 11, computedAt: now },
@@ -339,7 +450,6 @@ describe('buildComplexityReport projection', () => {
     ]);
     raw.close();
 
-    // Re-open through CodeGraph and run the projection
     const report = buildComplexityReport(cg);
     expect(report.files.length).toBe(2);
 
@@ -354,10 +464,9 @@ describe('buildComplexityReport projection', () => {
     expect(low.cyclomaticMax).toBe(5);
     expect(low.risk).toBe('low');
 
-    // tree should have a hierarchical root with at least one descendant.
     expect(report.tree).toBeDefined();
     expect(report.tree.children?.length).toBeGreaterThan(0);
-    expect(report.toolsPresent).toContain('eslint');
+    expect(report.toolsPresent).toContain('native');
     expect(report.toolsPresent).toContain('madge');
     expect(report.totals.files).toBe(2);
   });
