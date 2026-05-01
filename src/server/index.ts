@@ -89,11 +89,14 @@ export async function startUiServer(
     });
   });
 
-  const url = `http://${host}:${port}`;
+  // Resolve the actual bound port — when callers pass 0, the OS assigns one.
+  const addr = server.address();
+  const boundPort = typeof addr === 'object' && addr ? addr.port : port;
+  const url = `http://${host}:${boundPort}`;
 
   return {
     server,
-    port,
+    port: boundPort,
     host,
     url,
     close: () =>
@@ -151,8 +154,12 @@ async function handleRequest(
   // /api/complexity/file/<urlencoded path>
   const complexityFileMatch = pathname.match(/^\/api\/complexity\/file\/(.+)$/);
   if (complexityFileMatch && complexityFileMatch[1]) {
-    const filePath = decodeURIComponent(complexityFileMatch[1]);
-    sendJson(res, 200, { filePath, metrics: cg.getComplexityForFile(filePath) });
+    const safe = sanitizeStaticPath(decodeURIComponent(complexityFileMatch[1]));
+    if (!safe) {
+      sendJson(res, 400, { error: 'Invalid file path' });
+      return;
+    }
+    sendJson(res, 200, { filePath: safe, metrics: cg.getComplexityForFile(safe) });
     return;
   }
 
