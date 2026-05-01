@@ -445,13 +445,23 @@ export function createNativeAnalyzer(): LanguageAnalyzer {
           let content: string;
           try {
             content = fs.readFileSync(fullPath, 'utf-8');
-          } catch {
+          } catch (err) {
+            ctx.warnings.push({
+              filePath: relPath,
+              reason: `read failed: ${err instanceof Error ? err.message : String(err)}`,
+              tool: 'native',
+            });
             continue;
           }
           try {
             records.push(...analyzeFile(relPath, content, language, ctx.computedAt));
-          } catch {
+          } catch (err) {
             // A single pathological file shouldn't kill the whole run.
+            ctx.warnings.push({
+              filePath: relPath,
+              reason: `parse failed: ${err instanceof Error ? err.message : String(err)}`,
+              tool: 'native',
+            });
             continue;
           }
         }

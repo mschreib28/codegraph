@@ -5,6 +5,9 @@
 import { Language } from '../types';
 
 export type ComplexityTool = 'native' | 'madge';
+// 'cyclomatic' is currently the only metric emitted by any analyzer. The other
+// values are reserved slots for future analyzers (madge fan-in/out/circular,
+// future maintainability scorer).
 export type ComplexityMetric =
   | 'cyclomatic'
   | 'maintainability'
@@ -32,10 +35,18 @@ export interface ToolAvailability {
   madge: boolean;
 }
 
+export interface AnalyzerWarning {
+  filePath: string;
+  reason: string;
+  tool: ComplexityTool;
+}
+
 export interface AnalyzerContext {
   projectRoot: string;
   files: string[];           // project-relative file paths
   computedAt: number;
+  /** Analyzers push per-file failures here so the orchestrator can surface them. */
+  warnings: AnalyzerWarning[];
 }
 
 export interface LanguageAnalyzer {
@@ -54,6 +65,8 @@ export interface ComplexityRunSummary {
   metricsRecorded: number;
   toolsRun: ComplexityTool[];
   toolsSkipped: { tool: ComplexityTool; reason: string }[];
+  /** Per-file failures (parse error, unreadable file). Empty on a clean run. */
+  warnings: AnalyzerWarning[];
   durationMs: number;
 }
 

@@ -19,6 +19,7 @@ import { createNativeAnalyzer } from './analyzers/native';
 import { createMadgeAnalyzer } from './analyzers/madge';
 import {
   AnalyzerContext,
+  AnalyzerWarning,
   ComplexityProgress,
   ComplexityRecord,
   ComplexityRunSummary,
@@ -60,6 +61,7 @@ export class ComplexityAnalyzer {
     const allRecords: ComplexityRecord[] = [];
     const toolsRun: ComplexityTool[] = [];
     const toolsSkipped: { tool: ComplexityTool; reason: string }[] = [];
+    const warnings: AnalyzerWarning[] = [];
 
     onProgress?.({ phase: 'analyzing', current: 0, total: analyzers.length });
 
@@ -79,6 +81,7 @@ export class ComplexityAnalyzer {
         projectRoot: this.projectRoot,
         files,
         computedAt,
+        warnings,
       };
       try {
         const records = await analyzer.analyze(ctx);
@@ -97,10 +100,9 @@ export class ComplexityAnalyzer {
     if (allRecords.length > 0) {
       // Replace any prior data so a re-run reflects current state.
       this.queries.clearComplexityMetrics();
-      this.queries.insertComplexityRecords(allRecords);
-
-      // Match records to graph nodes where possible (best-effort, doesn't block).
-      this.queries.linkComplexityToNodes();
+      // Insert + link in a single transaction so a failure mid-way can't
+      // leave the table half-linked.
+      this.queries.storeComplexityRecords(allRecords);
     }
     onProgress?.({ phase: 'storing', current: allRecords.length, total: allRecords.length });
 
@@ -111,6 +113,7 @@ export class ComplexityAnalyzer {
       metricsRecorded: allRecords.length,
       toolsRun,
       toolsSkipped,
+      warnings,
       durationMs: Date.now() - start,
     };
   }
