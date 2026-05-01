@@ -313,13 +313,13 @@ function toRelative(projectRoot: string, filePath: string): string {
 export interface ComplexityFileEntry {
   filePath: string;            // project-relative
   language: string;
-  cyclomaticMax: number;       // worst function in file (eslint/radon)
+  cyclomaticMax: number;       // worst function in file (native AST)
   cyclomaticAvg: number;       // mean of per-function values
   cyclomaticTotal: number;     // sum (used for treemap area)
   fanIn: number;
   fanOut: number;
   isCircular: boolean;
-  maintainability?: number;    // radon mi (Python only)
+  maintainability?: number;    // optional, no analyzer currently produces this
   symbolCount: number;         // # of measured symbols in this file
   risk: 'low' | 'medium' | 'high' | 'critical';
 }

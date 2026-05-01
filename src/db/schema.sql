@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS complexity_metrics (
     symbol_name TEXT,                -- function/class name when node_id is NULL or unmatchable
     start_line INTEGER,              -- where the symbol starts, when applicable
     language TEXT NOT NULL,
-    tool TEXT NOT NULL,              -- 'eslint' | 'madge' | 'radon'
+    tool TEXT NOT NULL,              -- 'native' | 'madge'
     metric TEXT NOT NULL,            -- 'cyclomatic' | 'maintainability' | 'fan_in' | 'fan_out' | 'is_circular'
     value REAL NOT NULL,
     computed_at INTEGER NOT NULL,

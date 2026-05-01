@@ -4,7 +4,7 @@
 
 import { Language } from '../types';
 
-export type ComplexityTool = 'eslint' | 'madge' | 'radon';
+export type ComplexityTool = 'native' | 'madge';
 export type ComplexityMetric =
   | 'cyclomatic'
   | 'maintainability'
@@ -28,9 +28,8 @@ export interface ComplexityRecord {
 }
 
 export interface ToolAvailability {
-  eslint: boolean;
+  /** madge is the only externally-detected tool now — used for fan-in/out + circular deps. */
   madge: boolean;
-  radon: boolean;
 }
 
 export interface AnalyzerContext {

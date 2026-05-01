@@ -603,13 +603,14 @@ program
 /**
  * codegraph complexity [path]
  *
- * Run language-appropriate complexity tools (ESLint + madge for JS/TS,
- * radon for Python) and persist results to the `complexity_metrics` table.
- * Tools that are not installed are skipped with a warning.
+ * Compute cyclomatic complexity from the tree-sitter ASTs codegraph already
+ * produces (covers every supported language with no external tool needed),
+ * and optionally augment with madge for JS/TS dependency metrics (fan-in,
+ * fan-out, circular). Results land in the `complexity_metrics` table.
  */
 program
   .command('complexity [path]')
-  .description('Analyze code complexity (ESLint/madge for JS/TS, radon for Python)')
+  .description('Analyze code complexity (native AST cyclomatic for all languages, madge for JS/TS dependency metrics)')
   .option('-l, --language <lang>', 'Restrict to a single language (e.g. python, typescript)')
   .option('-q, --quiet', 'Suppress progress output')
   .option('-j, --json', 'Output a JSON summary')

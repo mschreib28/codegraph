@@ -1,9 +1,13 @@
 /**
  * ComplexityAnalyzer
  *
- * Orchestrates per-language complexity tools (ESLint, madge, radon) and
+ * Orchestrates the per-language complexity analyzers (native AST + madge) and
  * persists results into the `complexity_metrics` table. Mirrors the
- * ExtractionOrchestrator pattern but with no tree-sitter dependency.
+ * ExtractionOrchestrator pattern.
+ *
+ * The native analyzer covers cyclomatic complexity for every tree-sitter
+ * language codegraph already parses. madge stays as an optional supplement
+ * for JS/TS dependency metrics (fan-in / fan-out / circular).
  */
 
 import { CodeGraphConfig, Language } from '../types';
@@ -11,9 +15,8 @@ import { QueryBuilder } from '../db/queries';
 import { scanDirectoryAsync } from '../extraction';
 import { detectLanguage } from '../extraction/grammars';
 import { detectAvailableTools } from './tool-detection';
-import { createEslintAnalyzer } from './analyzers/eslint';
+import { createNativeAnalyzer } from './analyzers/native';
 import { createMadgeAnalyzer } from './analyzers/madge';
-import { createRadonAnalyzer } from './analyzers/radon';
 import {
   AnalyzerContext,
   ComplexityProgress,
@@ -115,9 +118,8 @@ export class ComplexityAnalyzer {
 
 function buildAnalyzers(tools: ToolAvailability): LanguageAnalyzer[] {
   return [
-    createEslintAnalyzer(tools.eslint),
+    createNativeAnalyzer(),
     createMadgeAnalyzer(tools.madge),
-    createRadonAnalyzer(tools.radon),
   ];
 }
 
@@ -148,8 +150,7 @@ function collectFilesForAnalyzer(
 
 function missingToolReason(tool: ComplexityTool): string {
   switch (tool) {
-    case 'eslint': return 'eslint not found — install with `npm i -D eslint` or globally';
     case 'madge': return 'madge not found — install with `npm i -D madge`';
-    case 'radon': return 'radon not found — install with `pip install radon`';
+    case 'native': return 'native AST analyzer unavailable (this should not happen)';
   }
 }

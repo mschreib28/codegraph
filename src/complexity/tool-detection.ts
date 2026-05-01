@@ -1,9 +1,10 @@
 /**
- * Detect which complexity tools are available on the system.
+ * Detect which optional complexity tools are available on the system.
  *
- * For npm-distributed tools (eslint, madge) we try `npx --no-install --version`
- * which succeeds only if the binary exists in node_modules or is global.
- * For radon we check the executable on PATH.
+ * The native AST-based analyzer is always available (it uses tree-sitter
+ * grammars that ship with codegraph). The only externally-detected tool now
+ * is madge, used for circular-dependency / fan-in / fan-out metrics that the
+ * AST can't produce on its own.
  */
 
 import { execFile } from 'child_process';
@@ -21,10 +22,6 @@ function probe(cmd: string, args: string[], cwd: string): Promise<boolean> {
 }
 
 export async function detectAvailableTools(projectRoot: string): Promise<ToolAvailability> {
-  const [eslint, madge, radon] = await Promise.all([
-    probe('npx', ['--no-install', 'eslint', '--version'], projectRoot),
-    probe('npx', ['--no-install', 'madge', '--version'], projectRoot),
-    probe('radon', ['--version'], projectRoot),
-  ]);
-  return { eslint, madge, radon };
+  const madge = await probe('npx', ['--no-install', 'madge', '--version'], projectRoot);
+  return { madge };
 }
