@@ -315,13 +315,12 @@
       <button data-mode="table">Table</button>
     </div>
     <select id="complexity-language"><option value="">All languages</option></select>
-    <select id="complexity-risk">
-      <option value="">All risk levels</option>
-      <option value="low">Low (≤10)</option>
-      <option value="medium">Medium (11–20)</option>
-      <option value="high">High (21–50)</option>
-      <option value="critical">Critical (&gt;50)</option>
-    </select>
+    <div class="group" id="complexity-risk" role="group" aria-label="Risk level filter">
+      <button data-risk="low" title="Low (≤10)">Low</button>
+      <button data-risk="medium" title="Medium (11–20)">Medium</button>
+      <button data-risk="high" title="High (21–50)">High</button>
+      <button data-risk="critical" title="Critical (&gt;50)">Critical</button>
+    </div>
     <span class="meta" id="complexity-meta">loading…</span>
   </div>
   <div id="complexity-body">
@@ -1016,7 +1015,7 @@
     report: null,
     mode: 'treemap',
     languageFilter: '',
-    riskFilter: '',
+    riskFilters: new Set(),
     sortKey: 'cyclomaticMax',
     sortDir: 'desc',
   };
@@ -1027,7 +1026,7 @@
   const tableWrap = document.getElementById('complexity-table-wrap');
   const table = document.getElementById('complexity-table');
   const langSel = document.getElementById('complexity-language');
-  const riskSel = document.getElementById('complexity-risk');
+  const riskGroup = document.getElementById('complexity-risk');
 
   document.querySelectorAll('#complexity-mode button').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1038,7 +1037,15 @@
     });
   });
   langSel.addEventListener('change', () => { state.languageFilter = langSel.value; renderComplexity(); });
-  riskSel.addEventListener('change', () => { state.riskFilter = riskSel.value; renderComplexity(); });
+  riskGroup.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const r = btn.dataset.risk;
+      if (state.riskFilters.has(r)) state.riskFilters.delete(r);
+      else state.riskFilters.add(r);
+      btn.classList.toggle('active', state.riskFilters.has(r));
+      renderComplexity();
+    });
+  });
   window.addEventListener('resize', () => {
     if (document.getElementById('complexity-view').classList.contains('active') && state.mode === 'treemap') {
       renderTreemap();
@@ -1065,7 +1072,7 @@
     if (!state.report) return [];
     return state.report.files.filter(f => {
       if (state.languageFilter && f.language !== state.languageFilter) return false;
-      if (state.riskFilter && f.risk !== state.riskFilter) return false;
+      if (state.riskFilters.size > 0 && !state.riskFilters.has(f.risk)) return false;
       return true;
     });
   }
