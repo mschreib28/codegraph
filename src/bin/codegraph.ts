@@ -655,6 +655,16 @@ program
         for (const skip of summary.toolsSkipped) {
           warn(`Skipped ${skip.tool}: ${skip.reason}`);
         }
+        if (summary.warnings.length > 0) {
+          warn(`${formatNumber(summary.warnings.length)} file(s) skipped due to errors:`);
+          const preview = summary.warnings.slice(0, 10);
+          for (const w of preview) {
+            info(`  [${w.tool}] ${w.filePath}: ${w.reason}`);
+          }
+          if (summary.warnings.length > preview.length) {
+            info(`  …and ${formatNumber(summary.warnings.length - preview.length)} more (use --json to see all)`);
+          }
+        }
       }
 
       cg.destroy();
