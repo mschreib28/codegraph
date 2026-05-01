@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * Migration definition
@@ -76,6 +76,27 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_complexity_node ON complexity_metrics(node_id);
         CREATE INDEX IF NOT EXISTS idx_complexity_metric ON complexity_metrics(metric, value);
         CREATE INDEX IF NOT EXISTS idx_complexity_tool ON complexity_metrics(tool);
+      `);
+    },
+  },
+  {
+    version: 5,
+    description: 'Dedup complexity_metrics rows and add UNIQUE index on (file, tool, metric, symbol)',
+    up: (db) => {
+      // Drop duplicates from any prior runs that didn't clear the table first.
+      // Keep the row with the highest id (most recent insert).
+      db.exec(`
+        DELETE FROM complexity_metrics WHERE id NOT IN (
+          SELECT MAX(id) FROM complexity_metrics
+          GROUP BY file_path, tool, metric,
+                   COALESCE(symbol_name, ''),
+                   COALESCE(start_line, -1)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_complexity_unique ON complexity_metrics(
+          file_path, tool, metric,
+          COALESCE(symbol_name, ''),
+          COALESCE(start_line, -1)
+        );
       `);
     },
   },

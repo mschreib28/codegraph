@@ -179,6 +179,7 @@ export class QueryBuilder {
     getUnresolvedBatch?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
     getAllNodeNames?: SqliteStatement;
+    deleteComplexityMetricsByFile?: SqliteStatement;
   } = {};
 
   constructor(db: SqliteDatabase) {
@@ -952,11 +953,25 @@ export class QueryBuilder {
   deleteFile(filePath: string): void {
     this.db.transaction(() => {
       this.deleteNodesByFile(filePath);
+      this.deleteComplexityMetricsByFile(filePath);
       if (!this.stmts.deleteFile) {
         this.stmts.deleteFile = this.db.prepare('DELETE FROM files WHERE path = ?');
       }
       this.stmts.deleteFile.run(filePath);
     })();
+  }
+
+  /**
+   * Delete complexity rows for a single file. The FK on node_id is
+   * ON DELETE SET NULL, so deleting nodes alone leaves orphan rows behind.
+   */
+  deleteComplexityMetricsByFile(filePath: string): void {
+    if (!this.stmts.deleteComplexityMetricsByFile) {
+      this.stmts.deleteComplexityMetricsByFile = this.db.prepare(
+        'DELETE FROM complexity_metrics WHERE file_path = ?'
+      );
+    }
+    this.stmts.deleteComplexityMetricsByFile.run(filePath);
   }
 
   /**
@@ -1217,8 +1232,23 @@ export class QueryBuilder {
     computedAt: number;
   }>): void {
     if (records.length === 0) return;
+    this.db.transaction(() => {
+      this.insertComplexityRecordsRaw(records);
+    })();
+  }
+
+  /**
+   * Insert without opening a transaction. Used by storeComplexityRecords so
+   * insert+link share a single outer transaction without nesting (the WASM
+   * backend doesn't support nested BEGINs).
+   */
+  private insertComplexityRecordsRaw(records: Parameters<QueryBuilder['insertComplexityRecords']>[0]): void {
+    if (records.length === 0) return;
+    // INSERT OR REPLACE makes re-runs idempotent against the
+    // idx_complexity_unique constraint (file_path, tool, metric, symbol_name,
+    // start_line), so accidental double-runs don't accumulate stale rows.
     const stmt = this.db.prepare(`
-      INSERT INTO complexity_metrics (
+      INSERT OR REPLACE INTO complexity_metrics (
         file_path, node_id, symbol_name, start_line,
         language, tool, metric, value, computed_at
       ) VALUES (
@@ -1226,21 +1256,19 @@ export class QueryBuilder {
         @language, @tool, @metric, @value, @computedAt
       )
     `);
-    this.db.transaction(() => {
-      for (const r of records) {
-        stmt.run({
-          filePath: r.filePath,
-          nodeId: r.nodeId ?? null,
-          symbolName: r.symbolName ?? null,
-          startLine: r.startLine ?? null,
-          language: r.language,
-          tool: r.tool,
-          metric: r.metric,
-          value: r.value,
-          computedAt: r.computedAt,
-        });
-      }
-    })();
+    for (const r of records) {
+      stmt.run({
+        filePath: r.filePath,
+        nodeId: r.nodeId ?? null,
+        symbolName: r.symbolName ?? null,
+        startLine: r.startLine ?? null,
+        language: r.language,
+        tool: r.tool,
+        metric: r.metric,
+        value: r.value,
+        computedAt: r.computedAt,
+      });
+    }
   }
 
   /**
@@ -1251,8 +1279,25 @@ export class QueryBuilder {
   }
 
   /**
+   * Insert complexity records and link them to graph nodes atomically.
+   * Either both steps commit or neither — prevents half-linked state if
+   * linkComplexityToNodes throws after rows are inserted.
+   */
+  storeComplexityRecords(records: Parameters<QueryBuilder['insertComplexityRecords']>[0]): void {
+    if (records.length === 0) return;
+    this.db.transaction(() => {
+      this.insertComplexityRecordsRaw(records);
+      this.linkComplexityToNodes();
+    })();
+  }
+
+  /**
    * Best-effort link of complexity rows to graph nodes via (file_path, symbol_name, start_line).
-   * Updates only rows where node_id is currently NULL.
+   * Updates only rows where node_id is currently NULL. Atomicity is the
+   * caller's responsibility — storeComplexityRecords wraps insert+link in one
+   * transaction. Wrapping a transaction here would fail on the WASM backend,
+   * which doesn't support nested BEGINs (better-sqlite3 promotes nested
+   * transactions to SAVEPOINTs, the WASM adapter doesn't).
    */
   linkComplexityToNodes(): void {
     // Match by file + name + start line first (most precise).

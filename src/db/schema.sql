@@ -171,3 +171,10 @@ CREATE INDEX IF NOT EXISTS idx_complexity_file ON complexity_metrics(file_path);
 CREATE INDEX IF NOT EXISTS idx_complexity_node ON complexity_metrics(node_id);
 CREATE INDEX IF NOT EXISTS idx_complexity_metric ON complexity_metrics(metric, value);
 CREATE INDEX IF NOT EXISTS idx_complexity_tool ON complexity_metrics(tool);
+-- Dedup key: one row per (file, tool, metric, symbol). COALESCE handles
+-- nullable symbol_name/start_line so file-level metrics still dedup.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_complexity_unique ON complexity_metrics(
+    file_path, tool, metric,
+    COALESCE(symbol_name, ''),
+    COALESCE(start_line, -1)
+);
