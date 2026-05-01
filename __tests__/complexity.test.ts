@@ -88,7 +88,7 @@ describe('Native AST analyzer', () => {
     fs.writeFileSync(full, content, 'utf-8');
     const { createNativeAnalyzer } = await import('../src/complexity/analyzers/native');
     const analyzer = createNativeAnalyzer();
-    return analyzer.analyze({ projectRoot: dir, files: [relPath], computedAt: 12345 });
+    return analyzer.analyze({ projectRoot: dir, files: [relPath], computedAt: 12345, warnings: [] });
   }
 
   it('reports CC=1 for a function with no decisions', async () => {
@@ -469,5 +469,200 @@ describe('buildComplexityReport projection', () => {
     expect(report.toolsPresent).toContain('native');
     expect(report.toolsPresent).toContain('madge');
     expect(report.totals.files).toBe(2);
+  });
+});
+
+describe('QueryBuilder complexity dedup + cascade (Fix 2 / Fix 5)', () => {
+  let dir: string;
+  let db: DatabaseConnection;
+  let queries: QueryBuilder;
+
+  beforeEach(() => {
+    dir = tempDir();
+    db = DatabaseConnection.initialize(path.join(dir, 'test.db'));
+    queries = new QueryBuilder(db.getDb());
+  });
+
+  afterEach(() => {
+    db.close();
+    cleanup(dir);
+  });
+
+  it('insertComplexityRecords is idempotent against (file,tool,metric,symbol,line)', () => {
+    const record = {
+      filePath: 'src/dup.ts',
+      symbolName: 'foo',
+      startLine: 10,
+      language: 'typescript',
+      tool: 'native',
+      metric: 'cyclomatic',
+      value: 5,
+      computedAt: Date.now(),
+    };
+
+    queries.insertComplexityRecords([record]);
+    queries.insertComplexityRecords([{ ...record, value: 9 }]); // re-run with new value
+
+    const all = queries.getAllComplexityMetrics();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.value).toBe(9); // INSERT OR REPLACE keeps the latest value
+  });
+
+  it('storeComplexityRecords inserts and links atomically', () => {
+    db.getDb()
+      .prepare(
+        `INSERT INTO nodes (id, kind, name, qualified_name, file_path, language,
+           start_line, end_line, start_column, end_column,
+           is_exported, is_async, is_static, is_abstract, updated_at)
+         VALUES (?, 'function', 'fn', 'fn', 'src/x.ts', 'typescript',
+           1, 2, 0, 0, 0, 0, 0, 0, ?)`
+      )
+      .run('node-1', Date.now());
+
+    queries.storeComplexityRecords([
+      {
+        filePath: 'src/x.ts',
+        symbolName: 'fn',
+        startLine: 1,
+        language: 'typescript',
+        tool: 'native',
+        metric: 'cyclomatic',
+        value: 3,
+        computedAt: Date.now(),
+      },
+    ]);
+
+    const rows = queries.getAllComplexityMetrics();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.nodeId).toBe('node-1'); // proves link ran in same call
+  });
+
+  it('deleteFile removes complexity_metrics rows for that file', () => {
+    queries.insertComplexityRecords([
+      {
+        filePath: 'src/a.ts', symbolName: 'fn', startLine: 1,
+        language: 'typescript', tool: 'native', metric: 'cyclomatic',
+        value: 4, computedAt: Date.now(),
+      },
+      {
+        filePath: 'src/b.ts', symbolName: 'gn', startLine: 1,
+        language: 'typescript', tool: 'native', metric: 'cyclomatic',
+        value: 6, computedAt: Date.now(),
+      },
+    ]);
+
+    expect(queries.getAllComplexityMetrics()).toHaveLength(2);
+
+    queries.deleteFile('src/a.ts');
+
+    const remaining = queries.getAllComplexityMetrics();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.filePath).toBe('src/b.ts');
+  });
+});
+
+describe('Native analyzer warnings (Fix 3)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = tempDir();
+  });
+
+  afterEach(() => {
+    cleanup(dir);
+  });
+
+  it('records a warning when a file cannot be read instead of failing silently', async () => {
+    const { createNativeAnalyzer } = await import('../src/complexity/analyzers/native');
+    const analyzer = createNativeAnalyzer();
+    const warnings: import('../src/complexity/types').AnalyzerWarning[] = [];
+
+    // Reference a .ts file that does not exist on disk — readFileSync will throw.
+    const records = await analyzer.analyze({
+      projectRoot: dir,
+      files: ['missing.ts'],
+      computedAt: Date.now(),
+      warnings,
+    });
+
+    expect(records).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.filePath).toBe('missing.ts');
+    expect(warnings[0]!.tool).toBe('native');
+    expect(warnings[0]!.reason).toMatch(/read failed/);
+  });
+});
+
+describe('UI server complexity endpoint path validation (Fix 4)', () => {
+  let dir: string;
+  let cg: CodeGraph;
+  let handle: import('../src/server').UiServerHandle;
+
+  beforeEach(async () => {
+    dir = tempDir();
+    cg = CodeGraph.initSync(dir);
+
+    // Seed a complexity row for a valid relative path so the 200 case has data.
+    const dbPath = getDatabasePath(dir);
+    const raw = DatabaseConnection.open(dbPath);
+    const q = new QueryBuilder(raw.getDb());
+    q.insertComplexityRecords([
+      {
+        filePath: 'src/ok.ts', symbolName: 'fn', startLine: 1,
+        language: 'typescript', tool: 'native', metric: 'cyclomatic',
+        value: 3, computedAt: Date.now(),
+      },
+    ]);
+    raw.close();
+
+    const { startUiServer } = await import('../src/server');
+    handle = await startUiServer(cg, { port: 0, host: '127.0.0.1' });
+  });
+
+  afterEach(async () => {
+    await handle.close();
+    cg.close();
+    cleanup(dir);
+  });
+
+  // Use http.request directly — fetch's address resolution can fail on macOS loopback
+  // when the server is bound to a randomized port.
+  function get(pathAndQuery: string): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = require('http').request(
+        {
+          host: handle.host,
+          port: handle.port,
+          path: pathAndQuery,
+          method: 'GET',
+        },
+        (res: import('http').IncomingMessage) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }));
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('rejects path traversal with 400', async () => {
+    const res = await get('/api/complexity/file/..%2F..%2Fetc%2Fpasswd');
+    expect(res.status).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/Invalid file path/);
+  });
+
+  it('rejects absolute paths with 400', async () => {
+    const res = await get(`/api/complexity/file/${encodeURIComponent('/etc/passwd')}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 200 for a valid project-relative path', async () => {
+    const res = await get(`/api/complexity/file/${encodeURIComponent('src/ok.ts')}`);
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { filePath: string; metrics: unknown[] };
+    expect(body.filePath).toBe('src/ok.ts');
+    expect(body.metrics).toHaveLength(1);
   });
 });
