@@ -50,4 +50,13 @@ export const pythonExtractor: LanguageExtractor = {
     // import_statement creates multiple imports - return null for core fallback
     return null;
   },
+  extractVariables: (node, source) => {
+    const left = getChildByField(node, 'left') || node.namedChild(0);
+    const right = getChildByField(node, 'right') || node.namedChild(1);
+    if (!left || left.type !== 'identifier') return [];
+    const name = getNodeText(left, source);
+    const initValue = right ? getNodeText(right, source).slice(0, 100) : undefined;
+    const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
+    return [{ name, signature: initSignature }];
+  },
 };

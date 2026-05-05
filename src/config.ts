@@ -47,67 +47,61 @@ function isSafeRegex(pattern: string): boolean {
   }
 }
 
+function validateRequiredFields(c: Record<string, unknown>): boolean {
+  return typeof c.version === 'number'
+    && typeof c.rootDir === 'string'
+    && Array.isArray(c.include)
+    && Array.isArray(c.exclude)
+    && Array.isArray(c.languages)
+    && Array.isArray(c.frameworks)
+    && typeof c.maxFileSize === 'number'
+    && typeof c.extractDocstrings === 'boolean'
+    && typeof c.trackCallSites === 'boolean';
+}
+
+function validateStringArrays(c: Record<string, unknown>): boolean {
+  return (c.include as unknown[]).every((p) => typeof p === 'string')
+    && (c.exclude as unknown[]).every((p) => typeof p === 'string');
+}
+
+function validateLanguages(c: Record<string, unknown>): boolean {
+  const validLanguages: Language[] = [
+    'typescript', 'javascript', 'python', 'go', 'rust', 'java', 'svelte', 'unknown',
+  ];
+  return (c.languages as unknown[]).every((l) => validLanguages.includes(l as Language));
+}
+
+function validateFrameworks(c: Record<string, unknown>): boolean {
+  for (const fw of c.frameworks as unknown[]) {
+    if (typeof fw !== 'object' || fw === null) return false;
+    if (typeof (fw as Record<string, unknown>).name !== 'string') return false;
+  }
+  return true;
+}
+
+function validateCustomPatterns(c: Record<string, unknown>): boolean {
+  if (c.customPatterns === undefined) return true;
+  if (!Array.isArray(c.customPatterns)) return false;
+  for (const pattern of c.customPatterns) {
+    if (typeof pattern !== 'object' || pattern === null) return false;
+    const p = pattern as Record<string, unknown>;
+    if (typeof p.name !== 'string' || typeof p.pattern !== 'string' || typeof p.kind !== 'string') return false;
+    if (!isSafeRegex(p.pattern)) return false;
+  }
+  return true;
+}
+
 /**
  * Validate a configuration object
  */
 export function validateConfig(config: unknown): config is CodeGraphConfig {
-  if (typeof config !== 'object' || config === null) {
-    return false;
-  }
-
+  if (typeof config !== 'object' || config === null) return false;
   const c = config as Record<string, unknown>;
-
-  // Required fields
-  if (typeof c.version !== 'number') return false;
-  if (typeof c.rootDir !== 'string') return false;
-  if (!Array.isArray(c.include)) return false;
-  if (!Array.isArray(c.exclude)) return false;
-  if (!Array.isArray(c.languages)) return false;
-  if (!Array.isArray(c.frameworks)) return false;
-  if (typeof c.maxFileSize !== 'number') return false;
-  if (typeof c.extractDocstrings !== 'boolean') return false;
-  if (typeof c.trackCallSites !== 'boolean') return false;
-
-  // Validate include/exclude are string arrays
-  if (!c.include.every((p) => typeof p === 'string')) return false;
-  if (!c.exclude.every((p) => typeof p === 'string')) return false;
-
-  // Validate languages
-  const validLanguages: Language[] = [
-    'typescript',
-    'javascript',
-    'python',
-    'go',
-    'rust',
-    'java',
-    'svelte',
-    'unknown',
-  ];
-  if (!c.languages.every((l) => validLanguages.includes(l as Language))) return false;
-
-  // Validate frameworks
-  for (const fw of c.frameworks) {
-    if (typeof fw !== 'object' || fw === null) return false;
-    const framework = fw as Record<string, unknown>;
-    if (typeof framework.name !== 'string') return false;
-  }
-
-  // Validate custom patterns if present
-  if (c.customPatterns !== undefined) {
-    if (!Array.isArray(c.customPatterns)) return false;
-    for (const pattern of c.customPatterns) {
-      if (typeof pattern !== 'object' || pattern === null) return false;
-      const p = pattern as Record<string, unknown>;
-      if (typeof p.name !== 'string') return false;
-      if (typeof p.pattern !== 'string') return false;
-      if (typeof p.kind !== 'string') return false;
-
-      // Validate regex is compilable and reject patterns with known ReDoS risks
-      if (!isSafeRegex(p.pattern)) return false;
-    }
-  }
-
-  return true;
+  return validateRequiredFields(c)
+    && validateStringArrays(c)
+    && validateLanguages(c)
+    && validateFrameworks(c)
+    && validateCustomPatterns(c);
 }
 
 /**

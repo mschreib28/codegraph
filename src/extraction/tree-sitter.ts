@@ -95,6 +95,95 @@ function extractName(node: SyntaxNode, source: string, extractor: LanguageExtrac
   return '<anonymous>';
 }
 
+// ---------------------------------------------------------------------------
+// extractInheritance helpers — module-scope so they're allocated once
+// ---------------------------------------------------------------------------
+
+type PushRef = (ref: UnresolvedReference) => void;
+
+const EXTENDS_CHILD_TYPES = new Set([
+  'extends_clause', 'superclass', 'base_clause', 'extends_interfaces',
+]);
+const IMPLEMENTS_CHILD_TYPES = new Set([
+  'implements_clause', 'class_interface_clause', 'super_interfaces', 'interfaces',
+]);
+const CONTAINER_CHILD_TYPES = new Set(['field_declaration_list', 'class_heritage']);
+
+function inheritanceExtends(child: SyntaxNode, classId: string, source: string, push: PushRef): void {
+  const typeList = child.namedChildren.find((c: SyntaxNode) => c.type === 'type_list');
+  const targets = typeList ? typeList.namedChildren : [child.namedChild(0)];
+  for (const target of targets) {
+    if (target) push({ fromNodeId: classId, referenceName: getNodeText(target, source), referenceKind: 'extends', line: target.startPosition.row + 1, column: target.startPosition.column });
+  }
+}
+
+function inheritanceImplements(child: SyntaxNode, classId: string, source: string, push: PushRef): void {
+  const typeList = child.namedChildren.find((c: SyntaxNode) => c.type === 'type_list');
+  const targets = typeList ? typeList.namedChildren : child.namedChildren;
+  for (const iface of targets) {
+    if (iface) push({ fromNodeId: classId, referenceName: getNodeText(iface, source), referenceKind: 'implements', line: iface.startPosition.row + 1, column: iface.startPosition.column });
+  }
+}
+
+type InheritanceChildHandler = (child: SyntaxNode, classId: string, source: string, push: PushRef) => void;
+
+const INHERITANCE_HANDLERS: Record<string, InheritanceChildHandler> = {
+  constraint_elem: (child, classId, source, push) => {
+    const typeId = child.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
+    if (typeId) push({ fromNodeId: classId, referenceName: getNodeText(typeId, source), referenceKind: 'extends', line: typeId.startPosition.row + 1, column: typeId.startPosition.column });
+  },
+  field_declaration: (child, classId, source, push) => {
+    if (child.namedChildren.some((c: SyntaxNode) => c.type === 'field_identifier')) return;
+    const typeId = child.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
+    if (typeId) push({ fromNodeId: classId, referenceName: getNodeText(typeId, source), referenceKind: 'extends', line: typeId.startPosition.row + 1, column: typeId.startPosition.column });
+  },
+  trait_bounds: (child, classId, source, push) => {
+    for (const bound of child.namedChildren) {
+      let typeName: string | undefined;
+      let posNode: SyntaxNode | undefined;
+      if (bound.type === 'type_identifier') {
+        typeName = getNodeText(bound, source); posNode = bound;
+      } else if (bound.type === 'generic_type') {
+        const inner = bound.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
+        if (inner) { typeName = getNodeText(inner, source); posNode = inner; }
+      } else if (bound.type === 'higher_ranked_trait_bound') {
+        const generic = bound.namedChildren.find((c: SyntaxNode) => c.type === 'generic_type');
+        const typeId = generic?.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier')
+          ?? bound.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
+        if (typeId) { typeName = getNodeText(typeId, source); posNode = typeId; }
+      }
+      if (typeName && posNode) push({ fromNodeId: classId, referenceName: typeName, referenceKind: 'extends', line: posNode.startPosition.row + 1, column: posNode.startPosition.column });
+    }
+  },
+  base_list: (child, classId, source, push) => {
+    for (const baseType of child.namedChildren) {
+      if (!baseType) continue;
+      const name = baseType.type === 'generic_name'
+        ? getNodeText(baseType.namedChildren.find((c: SyntaxNode) => c.type === 'identifier') ?? baseType, source)
+        : getNodeText(baseType, source);
+      push({ fromNodeId: classId, referenceName: name, referenceKind: 'extends', line: baseType.startPosition.row + 1, column: baseType.startPosition.column });
+    }
+  },
+  delegation_specifier: (child, classId, source, push) => {
+    const userType = child.namedChildren.find((c: SyntaxNode) => c.type === 'user_type');
+    const ctorInv = child.namedChildren.find((c: SyntaxNode) => c.type === 'constructor_invocation');
+    const target = userType ?? ctorInv;
+    if (!target) return;
+    const typeId = target.type === 'user_type'
+      ? target.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier') ?? target
+      : target.namedChildren.find((c: SyntaxNode) => c.type === 'user_type')?.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier')
+        ?? target.namedChildren.find((c: SyntaxNode) => c.type === 'user_type') ?? target;
+    push({ fromNodeId: classId, referenceName: getNodeText(typeId, source), referenceKind: 'extends', line: typeId.startPosition.row + 1, column: typeId.startPosition.column });
+  },
+  inheritance_specifier: (child, classId, source, push) => {
+    const userType = child.namedChildren.find((c: SyntaxNode) => c.type === 'user_type');
+    const typeId = userType?.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
+    if (typeId) push({ fromNodeId: classId, referenceName: getNodeText(typeId, source), referenceKind: 'extends', line: typeId.startPosition.row + 1, column: typeId.startPosition.column });
+  },
+};
+
+// ---------------------------------------------------------------------------
+
 /**
  * TreeSitterExtractor - Main extraction class
  */
@@ -110,6 +199,8 @@ export class TreeSitterExtractor {
   private extractor: LanguageExtractor | null = null;
   private nodeStack: string[] = []; // Stack of parent node IDs
   private methodIndex: Map<string, string> | null = null; // lookup key → node ID for Pascal defProc lookup
+  private nodeDispatch: Map<string, (node: SyntaxNode) => boolean> | null = null;
+  private pascalDispatch: Map<string, (node: SyntaxNode) => boolean> | null = null;
 
   constructor(filePath: string, source: string, language?: Language) {
     this.filePath = filePath;
@@ -222,132 +313,78 @@ export class TreeSitterExtractor {
     };
   }
 
-  /**
-   * Visit a node and extract information
-   */
   private visitNode(node: SyntaxNode): void {
     if (!this.extractor) return;
+    if (this.extractor.visitNode?.(node, this.makeExtractorContext())) return;
+    if (this.language === 'pascal' && this.visitPascalNode(node)) return;
 
-    const nodeType = node.type;
-    let skipChildren = false;
+    const handler = this.getNodeDispatch().get(node.type);
+    if (handler?.(node)) return;
 
-    // Language-specific custom visitor hook
-    if (this.extractor.visitNode) {
-      const ctx = this.makeExtractorContext();
-      const handled = this.extractor.visitNode(node, ctx);
-      if (handled) return;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child) this.visitNode(child);
     }
+  }
 
-    // Pascal-specific AST handling
-    if (this.language === 'pascal') {
-      skipChildren = this.visitPascalNode(node);
-      if (skipChildren) return;
-    }
+  private getNodeDispatch(): Map<string, (node: SyntaxNode) => boolean> {
+    if (!this.nodeDispatch) this.nodeDispatch = this.buildNodeDispatch();
+    return this.nodeDispatch;
+  }
 
-    // Check for function declarations
-    // For Python/Ruby, function_definition inside a class should be treated as method
-    if (this.extractor.functionTypes.includes(nodeType)) {
-      if (this.isInsideClassLikeNode() && this.extractor.methodTypes.includes(nodeType)) {
-        // Inside a class - treat as method
-        this.extractMethod(node);
-        skipChildren = true; // extractMethod visits children via visitFunctionBody
-      } else {
-        this.extractFunction(node);
-        skipChildren = true; // extractFunction visits children via visitFunctionBody
-      }
-    }
-    // Check for class declarations
-    else if (this.extractor.classTypes.includes(nodeType)) {
-      // Some languages reuse class_declaration for structs/enums (e.g. Swift)
-      const classification = this.extractor.classifyClassNode?.(node) ?? 'class';
-      if (classification === 'struct') {
-        this.extractStruct(node);
-      } else if (classification === 'enum') {
-        this.extractEnum(node);
-      } else if (classification === 'interface') {
-        this.extractInterface(node);
-      } else if (classification === 'trait') {
-        this.extractClass(node, 'trait');
-      } else {
-        this.extractClass(node);
-      }
-      skipChildren = true; // extractClass visits body children
-    }
-    // Extra class node types (e.g. Dart mixin_declaration, extension_declaration)
-    else if (this.extractor.extraClassNodeTypes?.includes(nodeType)) {
-      this.extractClass(node);
-      skipChildren = true;
-    }
-    // Check for method declarations (only if not already handled by functionTypes)
-    else if (this.extractor.methodTypes.includes(nodeType)) {
-      this.extractMethod(node);
-      skipChildren = true; // extractMethod visits children via visitFunctionBody
-    }
-    // Check for interface/protocol/trait declarations
-    else if (this.extractor.interfaceTypes.includes(nodeType)) {
-      this.extractInterface(node);
-      skipChildren = true; // extractInterface visits body children
-    }
-    // Check for struct declarations
-    else if (this.extractor.structTypes.includes(nodeType)) {
-      this.extractStruct(node);
-      skipChildren = true; // extractStruct visits body children
-    }
-    // Check for enum declarations
-    else if (this.extractor.enumTypes.includes(nodeType)) {
-      this.extractEnum(node);
-      skipChildren = true; // extractEnum visits body children
-    }
-    // Check for type alias declarations (e.g. `type X = ...` in TypeScript)
-    // For Go, type_spec wraps struct/interface definitions — resolveTypeAliasKind
-    // detects these and extractTypeAlias creates the correct node kind.
-    else if (this.extractor.typeAliasTypes.includes(nodeType)) {
-      skipChildren = this.extractTypeAlias(node);
-    }
-    // Check for class properties (e.g. C# property_declaration)
-    else if (this.extractor.propertyTypes?.includes(nodeType) && this.isInsideClassLikeNode()) {
-      this.extractProperty(node);
-      skipChildren = true;
-    }
-    // Check for class fields (e.g. Java field_declaration, C# field_declaration)
-    else if (this.extractor.fieldTypes?.includes(nodeType) && this.isInsideClassLikeNode()) {
-      this.extractField(node);
-      skipChildren = true;
-    }
-    // Check for variable declarations (const, let, var, etc.)
-    // Only extract top-level variables (not inside functions/methods)
-    else if (this.extractor.variableTypes.includes(nodeType) && !this.isInsideClassLikeNode()) {
-      this.extractVariable(node);
-      skipChildren = true; // extractVariable handles children
-    }
-    // Check for export statements containing non-function variable declarations
-    // e.g. `export const X = create(...)`, `export const X = { ... }`
-    else if (nodeType === 'export_statement') {
-      this.extractExportedVariables(node);
-      // Don't skip children — still need to visit inner nodes (functions, calls, etc.)
-    }
-    // Check for imports
-    else if (this.extractor.importTypes.includes(nodeType)) {
-      this.extractImport(node);
-    }
-    // Check for function calls
-    else if (this.extractor.callTypes.includes(nodeType)) {
-      this.extractCall(node);
-    }
-    // Rust: `impl Trait for Type { ... }` — creates implements edge from Type to Trait
-    else if (nodeType === 'impl_item') {
-      this.extractRustImplItem(node);
-    }
+  private buildNodeDispatch(): Map<string, (node: SyntaxNode) => boolean> {
+    const map = new Map<string, (node: SyntaxNode) => boolean>();
+    const e = this.extractor!;
+    const functionAndMethodTypes = new Set(e.functionTypes.filter(t => e.methodTypes.includes(t)));
 
-    // Visit children (unless the extract method already visited them)
-    if (!skipChildren) {
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) {
-          this.visitNode(child);
+    const set = <T>(types: T[], factory: (t: T) => (node: SyntaxNode) => boolean) => {
+      for (const t of types) if (!map.has(t as string)) map.set(t as string, factory(t));
+    };
+
+    for (const t of e.functionTypes) {
+      map.set(t, node => {
+        if (this.isInsideClassLikeNode() && functionAndMethodTypes.has(node.type)) {
+          this.extractMethod(node);
+        } else {
+          this.extractFunction(node);
         }
-      }
+        return true;
+      });
     }
+    set(e.classTypes, () => node => { this.dispatchClassNode(node); return true; });
+    set(e.extraClassNodeTypes ?? [], () => node => { this.extractClass(node); return true; });
+    set(e.methodTypes, () => node => { this.extractMethod(node); return true; });
+    set(e.interfaceTypes, () => node => { this.extractInterface(node); return true; });
+    set(e.structTypes, () => node => { this.extractStruct(node); return true; });
+    set(e.enumTypes, () => node => { this.extractEnum(node); return true; });
+    set(e.typeAliasTypes, () => node => this.extractTypeAlias(node));
+    set(e.propertyTypes ?? [], () => node => {
+      if (this.isInsideClassLikeNode()) { this.extractProperty(node); return true; }
+      return false;
+    });
+    set(e.fieldTypes ?? [], () => node => {
+      if (this.isInsideClassLikeNode()) { this.extractField(node); return true; }
+      return false;
+    });
+    set(e.variableTypes, () => node => {
+      if (!this.isInsideClassLikeNode()) { this.extractVariable(node); return true; }
+      return false;
+    });
+    set(e.importTypes, () => node => { this.extractImport(node); return false; });
+    set(e.callTypes, () => node => { this.extractCall(node); return false; });
+    if (!map.has('export_statement')) map.set('export_statement', node => { this.extractExportedVariables(node); return false; });
+    if (!map.has('impl_item')) map.set('impl_item', node => { this.extractRustImplItem(node); return false; });
+
+    return map;
+  }
+
+  private dispatchClassNode(node: SyntaxNode): void {
+    const cls = this.extractor!.classifyClassNode?.(node) ?? 'class';
+    if (cls === 'struct') this.extractStruct(node);
+    else if (cls === 'enum') this.extractEnum(node);
+    else if (cls === 'interface') this.extractInterface(node);
+    else if (cls === 'trait') this.extractClass(node, 'trait');
+    else this.extractClass(node);
   }
 
   /**
@@ -935,144 +972,44 @@ export class TreeSitterExtractor {
     }
   }
 
-  /**
-   * Extract a variable declaration (const, let, var, etc.)
-   *
-   * Extracts top-level and module-level variable declarations.
-   * Captures the variable name and first 100 chars of initializer in signature for searchability.
-   */
   private extractVariable(node: SyntaxNode): void {
     if (!this.extractor) return;
-
-    // Different languages have different variable declaration structures
-    // TypeScript/JavaScript: lexical_declaration contains variable_declarator children
-    // Python: assignment has left (identifier) and right (value)
-    // Go: var_declaration, short_var_declaration, const_declaration
-
     const isConst = this.extractor.isConst?.(node) ?? false;
     const kind: NodeKind = isConst ? 'constant' : 'variable';
     const docstring = getPrecedingDocstring(node, this.source);
     const isExported = this.extractor.isExported?.(node, this.source) ?? false;
 
-    // Extract variable declarators based on language
-    if (this.language === 'typescript' || this.language === 'javascript' ||
-        this.language === 'tsx' || this.language === 'jsx') {
-      // Handle lexical_declaration and variable_declaration
-      // These contain one or more variable_declarator children
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child?.type === 'variable_declarator') {
-          const nameNode = getChildByField(child, 'name');
-          const valueNode = getChildByField(child, 'value');
-
-          if (nameNode) {
-            // Skip destructured patterns (e.g., `let { x, y } = $props()` in Svelte)
-            // These produce ugly multi-line names like "{ class: className }"
-            if (nameNode.type === 'object_pattern' || nameNode.type === 'array_pattern') {
-              continue;
-            }
-            const name = getNodeText(nameNode, this.source);
-            // Arrow functions / function expressions: extract as function instead of variable
-            if (valueNode && (valueNode.type === 'arrow_function' || valueNode.type === 'function_expression')) {
-              this.extractFunction(valueNode);
-              continue;
-            }
-
-            // Capture first 100 chars of initializer for context (stored in signature for searchability)
-            const initValue = valueNode ? getNodeText(valueNode, this.source).slice(0, 100) : undefined;
-            const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
-
-            const varNode = this.createNode(kind, name, child, {
-              docstring,
-              signature: initSignature,
-              isExported,
-            });
-
-            // Extract type annotation references (e.g., const x: ITextModel = ...)
-            if (varNode) {
-              this.extractVariableTypeAnnotation(child, varNode.id);
-            }
-          }
+    if (this.extractor.extractVariables) {
+      for (const info of this.extractor.extractVariables(node, this.source)) {
+        if (info.delegateToFunction) {
+          this.extractFunction(info.delegateToFunction);
+          continue;
         }
+        const varNode = this.createNode(
+          info.kind ?? kind,
+          info.name,
+          info.positionNode ?? node,
+          { docstring, signature: info.signature, isExported },
+        );
+        if (varNode) this.extractVariableTypeAnnotation(info.positionNode ?? node, varNode.id);
       }
-    } else if (this.language === 'python' || this.language === 'ruby') {
-      // Python/Ruby assignment: left = right
-      const left = getChildByField(node, 'left') || node.namedChild(0);
-      const right = getChildByField(node, 'right') || node.namedChild(1);
+      return;
+    }
+    this.extractVariableGenericFallback(node, kind, docstring, isExported);
+  }
 
-      if (left && left.type === 'identifier') {
-        const name = getNodeText(left, this.source);
-        // Skip if name starts with lowercase and looks like a function call result
-        // Python constants are usually UPPER_CASE
-        const initValue = right ? getNodeText(right, this.source).slice(0, 100) : undefined;
-        const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
-
-        this.createNode(kind, name, node, {
-          docstring,
-          signature: initSignature,
-        });
-      }
-    } else if (this.language === 'go') {
-      // Go: var_declaration, short_var_declaration, const_declaration
-      // These can have multiple identifiers on the left
-      const specs = node.namedChildren.filter(c =>
-        c.type === 'var_spec' || c.type === 'const_spec'
-      );
-
-      for (const spec of specs) {
-        const nameNode = spec.namedChild(0);
-        if (nameNode && nameNode.type === 'identifier') {
-          const name = getNodeText(nameNode, this.source);
-          const valueNode = spec.namedChildCount > 1 ? spec.namedChild(spec.namedChildCount - 1) : null;
-          const initValue = valueNode ? getNodeText(valueNode, this.source).slice(0, 100) : undefined;
-          const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
-
-          this.createNode(node.type === 'const_declaration' ? 'constant' : 'variable', name, spec, {
-            docstring,
-            signature: initSignature,
-          });
-        }
-      }
-
-      // Handle short_var_declaration (:=)
-      if (node.type === 'short_var_declaration') {
-        const left = getChildByField(node, 'left');
-        const right = getChildByField(node, 'right');
-
-        if (left) {
-          // Can be expression_list with multiple identifiers
-          const identifiers = left.type === 'expression_list'
-            ? left.namedChildren.filter(c => c.type === 'identifier')
-            : [left];
-
-          for (const id of identifiers) {
-            const name = getNodeText(id, this.source);
-            const initValue = right ? getNodeText(right, this.source).slice(0, 100) : undefined;
-            const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
-
-            this.createNode('variable', name, node, {
-              docstring,
-              signature: initSignature,
-            });
-          }
-        }
-      }
-    } else {
-      // Generic fallback for other languages
-      // Try to find identifier children
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child?.type === 'identifier' || child?.type === 'variable_declarator') {
-          const name = child.type === 'identifier'
-            ? getNodeText(child, this.source)
-            : extractName(child, this.source, this.extractor);
-
-          if (name && name !== '<anonymous>') {
-            this.createNode(kind, name, child, {
-              docstring,
-              isExported,
-            });
-          }
+  private extractVariableGenericFallback(
+    node: SyntaxNode, kind: NodeKind, docstring: string | undefined, isExported: boolean,
+  ): void {
+    if (!this.extractor) return;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child?.type === 'identifier' || child?.type === 'variable_declarator') {
+        const name = child.type === 'identifier'
+          ? getNodeText(child, this.source)
+          : extractName(child, this.source, this.extractor);
+        if (name && name !== '<anonymous>') {
+          this.createNode(kind, name, child, { docstring, isExported });
         }
       }
     }
@@ -1363,80 +1300,10 @@ export class TreeSitterExtractor {
    */
   private extractCall(node: SyntaxNode): void {
     if (this.nodeStack.length === 0) return;
-
     const callerId = this.nodeStack[this.nodeStack.length - 1];
     if (!callerId) return;
 
-    // Get the function/method being called
-    let calleeName = '';
-
-    // Java/Kotlin method_invocation has 'object' + 'name' fields instead of 'function'
-    // PHP member_call_expression has 'object' + 'name', scoped_call_expression has 'scope' + 'name'
-    const nameField = getChildByField(node, 'name');
-    const objectField = getChildByField(node, 'object') || getChildByField(node, 'scope');
-
-    if (nameField && objectField && (node.type === 'method_invocation' || node.type === 'member_call_expression' || node.type === 'scoped_call_expression')) {
-      // Method call with explicit receiver: receiver.method() / $receiver->method() / ClassName::method()
-      const methodName = getNodeText(nameField, this.source);
-      let receiverName = getNodeText(objectField, this.source);
-      // Strip PHP $ prefix from variable names
-      receiverName = receiverName.replace(/^\$/, '');
-
-      if (methodName) {
-        // Skip self/this/parent/static receivers — they don't aid resolution
-        const SKIP_RECEIVERS = new Set(['self', 'this', 'cls', 'super', 'parent', 'static']);
-        if (SKIP_RECEIVERS.has(receiverName)) {
-          calleeName = methodName;
-        } else {
-          calleeName = `${receiverName}.${methodName}`;
-        }
-      }
-    } else {
-      const func = getChildByField(node, 'function') || node.namedChild(0);
-
-      if (func) {
-        if (func.type === 'member_expression' || func.type === 'attribute' || func.type === 'selector_expression' || func.type === 'navigation_expression') {
-          // Method call: obj.method() or obj.field.method()
-          // Go uses selector_expression with 'field', JS/TS uses member_expression with 'property'
-          // Kotlin uses navigation_expression with navigation_suffix > simple_identifier
-          let property = getChildByField(func, 'property') || getChildByField(func, 'field');
-          if (!property) {
-            const child1 = func.namedChild(1);
-            // Kotlin: navigation_suffix wraps the method name — extract simple_identifier from it
-            if (child1?.type === 'navigation_suffix') {
-              property = child1.namedChildren.find((c: SyntaxNode) => c.type === 'simple_identifier') ?? child1;
-            } else {
-              property = child1;
-            }
-          }
-          if (property) {
-            const methodName = getNodeText(property, this.source);
-            // Include receiver name for qualified resolution (e.g., console.print → "console.print")
-            // This helps the resolver distinguish method calls from bare function calls
-            // (e.g., Python's console.print() vs builtin print())
-            // Skip self/this/cls as they don't aid resolution
-            const receiver = getChildByField(func, 'object') || getChildByField(func, 'operand') || func.namedChild(0);
-            const SKIP_RECEIVERS = new Set(['self', 'this', 'cls', 'super']);
-            if (receiver && (receiver.type === 'identifier' || receiver.type === 'simple_identifier')) {
-              const receiverName = getNodeText(receiver, this.source);
-              if (!SKIP_RECEIVERS.has(receiverName)) {
-                calleeName = `${receiverName}.${methodName}`;
-              } else {
-                calleeName = methodName;
-              }
-            } else {
-              calleeName = methodName;
-            }
-          }
-        } else if (func.type === 'scoped_identifier' || func.type === 'scoped_call_expression') {
-          // Scoped call: Module::function()
-          calleeName = getNodeText(func, this.source);
-        } else {
-          calleeName = getNodeText(func, this.source);
-        }
-      }
-    }
-
+    const calleeName = this.resolveCalleeName(node);
     if (calleeName) {
       this.unresolvedReferences.push({
         fromNodeId: callerId,
@@ -1446,6 +1313,48 @@ export class TreeSitterExtractor {
         column: node.startPosition.column,
       });
     }
+  }
+
+  private resolveCalleeName(node: SyntaxNode): string {
+    const nameField = getChildByField(node, 'name');
+    const objectField = getChildByField(node, 'object') || getChildByField(node, 'scope');
+    if (nameField && objectField &&
+        (node.type === 'method_invocation' || node.type === 'member_call_expression' || node.type === 'scoped_call_expression')) {
+      return this.resolveNamedFieldCall(nameField, objectField);
+    }
+    const func = getChildByField(node, 'function') || node.namedChild(0);
+    return func ? this.resolveFunctionFieldCall(func) : '';
+  }
+
+  private resolveNamedFieldCall(nameField: SyntaxNode, objectField: SyntaxNode): string {
+    const methodName = getNodeText(nameField, this.source);
+    if (!methodName) return '';
+    const receiverName = getNodeText(objectField, this.source).replace(/^\$/, '');
+    const SKIP_RECEIVERS = new Set(['self', 'this', 'cls', 'super', 'parent', 'static']);
+    return SKIP_RECEIVERS.has(receiverName) ? methodName : `${receiverName}.${methodName}`;
+  }
+
+  private resolveFunctionFieldCall(func: SyntaxNode): string {
+    if (func.type === 'member_expression' || func.type === 'attribute' ||
+        func.type === 'selector_expression' || func.type === 'navigation_expression') {
+      let property = getChildByField(func, 'property') || getChildByField(func, 'field');
+      if (!property) {
+        const child1 = func.namedChild(1);
+        property = child1?.type === 'navigation_suffix'
+          ? child1.namedChildren.find((c: SyntaxNode) => c.type === 'simple_identifier') ?? child1
+          : child1 ?? null;
+      }
+      if (!property) return '';
+      const methodName = getNodeText(property, this.source);
+      const receiver = getChildByField(func, 'object') || getChildByField(func, 'operand') || func.namedChild(0);
+      const SKIP_RECEIVERS = new Set(['self', 'this', 'cls', 'super']);
+      if (receiver && (receiver.type === 'identifier' || receiver.type === 'simple_identifier')) {
+        const receiverName = getNodeText(receiver, this.source);
+        return SKIP_RECEIVERS.has(receiverName) ? methodName : `${receiverName}.${methodName}`;
+      }
+      return methodName;
+    }
+    return getNodeText(func, this.source);
   }
 
   /**
@@ -1517,228 +1426,42 @@ export class TreeSitterExtractor {
     visitForCallsAndStructure(body);
   }
 
-  /**
-   * Extract inheritance relationships
-   */
   private extractInheritance(node: SyntaxNode, classId: string): void {
-    // Look for extends/implements clauses
+    const push: PushRef = ref => this.unresolvedReferences.push(ref);
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (!child) continue;
 
-      if (
-        child.type === 'extends_clause' ||
-        child.type === 'superclass' ||
-        child.type === 'base_clause' || // PHP class extends
-        child.type === 'extends_interfaces' // Java interface extends
-      ) {
-        // Extract parent class/interface names
-        // Java uses type_list wrapper: superclass -> type_identifier, extends_interfaces -> type_list -> type_identifier
-        const typeList = child.namedChildren.find((c: SyntaxNode) => c.type === 'type_list');
-        const targets = typeList ? typeList.namedChildren : [child.namedChild(0)];
-        for (const target of targets) {
-          if (target) {
-            const name = getNodeText(target, this.source);
-            this.unresolvedReferences.push({
-              fromNodeId: classId,
-              referenceName: name,
-              referenceKind: 'extends',
-              line: target.startPosition.row + 1,
-              column: target.startPosition.column,
-            });
-          }
-        }
+      if (EXTENDS_CHILD_TYPES.has(child.type)) {
+        inheritanceExtends(child, classId, this.source, push);
+        continue;
+      }
+      if (IMPLEMENTS_CHILD_TYPES.has(child.type)) {
+        inheritanceImplements(child, classId, this.source, push);
+        continue;
       }
 
-      if (
-        child.type === 'implements_clause' ||
-        child.type === 'class_interface_clause' ||
-        child.type === 'super_interfaces' || // Java class implements
-        child.type === 'interfaces' // Dart
-      ) {
-        // Extract implemented interfaces
-        // Java uses type_list wrapper: super_interfaces -> type_list -> type_identifier
-        const typeList = child.namedChildren.find((c: SyntaxNode) => c.type === 'type_list');
-        const targets = typeList ? typeList.namedChildren : child.namedChildren;
-        for (const iface of targets) {
-          if (iface) {
-            const name = getNodeText(iface, this.source);
-            this.unresolvedReferences.push({
-              fromNodeId: classId,
-              referenceName: name,
-              referenceKind: 'implements',
-              line: iface.startPosition.row + 1,
-              column: iface.startPosition.column,
-            });
-          }
-        }
-      }
-
-      // Python superclass list: `class Flask(Scaffold, Mixin):`
-      // argument_list contains identifier children for each parent class
       if (child.type === 'argument_list' && node.type === 'class_definition') {
         for (const arg of child.namedChildren) {
           if (arg.type === 'identifier' || arg.type === 'attribute') {
-            const name = getNodeText(arg, this.source);
-            this.unresolvedReferences.push({
-              fromNodeId: classId,
-              referenceName: name,
-              referenceKind: 'extends',
-              line: arg.startPosition.row + 1,
-              column: arg.startPosition.column,
-            });
+            push({ fromNodeId: classId, referenceName: getNodeText(arg, this.source), referenceKind: 'extends', line: arg.startPosition.row + 1, column: arg.startPosition.column });
           }
         }
+        continue;
       }
 
-      // Go interface embedding: `type Querier interface { LabelQuerier; ... }`
-      // constraint_elem wraps the embedded interface type identifier
-      if (child.type === 'constraint_elem') {
-        const typeId = child.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
-        if (typeId) {
-          const name = getNodeText(typeId, this.source);
-          this.unresolvedReferences.push({
-            fromNodeId: classId,
-            referenceName: name,
-            referenceKind: 'extends',
-            line: typeId.startPosition.row + 1,
-            column: typeId.startPosition.column,
-          });
-        }
+      if ((child.type === 'identifier' || child.type === 'type_identifier') && node.type === 'class_heritage') {
+        push({ fromNodeId: classId, referenceName: getNodeText(child, this.source), referenceKind: 'extends', line: child.startPosition.row + 1, column: child.startPosition.column });
+        continue;
       }
 
-      // Go struct embedding: field_declaration without field_identifier
-      // e.g. `type DB struct { *Head; Queryable }` — no field name means embedded type
-      if (child.type === 'field_declaration') {
-        const hasFieldIdentifier = child.namedChildren.some((c: SyntaxNode) => c.type === 'field_identifier');
-        if (!hasFieldIdentifier) {
-          const typeId = child.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
-          if (typeId) {
-            const name = getNodeText(typeId, this.source);
-            this.unresolvedReferences.push({
-              fromNodeId: classId,
-              referenceName: name,
-              referenceKind: 'extends',
-              line: typeId.startPosition.row + 1,
-              column: typeId.startPosition.column,
-            });
-          }
-        }
+      const handler = INHERITANCE_HANDLERS[child.type];
+      if (handler) {
+        handler(child, classId, this.source, push);
+        continue;
       }
 
-      // Rust trait supertraits: `trait SubTrait: SuperTrait + Display { ... }`
-      // trait_bounds contains type_identifier, generic_type, or higher_ranked_trait_bound children
-      if (child.type === 'trait_bounds') {
-        for (const bound of child.namedChildren) {
-          let typeName: string | undefined;
-          let posNode: SyntaxNode | undefined;
-
-          if (bound.type === 'type_identifier') {
-            typeName = getNodeText(bound, this.source);
-            posNode = bound;
-          } else if (bound.type === 'generic_type') {
-            // e.g. `Deserialize<'de>`
-            const inner = bound.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
-            if (inner) { typeName = getNodeText(inner, this.source); posNode = inner; }
-          } else if (bound.type === 'higher_ranked_trait_bound') {
-            // e.g. `for<'de> Deserialize<'de>`
-            const generic = bound.namedChildren.find((c: SyntaxNode) => c.type === 'generic_type');
-            const typeId = generic?.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier')
-              ?? bound.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
-            if (typeId) { typeName = getNodeText(typeId, this.source); posNode = typeId; }
-          }
-
-          if (typeName && posNode) {
-            this.unresolvedReferences.push({
-              fromNodeId: classId,
-              referenceName: typeName,
-              referenceKind: 'extends',
-              line: posNode.startPosition.row + 1,
-              column: posNode.startPosition.column,
-            });
-          }
-        }
-      }
-
-      // C#: `class Movie : BaseItem, IPlugin` → base_list with identifier children
-      // base_list combines both base class and interfaces in a single colon-separated list.
-      // We emit all as 'extends' since the syntax doesn't distinguish them.
-      if (child.type === 'base_list') {
-        for (const baseType of child.namedChildren) {
-          if (baseType) {
-            // For generic base types like `ClientBase<T>`, extract just the type name
-            const name = baseType.type === 'generic_name'
-              ? getNodeText(baseType.namedChildren.find((c: SyntaxNode) => c.type === 'identifier') ?? baseType, this.source)
-              : getNodeText(baseType, this.source);
-            this.unresolvedReferences.push({
-              fromNodeId: classId,
-              referenceName: name,
-              referenceKind: 'extends',
-              line: baseType.startPosition.row + 1,
-              column: baseType.startPosition.column,
-            });
-          }
-        }
-      }
-
-      // Kotlin: `class Foo : Bar, Baz` → delegation_specifier > user_type > type_identifier
-      // Also handles `class Foo : Bar()` → delegation_specifier > constructor_invocation > user_type
-      if (child.type === 'delegation_specifier') {
-        const userType = child.namedChildren.find((c: SyntaxNode) => c.type === 'user_type');
-        const constructorInvocation = child.namedChildren.find((c: SyntaxNode) => c.type === 'constructor_invocation');
-        const target = userType ?? constructorInvocation;
-        if (target) {
-          const typeId = target.type === 'user_type'
-            ? target.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier') ?? target
-            : target.namedChildren.find((c: SyntaxNode) => c.type === 'user_type')?.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier')
-              ?? target.namedChildren.find((c: SyntaxNode) => c.type === 'user_type') ?? target;
-          const name = getNodeText(typeId, this.source);
-          this.unresolvedReferences.push({
-            fromNodeId: classId,
-            referenceName: name,
-            referenceKind: 'extends',
-            line: typeId.startPosition.row + 1,
-            column: typeId.startPosition.column,
-          });
-        }
-      }
-
-      // Swift: inheritance_specifier > user_type > type_identifier
-      // Used for class inheritance, protocol conformance, and protocol inheritance
-      if (child.type === 'inheritance_specifier') {
-        const userType = child.namedChildren.find((c: SyntaxNode) => c.type === 'user_type');
-        const typeId = userType?.namedChildren.find((c: SyntaxNode) => c.type === 'type_identifier');
-        if (typeId) {
-          const name = getNodeText(typeId, this.source);
-          this.unresolvedReferences.push({
-            fromNodeId: classId,
-            referenceName: name,
-            referenceKind: 'extends',
-            line: typeId.startPosition.row + 1,
-            column: typeId.startPosition.column,
-          });
-        }
-      }
-
-      // JavaScript class_heritage has bare identifier without extends_clause wrapper
-      // e.g. `class Foo extends Bar {}` → class_heritage → identifier("Bar")
-      if (
-        (child.type === 'identifier' || child.type === 'type_identifier') &&
-        node.type === 'class_heritage'
-      ) {
-        const name = getNodeText(child, this.source);
-        this.unresolvedReferences.push({
-          fromNodeId: classId,
-          referenceName: name,
-          referenceKind: 'extends',
-          line: child.startPosition.row + 1,
-          column: child.startPosition.column,
-        });
-      }
-
-      // Recurse into container nodes (e.g. field_declaration_list in Go structs,
-      // class_heritage in TypeScript which wraps extends_clause/implements_clause)
-      if (child.type === 'field_declaration_list' || child.type === 'class_heritage') {
+      if (CONTAINER_CHILD_TYPES.has(child.type)) {
         this.extractInheritance(child, classId);
       }
     }
@@ -1907,138 +1630,74 @@ export class TreeSitterExtractor {
    * Returns true if the node was fully handled and children should be skipped.
    */
   private visitPascalNode(node: SyntaxNode): boolean {
-    const nodeType = node.type;
+    const handler = this.getPascalDispatch().get(node.type);
+    return handler ? handler(node) : false;
+  }
 
-    // Unit/Program/Library → module node
-    if (nodeType === 'unit' || nodeType === 'program' || nodeType === 'library') {
-      const moduleNameNode = node.namedChildren.find(
-        (c: SyntaxNode) => c.type === 'moduleName'
-      );
-      const name = moduleNameNode ? getNodeText(moduleNameNode, this.source) : '';
-      // Fallback to filename without extension if module name is empty
-      const moduleName = name || path.basename(this.filePath).replace(/\.[^.]+$/, '');
-      this.createNode('module', moduleName, node);
-      // Continue visiting children (interface/implementation sections)
+  private getPascalDispatch(): Map<string, (node: SyntaxNode) => boolean> {
+    if (!this.pascalDispatch) this.pascalDispatch = this.buildPascalDispatch();
+    return this.pascalDispatch;
+  }
+
+  private buildPascalDispatch(): Map<string, (node: SyntaxNode) => boolean> {
+    const visitAll = (node: SyntaxNode): boolean => {
       for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) this.visitNode(child);
+        const c = node.namedChild(i); if (c) this.visitNode(c);
       }
       return true;
-    }
-
-    // declType wraps declClass/declIntf/declEnum/type-alias
-    // The name lives on declType, the inner node determines the kind
-    if (nodeType === 'declType') {
-      this.extractPascalDeclType(node);
-      return true;
-    }
-
-    // declUses → import nodes for each unit name
-    if (nodeType === 'declUses') {
-      this.extractPascalUses(node);
-      return true;
-    }
-
-    // declConsts → container; visit children for individual declConst
-    if (nodeType === 'declConsts') {
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child?.type === 'declConst') {
-          this.extractPascalConst(child);
+    };
+    return new Map([
+      ['unit', node => this.handlePascalModule(node)],
+      ['program', node => this.handlePascalModule(node)],
+      ['library', node => this.handlePascalModule(node)],
+      ['declType', node => { this.extractPascalDeclType(node); return true; }],
+      ['declUses', node => { this.extractPascalUses(node); return true; }],
+      ['declConsts', node => {
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const c = node.namedChild(i); if (c?.type === 'declConst') this.extractPascalConst(c);
         }
-      }
-      return true;
-    }
-
-    // declConst at top level (outside declConsts)
-    if (nodeType === 'declConst') {
-      this.extractPascalConst(node);
-      return true;
-    }
-
-    // declTypes → container for type declarations
-    if (nodeType === 'declTypes') {
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) this.visitNode(child);
-      }
-      return true;
-    }
-
-    // declVars → container for variable declarations
-    if (nodeType === 'declVars') {
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child?.type === 'declVar') {
-          const nameNode = getChildByField(child, 'name');
-          if (nameNode) {
-            const name = getNodeText(nameNode, this.source);
-            this.createNode('variable', name, child);
+        return true;
+      }],
+      ['declConst', node => { this.extractPascalConst(node); return true; }],
+      ['declTypes', visitAll],
+      ['declVars', node => {
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const c = node.namedChild(i);
+          if (c?.type === 'declVar') {
+            const nameNode = getChildByField(c, 'name');
+            if (nameNode) this.createNode('variable', getNodeText(nameNode, this.source), c);
           }
         }
-      }
-      return true;
-    }
+        return true;
+      }],
+      ['defProc', node => { this.extractPascalDefProc(node); return true; }],
+      ['declProp', node => {
+        const nameNode = getChildByField(node, 'name');
+        if (nameNode) this.createNode('property', getNodeText(nameNode, this.source), node, { visibility: this.extractor!.getVisibility?.(node) });
+        return true;
+      }],
+      ['declField', node => {
+        const nameNode = getChildByField(node, 'name');
+        if (nameNode) this.createNode('field', getNodeText(nameNode, this.source), node, { visibility: this.extractor!.getVisibility?.(node) });
+        return true;
+      }],
+      ['declSection', visitAll],
+      ['exprCall', node => { this.extractPascalCall(node); return true; }],
+      ['interface', visitAll],
+      ['implementation', visitAll],
+      ['block', node => { this.visitPascalBlock(node); return true; }],
+    ]);
+  }
 
-    // defProc in implementation section → extract calls but don't create duplicate nodes
-    if (nodeType === 'defProc') {
-      this.extractPascalDefProc(node);
-      return true;
+  private handlePascalModule(node: SyntaxNode): boolean {
+    const moduleNameNode = node.namedChildren.find((c: SyntaxNode) => c.type === 'moduleName');
+    const name = moduleNameNode ? getNodeText(moduleNameNode, this.source) : '';
+    const moduleName = name || path.basename(this.filePath).replace(/\.[^.]+$/, '');
+    this.createNode('module', moduleName, node);
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i); if (child) this.visitNode(child);
     }
-
-    // declProp → property node
-    if (nodeType === 'declProp') {
-      const nameNode = getChildByField(node, 'name');
-      if (nameNode) {
-        const name = getNodeText(nameNode, this.source);
-        const visibility = this.extractor!.getVisibility?.(node);
-        this.createNode('property', name, node, { visibility });
-      }
-      return true;
-    }
-
-    // declField → field node
-    if (nodeType === 'declField') {
-      const nameNode = getChildByField(node, 'name');
-      if (nameNode) {
-        const name = getNodeText(nameNode, this.source);
-        const visibility = this.extractor!.getVisibility?.(node);
-        this.createNode('field', name, node, { visibility });
-      }
-      return true;
-    }
-
-    // declSection → visit children (propagates visibility via getVisibility)
-    if (nodeType === 'declSection') {
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) this.visitNode(child);
-      }
-      return true;
-    }
-
-    // exprCall → extract function call reference
-    if (nodeType === 'exprCall') {
-      this.extractPascalCall(node);
-      return true;
-    }
-
-    // interface/implementation sections → visit children
-    if (nodeType === 'interface' || nodeType === 'implementation') {
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) this.visitNode(child);
-      }
-      return true;
-    }
-
-    // block (begin..end) → visit for calls
-    if (nodeType === 'block') {
-      this.visitPascalBlock(node);
-      return true;
-    }
-
-    return false;
+    return true;
   }
 
   /**

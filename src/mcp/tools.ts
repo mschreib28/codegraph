@@ -42,6 +42,44 @@ function markSessionConsulted(sessionId: string): void {
   }
 }
 
+function clusterRanges(
+  ranges: Array<{ start: number; end: number; name: string; kind: string }>
+): Array<{ start: number; end: number; symbols: string[] }> {
+  const GAP_THRESHOLD = 15;
+  const clusters: Array<{ start: number; end: number; symbols: string[] }> = [];
+  let current = { start: ranges[0]!.start, end: ranges[0]!.end, symbols: [`${ranges[0]!.name}(${ranges[0]!.kind})`] };
+  for (let i = 1; i < ranges.length; i++) {
+    const r = ranges[i]!;
+    if (r.start <= current.end + GAP_THRESHOLD) {
+      current.end = Math.max(current.end, r.end);
+      current.symbols.push(`${r.name}(${r.kind})`);
+    } else {
+      clusters.push(current);
+      current = { start: r.start, end: r.end, symbols: [`${r.name}(${r.kind})`] };
+    }
+  }
+  clusters.push(current);
+  return clusters;
+}
+
+function renderFileClusters(
+  clusters: Array<{ start: number; end: number; symbols: string[] }>,
+  fileLines: string[]
+): { fileSection: string; allSymbols: string[] } {
+  const contextPadding = 3;
+  let fileSection = '';
+  const allSymbols: string[] = [];
+  for (const cluster of clusters) {
+    const startIdx = Math.max(0, cluster.start - 1 - contextPadding);
+    const endIdx = Math.min(fileLines.length, cluster.end + contextPadding);
+    const section = fileLines.slice(startIdx, endIdx).join('\n');
+    if (fileSection.length > 0) fileSection += '\n\n// ... (gap) ...\n\n';
+    fileSection += section;
+    allSymbols.push(...cluster.symbols);
+  }
+  return { fileSection, allSymbols };
+}
+
 /**
  * MCP Tool definition
  */
@@ -653,274 +691,39 @@ export class ToolHandler {
   private async handleExplore(args: Record<string, unknown>): Promise<ToolResult> {
     const query = this.validateString(args.query, 'query');
     if (typeof query !== 'string') return query;
-
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const maxFiles = clamp((args.maxFiles as number) || 12, 1, 20);
     const projectRoot = cg.getProjectRoot();
-
-    // Step 1: Find relevant context with generous parameters.
-    // Use a large maxNodes budget — explore has its own 35k char output limit
-    // that prevents context bloat, so more nodes just means better coverage
-    // across entry points (especially for large files like Svelte components).
     const subgraph = await cg.findRelevantContext(query, {
-      searchLimit: 8,
-      traversalDepth: 3,
-      maxNodes: 200,
-      minScore: 0.2,
+      searchLimit: 8, traversalDepth: 3, maxNodes: 200, minScore: 0.2,
     });
-
-    if (subgraph.nodes.size === 0) {
-      return this.textResult(`No relevant code found for "${query}"`);
-    }
-
-    // Step 2: Group nodes by file, score by relevance
-    const fileGroups = new Map<string, { nodes: Node[]; score: number }>();
-    const entryNodeIds = new Set(subgraph.roots);
-
-    // Build a set of nodes directly connected to entry points (depth 1)
-    const connectedToEntry = new Set<string>();
-    for (const edge of subgraph.edges) {
-      if (entryNodeIds.has(edge.source)) connectedToEntry.add(edge.target);
-      if (entryNodeIds.has(edge.target)) connectedToEntry.add(edge.source);
-    }
-
-    for (const node of subgraph.nodes.values()) {
-      // Skip import/export nodes — they add noise without information
-      if (node.kind === 'import' || node.kind === 'export') continue;
-
-      const group = fileGroups.get(node.filePath) || { nodes: [], score: 0 };
-      group.nodes.push(node);
-      // Score: entry point nodes worth 10, directly connected worth 3, others worth 1
-      if (entryNodeIds.has(node.id)) {
-        group.score += 10;
-      } else if (connectedToEntry.has(node.id)) {
-        group.score += 3;
-      } else {
-        group.score += 1;
-      }
-      fileGroups.set(node.filePath, group);
-    }
-
-    // Only include files that have entry points or nodes directly connected to entry points
-    const relevantFiles = [...fileGroups.entries()].filter(([, group]) => group.score >= 3);
-
-    // Extract query terms for relevance checking
-    const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length >= 3);
-
-    // Sort files: highest relevance first, deprioritize low-value files
-    const sortedFiles = relevantFiles.sort((a, b) => {
-      const aPath = a[0].toLowerCase();
-      const bPath = b[0].toLowerCase();
-
-      // Check if any node name or file path relates to query terms
-      const hasQueryRelevance = (filePath: string, nodes: Node[]) => {
-        const fp = filePath.toLowerCase();
-        if (queryTerms.some(t => fp.includes(t))) return true;
-        return nodes.some(n => queryTerms.some(t => n.name.toLowerCase().includes(t)));
-      };
-
-      const aRelevant = hasQueryRelevance(aPath, a[1].nodes);
-      const bRelevant = hasQueryRelevance(bPath, b[1].nodes);
-      if (aRelevant !== bRelevant) return aRelevant ? -1 : 1;
-
-      // Deprioritize test files, icon files, and i18n files
-      const isLowValue = (p: string) =>
-        /\/(tests?|__tests?__|spec)\//i.test(p) ||
-        /\bicons?\b/i.test(p) ||
-        /\bi18n\b/i.test(p);
-      const aLow = isLowValue(aPath);
-      const bLow = isLowValue(bPath);
-      if (aLow !== bLow) return aLow ? 1 : -1;
-
-      if (a[1].score !== b[1].score) return b[1].score - a[1].score;
-      return b[1].nodes.length - a[1].nodes.length;
-    });
-
-    // Step 3: Build relationship map
+    if (subgraph.nodes.size === 0) return this.textResult(`No relevant code found for "${query}"`);
+    const { sortedFiles, fileGroups } = this.groupAndSortFiles(subgraph, query);
     const lines: string[] = [
-      `## Exploration: ${query}`,
-      '',
-      `Found ${subgraph.nodes.size} symbols across ${fileGroups.size} files.`,
-      '',
+      `## Exploration: ${query}`, '',
+      `Found ${subgraph.nodes.size} symbols across ${fileGroups.size} files.`, '',
+      ...this.buildRelationshipMap(subgraph),
+      '### Source Code', '',
     ];
-
-    // Relationship map — show how symbols connect
-    const significantEdges = subgraph.edges.filter(e =>
-      e.kind !== 'contains' // skip contains — it's implied by file grouping
+    const { fileSections, filesIncluded } = this.buildFileSections(
+      sortedFiles, subgraph, maxFiles, projectRoot, cg, lines.join('\n').length
     );
-
-    if (significantEdges.length > 0) {
-      lines.push('### Relationships');
-      lines.push('');
-
-      // Group edges by kind for readability
-      const byKind = new Map<string, Array<{ source: string; target: string }>>();
-      for (const edge of significantEdges) {
-        const sourceNode = subgraph.nodes.get(edge.source);
-        const targetNode = subgraph.nodes.get(edge.target);
-        if (!sourceNode || !targetNode) continue;
-
-        const group = byKind.get(edge.kind) || [];
-        group.push({ source: sourceNode.name, target: targetNode.name });
-        byKind.set(edge.kind, group);
-      }
-
-      for (const [kind, edges] of byKind) {
-        // Show up to 15 relationships per kind
-        const shown = edges.slice(0, 15);
-        lines.push(`**${kind}:**`);
-        for (const e of shown) {
-          lines.push(`- ${e.source} → ${e.target}`);
-        }
-        if (edges.length > 15) {
-          lines.push(`- ... and ${edges.length - 15} more`);
-        }
-        lines.push('');
-      }
-    }
-
-    // Step 4: Read contiguous file sections
-    lines.push('### Source Code');
-    lines.push('');
-
-    let totalChars = lines.join('\n').length;
-    let filesIncluded = 0;
-
-    for (const [filePath, group] of sortedFiles) {
-      if (filesIncluded >= maxFiles) break;
-      if (totalChars > ToolHandler.EXPLORE_MAX_OUTPUT * 0.9) break;
-
-      const absPath = validatePathWithinRoot(projectRoot, filePath);
-      if (!absPath || !existsSync(absPath)) continue;
-
-      let fileContent: string;
-      try {
-        fileContent = readFileSync(absPath, 'utf-8');
-      } catch {
-        continue;
-      }
-
-      const fileLines = fileContent.split('\n');
-      const lang = group.nodes[0]?.language || '';
-
-      // Cluster nearby symbols to avoid reading huge gaps between distant symbols.
-      // Sort by start line, then merge overlapping/adjacent ranges (within 15 lines).
-      // Include both node ranges AND edge source locations so template sections
-      // with component usages/calls are covered (not just script block symbols).
-      const ranges: Array<{ start: number; end: number; name: string; kind: string }> = group.nodes
-        .filter(n => n.startLine > 0 && n.endLine > 0)
-        // Skip file/component nodes that span the entire file — they'd create one giant cluster
-        .filter(n => !(n.kind === 'component' && n.startLine === 1 && n.endLine >= fileLines.length - 1))
-        .map(n => ({ start: n.startLine, end: n.endLine, name: n.name, kind: n.kind }));
-
-      // Add edge source locations in this file — captures template references
-      // (component usages, event handlers) that aren't nodes themselves.
-      // Query edges directly from the DB (not just the subgraph) because BFS
-      // traversal may have pruned template reference targets due to node budget.
-      const edgeLines = new Set<string>(); // dedup by "line:name"
-      for (const node of group.nodes) {
-        const outgoing = cg.getOutgoingEdges(node.id);
-        for (const edge of outgoing) {
-          if (!edge.line || edge.line <= 0 || edge.kind === 'contains') continue;
-          const key = `${edge.line}:${edge.target}`;
-          if (edgeLines.has(key)) continue;
-          edgeLines.add(key);
-          // Look up target name from subgraph first, fall back to edge kind
-          const targetNode = subgraph.nodes.get(edge.target);
-          const targetName = targetNode?.name ?? edge.kind;
-          ranges.push({ start: edge.line, end: edge.line, name: targetName, kind: edge.kind });
-        }
-      }
-
-      ranges.sort((a, b) => a.start - b.start);
-
-      if (ranges.length === 0) continue;
-
-      const GAP_THRESHOLD = 15; // merge sections within 15 lines of each other
-      const clusters: Array<{ start: number; end: number; symbols: string[] }> = [];
-      let current = { start: ranges[0]!.start, end: ranges[0]!.end, symbols: [`${ranges[0]!.name}(${ranges[0]!.kind})`] };
-
-      for (let i = 1; i < ranges.length; i++) {
-        const r = ranges[i]!;
-        if (r.start <= current.end + GAP_THRESHOLD) {
-          current.end = Math.max(current.end, r.end);
-          current.symbols.push(`${r.name}(${r.kind})`);
-        } else {
-          clusters.push(current);
-          current = { start: r.start, end: r.end, symbols: [`${r.name}(${r.kind})`] };
-        }
-      }
-      clusters.push(current);
-
-      // Build file section output from clusters
-      const contextPadding = 3;
-      let fileSection = '';
-      const allSymbols: string[] = [];
-
-      for (const cluster of clusters) {
-        const startIdx = Math.max(0, cluster.start - 1 - contextPadding);
-        const endIdx = Math.min(fileLines.length, cluster.end + contextPadding);
-        const section = fileLines.slice(startIdx, endIdx).join('\n');
-
-        if (fileSection.length > 0) {
-          fileSection += '\n\n// ... (gap) ...\n\n';
-        }
-        fileSection += section;
-        allSymbols.push(...cluster.symbols);
-      }
-
-      // Skip if this section would blow the output limit
-      if (totalChars + fileSection.length + 200 > ToolHandler.EXPLORE_MAX_OUTPUT) {
-        const budget = ToolHandler.EXPLORE_MAX_OUTPUT - totalChars - 200;
-        if (budget < 500) break;
-        const trimmed = fileSection.slice(0, budget) + '\n// ... trimmed ...';
-
-        lines.push(`#### ${filePath} — ${allSymbols.join(', ')}`);
-        lines.push('');
-        lines.push('```' + lang);
-        lines.push(trimmed);
-        lines.push('```');
-        lines.push('');
-        totalChars += trimmed.length + 200;
-        filesIncluded++;
-        break;
-      }
-
-      lines.push(`#### ${filePath} — ${allSymbols.join(', ')}`);
-      lines.push('');
-      lines.push('```' + lang);
-      lines.push(fileSection);
-      lines.push('```');
-      lines.push('');
-
-      totalChars += fileSection.length + 200;
-      filesIncluded++;
-    }
-
-    // Add remaining files as references (from both relevant and peripheral files)
+    lines.push(...fileSections);
     const remainingRelevant = sortedFiles.slice(filesIncluded);
     const peripheralFiles = [...fileGroups.entries()]
       .filter(([, group]) => group.score < 3)
       .sort((a, b) => b[1].score - a[1].score);
     const remainingFiles = [...remainingRelevant, ...peripheralFiles];
     if (remainingFiles.length > 0) {
-      lines.push('### Additional relevant files (not shown)');
-      lines.push('');
+      lines.push('### Additional relevant files (not shown)', '');
       for (const [filePath, group] of remainingFiles.slice(0, 10)) {
         const symbols = group.nodes.map(n => `${n.name}:${n.startLine}`).join(', ');
         lines.push(`- ${filePath}: ${symbols}`);
       }
-      if (remainingFiles.length > 10) {
-        lines.push(`- ... and ${remainingFiles.length - 10} more files`);
-      }
+      if (remainingFiles.length > 10) lines.push(`- ... and ${remainingFiles.length - 10} more files`);
     }
-
-    // Add completeness signal so agents know they don't need to re-read these files
-    lines.push('');
-    lines.push('---');
+    lines.push('', '---');
     lines.push(`> **Complete source code is included above for ${filesIncluded} files.** You do NOT need to re-read these files — the relevant sections are already shown in full. Only use Read/Grep for files listed under "Additional relevant files" if you need more detail.`);
-
-    // Add explore budget note based on project size
     try {
       const stats = cg.getStats();
       const budget = getExploreBudget(stats.fileCount);
@@ -929,8 +732,138 @@ export class ToolHandler {
     } catch {
       // Stats unavailable — skip budget note
     }
-
     return this.textResult(lines.join('\n'));
+  }
+
+  private groupAndSortFiles(
+    subgraph: Subgraph,
+    query: string
+  ): { sortedFiles: Array<[string, { nodes: Node[]; score: number }]>; fileGroups: Map<string, { nodes: Node[]; score: number }> } {
+    const fileGroups = new Map<string, { nodes: Node[]; score: number }>();
+    const entryNodeIds = new Set(subgraph.roots);
+    const connectedToEntry = new Set<string>();
+    for (const edge of subgraph.edges) {
+      if (entryNodeIds.has(edge.source)) connectedToEntry.add(edge.target);
+      if (entryNodeIds.has(edge.target)) connectedToEntry.add(edge.source);
+    }
+    for (const node of subgraph.nodes.values()) {
+      if (node.kind === 'import' || node.kind === 'export') continue;
+      const group = fileGroups.get(node.filePath) || { nodes: [], score: 0 };
+      group.nodes.push(node);
+      if (entryNodeIds.has(node.id)) { group.score += 10; }
+      else if (connectedToEntry.has(node.id)) { group.score += 3; }
+      else { group.score += 1; }
+      fileGroups.set(node.filePath, group);
+    }
+    const relevantFiles = [...fileGroups.entries()].filter(([, group]) => group.score >= 3);
+    const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length >= 3);
+    const hasQueryRelevance = (filePath: string, nodes: Node[]) => {
+      const fp = filePath.toLowerCase();
+      if (queryTerms.some(t => fp.includes(t))) return true;
+      return nodes.some(n => queryTerms.some(t => n.name.toLowerCase().includes(t)));
+    };
+    const isLowValue = (p: string) =>
+      /\/(tests?|__tests?__|spec)\//i.test(p) || /\bicons?\b/i.test(p) || /\bi18n\b/i.test(p);
+    const sortedFiles = relevantFiles.sort((a, b) => {
+      const aRelevant = hasQueryRelevance(a[0], a[1].nodes);
+      const bRelevant = hasQueryRelevance(b[0], b[1].nodes);
+      if (aRelevant !== bRelevant) return aRelevant ? -1 : 1;
+      const aLow = isLowValue(a[0]);
+      const bLow = isLowValue(b[0]);
+      if (aLow !== bLow) return aLow ? 1 : -1;
+      if (a[1].score !== b[1].score) return b[1].score - a[1].score;
+      return b[1].nodes.length - a[1].nodes.length;
+    });
+    return { sortedFiles, fileGroups };
+  }
+
+  private buildRelationshipMap(subgraph: Subgraph): string[] {
+    const lines: string[] = [];
+    const significantEdges = subgraph.edges.filter(e => e.kind !== 'contains');
+    if (significantEdges.length === 0) return lines;
+    lines.push('### Relationships', '');
+    const byKind = new Map<string, Array<{ source: string; target: string }>>();
+    for (const edge of significantEdges) {
+      const sourceNode = subgraph.nodes.get(edge.source);
+      const targetNode = subgraph.nodes.get(edge.target);
+      if (!sourceNode || !targetNode) continue;
+      const group = byKind.get(edge.kind) || [];
+      group.push({ source: sourceNode.name, target: targetNode.name });
+      byKind.set(edge.kind, group);
+    }
+    for (const [kind, edges] of byKind) {
+      lines.push(`**${kind}:**`);
+      for (const e of edges.slice(0, 15)) lines.push(`- ${e.source} → ${e.target}`);
+      if (edges.length > 15) lines.push(`- ... and ${edges.length - 15} more`);
+      lines.push('');
+    }
+    return lines;
+  }
+
+  private buildFileSections(
+    sortedFiles: Array<[string, { nodes: Node[]; score: number }]>,
+    subgraph: Subgraph,
+    maxFiles: number,
+    projectRoot: string,
+    cg: CodeGraph,
+    initialChars: number
+  ): { fileSections: string[]; filesIncluded: number } {
+    const lines: string[] = [];
+    let totalChars = initialChars;
+    let filesIncluded = 0;
+    for (const [filePath, group] of sortedFiles) {
+      if (filesIncluded >= maxFiles) break;
+      if (totalChars > ToolHandler.EXPLORE_MAX_OUTPUT * 0.9) break;
+      const absPath = validatePathWithinRoot(projectRoot, filePath);
+      if (!absPath || !existsSync(absPath)) continue;
+      let fileContent: string;
+      try { fileContent = readFileSync(absPath, 'utf-8'); } catch { continue; }
+      const fileLines = fileContent.split('\n');
+      const lang = group.nodes[0]?.language || '';
+      const ranges = this.buildFileRanges(group, cg, subgraph, fileLines);
+      ranges.sort((a, b) => a.start - b.start);
+      if (ranges.length === 0) continue;
+      const clusters = clusterRanges(ranges);
+      const { fileSection, allSymbols } = renderFileClusters(clusters, fileLines);
+      if (totalChars + fileSection.length + 200 > ToolHandler.EXPLORE_MAX_OUTPUT) {
+        const budget = ToolHandler.EXPLORE_MAX_OUTPUT - totalChars - 200;
+        if (budget < 500) break;
+        const trimmed = fileSection.slice(0, budget) + '\n// ... trimmed ...';
+        lines.push(`#### ${filePath} — ${allSymbols.join(', ')}`, '', '```' + lang, trimmed, '```', '');
+        totalChars += trimmed.length + 200;
+        filesIncluded++;
+        break;
+      }
+      lines.push(`#### ${filePath} — ${allSymbols.join(', ')}`, '', '```' + lang, fileSection, '```', '');
+      totalChars += fileSection.length + 200;
+      filesIncluded++;
+    }
+    return { fileSections: lines, filesIncluded };
+  }
+
+  private buildFileRanges(
+    group: { nodes: Node[] },
+    cg: CodeGraph,
+    subgraph: Subgraph,
+    fileLines: string[]
+  ): Array<{ start: number; end: number; name: string; kind: string }> {
+    const ranges: Array<{ start: number; end: number; name: string; kind: string }> = group.nodes
+      .filter(n => n.startLine > 0 && n.endLine > 0)
+      .filter(n => !(n.kind === 'component' && n.startLine === 1 && n.endLine >= fileLines.length - 1))
+      .map(n => ({ start: n.startLine, end: n.endLine, name: n.name, kind: n.kind }));
+    const edgeLines = new Set<string>();
+    for (const node of group.nodes) {
+      const outgoing = cg.getOutgoingEdges(node.id);
+      for (const edge of outgoing) {
+        if (!edge.line || edge.line <= 0 || edge.kind === 'contains') continue;
+        const key = `${edge.line}:${edge.target}`;
+        if (edgeLines.has(key)) continue;
+        edgeLines.add(key);
+        const targetNode = subgraph.nodes.get(edge.target);
+        ranges.push({ start: edge.line, end: edge.line, name: targetNode?.name ?? edge.kind, kind: edge.kind });
+      }
+    }
+    return ranges;
   }
 
   /**

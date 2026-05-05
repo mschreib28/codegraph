@@ -81,4 +81,24 @@ export const javascriptExtractor: LanguageExtractor = {
     }
     return null;
   },
+  extractVariables: (node, source) => {
+    const results = [];
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child?.type !== 'variable_declarator') continue;
+      const nameNode = getChildByField(child, 'name');
+      if (!nameNode) continue;
+      if (nameNode.type === 'object_pattern' || nameNode.type === 'array_pattern') continue;
+      const name = getNodeText(nameNode, source);
+      const valueNode = getChildByField(child, 'value');
+      if (valueNode && (valueNode.type === 'arrow_function' || valueNode.type === 'function_expression')) {
+        results.push({ name, delegateToFunction: valueNode, positionNode: child });
+      } else {
+        const initValue = valueNode ? getNodeText(valueNode, source).slice(0, 100) : undefined;
+        const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
+        results.push({ name, signature: initSignature, positionNode: child });
+      }
+    }
+    return results;
+  },
 };

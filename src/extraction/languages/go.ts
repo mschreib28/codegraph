@@ -36,6 +36,39 @@ export const goExtractor: LanguageExtractor = {
     if (typeChild.type === 'interface_type') return 'interface';
     return undefined;
   },
+  extractVariables: (node, source) => {
+    const results = [];
+
+    const isConstDecl = node.type === 'const_declaration';
+    const specs = node.namedChildren.filter(c => c.type === 'var_spec' || c.type === 'const_spec');
+    for (const spec of specs) {
+      const nameNode = spec.namedChild(0);
+      if (!nameNode || nameNode.type !== 'identifier') continue;
+      const name = getNodeText(nameNode, source);
+      const valueNode = spec.namedChildCount > 1 ? spec.namedChild(spec.namedChildCount - 1) : null;
+      const initValue = valueNode ? getNodeText(valueNode, source).slice(0, 100) : undefined;
+      const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
+      results.push({ name, kind: isConstDecl ? 'constant' : 'variable', signature: initSignature, positionNode: spec } as const);
+    }
+
+    if (node.type === 'short_var_declaration') {
+      const left = getChildByField(node, 'left');
+      const right = getChildByField(node, 'right');
+      if (left) {
+        const identifiers = left.type === 'expression_list'
+          ? left.namedChildren.filter(c => c.type === 'identifier')
+          : [left];
+        for (const id of identifiers) {
+          const name = getNodeText(id, source);
+          const initValue = right ? getNodeText(right, source).slice(0, 100) : undefined;
+          const initSignature = initValue ? `= ${initValue}${initValue.length >= 100 ? '...' : ''}` : undefined;
+          results.push({ name, kind: 'variable' as const, signature: initSignature });
+        }
+      }
+    }
+
+    return results;
+  },
   getReceiverType: (node, source) => {
     // Go method_declaration has a "receiver" field: func (sl *scrapeLoop) run(...)
     // The receiver is a parameter_list containing a parameter_declaration

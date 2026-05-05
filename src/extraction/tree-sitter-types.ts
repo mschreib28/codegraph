@@ -32,8 +32,8 @@ export interface ImportInfo {
 export interface VariableInfo {
   /** Variable name */
   name: string;
-  /** Node kind: 'variable' or 'constant' */
-  kind: NodeKind;
+  /** Node kind: 'variable' or 'constant'. If omitted, coordinator uses its own isConst-based kind. */
+  kind?: NodeKind;
   /** Optional signature string */
   signature?: string;
   /** If set, this declarator is actually a function and should be extracted as such */
