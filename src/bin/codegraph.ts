@@ -34,7 +34,7 @@ async function loadCodeGraph(): Promise<typeof import('../index')> {
     console.error('\x1b[31m✗\x1b[0m Failed to load CodeGraph modules.');
     console.error(`\n  Node: ${process.version}  Platform: ${process.platform} ${process.arch}`);
     console.error(`\n  Error: ${msg}`);
-    console.error('\n  Try reinstalling with: npm install -g @colbymchenry/codegraph\n');
+    console.error('\n  Try reinstalling with: npm install -g @mschreib28/codegraph\n');
     process.exit(1);
   }
 }
@@ -615,7 +615,9 @@ program
   .option('-q, --quiet', 'Suppress progress output')
   .option('-j, --json', 'Output a JSON summary')
   .action(async (pathArg: string | undefined, options: { language?: string; quiet?: boolean; json?: boolean }) => {
+    const targetDir = path.resolve(pathArg || process.cwd());
     const projectPath = resolveProjectPath(pathArg);
+    const targetPath = path.relative(projectPath, targetDir) || undefined;
 
     try {
       if (!isInitialized(projectPath)) {
@@ -629,6 +631,7 @@ program
 
       const summary = await cg.analyzeComplexity({
         language: options.language as never,
+        targetPath,
         onProgress: options.quiet ? undefined : (p) => {
           if (p.phase === 'analyzing' && p.tool && p.current === p.total) {
             info(`${p.tool} done`);

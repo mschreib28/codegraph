@@ -1,5 +1,5 @@
 {
-  "name": "@colbymchenry/codegraph",
+  "name": "@mschreib28/codegraph",
   "version": "0.7.2",
   "description": "Supercharge Claude Code with semantic code intelligence. 94% fewer tool calls • 77% faster exploration • 100% local.",
   "main": "dist/index.js",
@@ -30,7 +30,11 @@
     "knowledge-graph",
     "static-analysis"
   ],
-  "author": "",
+  "author": "mschreib28",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mschreib28/codegraph.git"
+  },
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.2.0",

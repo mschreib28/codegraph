@@ -6,7 +6,7 @@
 
 **94% fewer tool calls · 77% faster exploration · 100% local**
 
-[![npm version](https://img.shields.io/npm/v/@colbymchenry/codegraph.svg)](https://www.npmjs.com/package/@colbymchenry/codegraph)
+[![npm version](https://img.shields.io/npm/v/@mschreib28/codegraph.svg)](https://www.npmjs.com/package/@mschreib28/codegraph)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
@@ -14,12 +14,14 @@
 [![macOS](https://img.shields.io/badge/macOS-supported-blue.svg)](#)
 [![Linux](https://img.shields.io/badge/Linux-supported-blue.svg)](#)
 
+> **Fork of [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph)** — maintained by [@mschreib28](https://github.com/mschreib28)
+
 <br />
 
 ### Get Started
 
 ```bash
-npx @colbymchenry/codegraph
+npx @mschreib28/codegraph
 ```
 
 <sub>Interactive installer configures Claude Code automatically</sub>
@@ -116,7 +118,7 @@ All tests used Claude Opus 4.6 (1M context) with Claude Code v2.1.91. Each test 
 ### 1. Run the Installer
 
 ```bash
-npx @colbymchenry/codegraph
+npx @mschreib28/codegraph
 ```
 
 The installer will:
@@ -144,7 +146,7 @@ That's it! Claude Code will use CodeGraph tools automatically when a `.codegraph
 
 **Install globally:**
 ```bash
-npm install -g @colbymchenry/codegraph
+npm install -g @mschreib28/codegraph
 ```
 
 **Add to `~/.claude.json`:**
@@ -367,7 +369,7 @@ When running as an MCP server, CodeGraph exposes these tools to Claude Code:
 ## Library Usage
 
 ```typescript
-import CodeGraph from '@colbymchenry/codegraph';
+import CodeGraph from '@mschreib28/codegraph';
 
 const cg = await CodeGraph.init('/path/to/project');
 // Or: const cg = await CodeGraph.open('/path/to/project');
@@ -455,6 +457,8 @@ MIT
 
 **Made for the Claude Code community**
 
-[Report Bug](https://github.com/colbymchenry/codegraph/issues) · [Request Feature](https://github.com/colbymchenry/codegraph/issues)
+[Report Bug](https://github.com/mschreib28/codegraph/issues) · [Request Feature](https://github.com/mschreib28/codegraph/issues)
+
+Forked from [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) — original project by [@colbymchenry](https://github.com/colbymchenry)
 
 </div>

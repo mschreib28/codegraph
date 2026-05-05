@@ -34,6 +34,12 @@ export { detectAvailableTools } from './tool-detection';
 export interface AnalyzeOptions {
   /** Restrict to a single language (e.g. 'python') if set. */
   language?: Language;
+  /**
+   * Restrict analysis to this subdirectory, relative to the project root.
+   * Only grammars for languages present in that subtree are loaded — e.g.
+   * running from a pure-Python directory skips the TypeScript WASM parser.
+   */
+  targetPath?: string;
   onProgress?: (p: ComplexityProgress) => void;
 }
 
@@ -53,7 +59,14 @@ export class ComplexityAnalyzer {
     onProgress?.({ phase: 'detecting', current: 1, total: 1 });
 
     const allFiles = await scanDirectoryAsync(this.projectRoot, this.config);
-    const filesByLang = groupByLanguage(allFiles, options.language);
+    const prefix = options.targetPath ? options.targetPath.replace(/\\/g, '/') : null;
+    const scopedFiles = prefix
+      ? allFiles.filter(f => {
+          const normalized = f.replace(/\\/g, '/');
+          return normalized === prefix || normalized.startsWith(prefix + '/');
+        })
+      : allFiles;
+    const filesByLang = groupByLanguage(scopedFiles, options.language);
 
     const computedAt = Date.now();
     const analyzers = buildAnalyzers(tools);
