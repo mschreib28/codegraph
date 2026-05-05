@@ -289,6 +289,40 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
+    name: 'codegraph_complexity',
+    description: 'Query or run cyclomatic complexity analysis. Use action="get" to see stored metrics (highest complexity first), action="get-file" for a single file, or action="analyze" to re-run the analysis.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['get', 'get-file', 'analyze'],
+          description: '"get" returns all stored metrics, "get-file" returns metrics for one file, "analyze" runs analysis and stores results',
+        },
+        filePath: {
+          type: 'string',
+          description: 'Project-relative file path (required for get-file action)',
+        },
+        metric: {
+          type: 'string',
+          enum: ['cyclomatic', 'maintainability', 'fan_in', 'fan_out', 'is_circular'],
+          description: 'Filter to a specific metric type (optional, default: all)',
+        },
+        minValue: {
+          type: 'number',
+          description: 'Only include records with value >= this threshold (e.g., 15 for high cyclomatic complexity)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of records to return (default: 50)',
+          default: 50,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'codegraph_files',
     description: 'REQUIRED for file/folder exploration. Get the project file structure from the CodeGraph index. Returns a tree view of all indexed files with metadata (language, symbol count). Much faster than Glob/filesystem scanning. Use this FIRST when exploring project structure, finding files, or understanding codebase organization.',
     inputSchema: {
@@ -463,6 +497,8 @@ export class ToolHandler {
           return await this.handleNode(args);
         case 'codegraph_status':
           return await this.handleStatus(args);
+        case 'codegraph_complexity':
+          return await this.handleComplexity(args);
         case 'codegraph_files':
           return await this.handleFiles(args);
         default:
@@ -924,6 +960,109 @@ export class ToolHandler {
     }
 
     return this.textResult(lines.join('\n'));
+  }
+
+  /**
+   * Handle codegraph_complexity
+   */
+  private async handleComplexity(args: Record<string, unknown>): Promise<ToolResult> {
+    const action = args.action as string;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const metricFilter = args.metric as string | undefined;
+    const minValue = args.minValue as number | undefined;
+    const limit = clamp((args.limit as number) || 50, 1, 500);
+
+    if (action === 'analyze') {
+      const summary = await cg.analyzeComplexity();
+      const lines: string[] = [
+        '## Complexity Analysis Complete',
+        '',
+        `**Files analyzed:** ${summary.filesAnalyzed}`,
+        `**Metrics recorded:** ${summary.metricsRecorded}`,
+        `**Tools run:** ${summary.toolsRun.join(', ') || 'none'}`,
+        `**Duration:** ${summary.durationMs}ms`,
+      ];
+      if (summary.toolsSkipped.length > 0) {
+        lines.push('', '**Tools skipped:**');
+        for (const { tool, reason } of summary.toolsSkipped) {
+          lines.push(`- ${tool}: ${reason}`);
+        }
+      }
+      if (summary.warnings.length > 0) {
+        lines.push('', `**Warnings (${summary.warnings.length}):**`);
+        for (const w of summary.warnings.slice(0, 10)) {
+          lines.push(`- ${w.filePath}: ${w.reason}`);
+        }
+        if (summary.warnings.length > 10) {
+          lines.push(`- ... and ${summary.warnings.length - 10} more`);
+        }
+      }
+      lines.push('', 'Use `action="get"` to view the results.');
+      return this.textResult(lines.join('\n'));
+    }
+
+    if (action === 'get-file') {
+      const filePath = this.validateString(args.filePath, 'filePath');
+      if (typeof filePath !== 'string') return filePath;
+
+      const records = cg.getComplexityForFile(filePath);
+      if (records.length === 0) {
+        return this.textResult(`No complexity metrics found for "${filePath}". Run \`action="analyze"\` first.`);
+      }
+
+      const filtered = records.filter(r =>
+        (!metricFilter || r.metric === metricFilter) &&
+        (minValue === undefined || r.value >= minValue)
+      );
+      const sorted = [...filtered].sort((a, b) => b.value - a.value).slice(0, limit);
+      return this.textResult(this.formatComplexityRecords(sorted, `Complexity: ${filePath}`));
+    }
+
+    // action === 'get'
+    const records = cg.getComplexityMetrics();
+    if (records.length === 0) {
+      return this.textResult('No complexity metrics stored. Run `action="analyze"` first.');
+    }
+
+    const filtered = metricFilter ? records.filter(r => r.metric === metricFilter) : records;
+    const sorted = [...filtered].sort((a, b) => b.value - a.value).slice(0, limit);
+    return this.textResult(this.formatComplexityRecords(sorted, `Complexity Metrics (top ${sorted.length} of ${filtered.length})`));
+  }
+
+  private formatComplexityRecords(
+    records: Array<{
+      filePath?: string;
+      nodeId: string | null;
+      symbolName: string | null;
+      startLine: number | null;
+      language: string;
+      tool: string;
+      metric: string;
+      value: number;
+    }>,
+    title: string
+  ): string {
+    const lines: string[] = [`## ${title}`, ''];
+
+    // Group by metric for a cleaner view when multiple metrics are present
+    const byMetric = new Map<string, typeof records>();
+    for (const r of records) {
+      const group = byMetric.get(r.metric) || [];
+      group.push(r);
+      byMetric.set(r.metric, group);
+    }
+
+    for (const [metric, group] of byMetric) {
+      if (byMetric.size > 1) lines.push(`### ${metric}`, '');
+      for (const r of group) {
+        const loc = r.startLine ? `:${r.startLine}` : '';
+        const symbol = r.symbolName ? `**${r.symbolName}**` : r.filePath;
+        lines.push(`- ${symbol} — \`${r.filePath}${loc}\` → ${r.value}`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
   }
 
   /**
