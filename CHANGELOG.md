@@ -11,6 +11,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.4] — 2026-05-05
+
+### Changed
+
+- **Eliminated all 3 circular dependency cycles** (verified via `madge`):
+  - Extracted `CodeGraph` class into `src/codegraph.ts`, converting
+    `src/index.ts` into a pure barrel — breaks the `index ↔ mcp/index ↔
+    mcp/tools` cycle.
+  - Extracted `extractFromSource` dispatcher into
+    `src/extraction/extract-dispatcher.ts` — breaks the `tree-sitter ↔
+    svelte-extractor` cycle.
+- **Reduced cyclomatic complexity** across 6 high-CC functions:
+  - `mergeAndRerank` (CC 45 → ~10) — decomposed into `deduplicateAndMerge`,
+    `boostTermGroupMatches`, `addCamelCaseDefinitions`,
+    `addCompoundTermMatches`.
+  - `applyBudgetCaps` (CC 24 → ~8) — decomposed into `capTotalNodes`,
+    `capNodesPerFile`, `capNonProductionNodes`, `recoverEdgesBetweenNodes`.
+  - `isBuiltInOrExternal` (CC 27 → ~5) — replaced language-specific if-chain
+    with a `BUILT_IN_CHECKERS` dispatch table.
+  - `indexAll` (CC 29 → ~15) — extracted `makeAbortResult` and `processFile`
+    helpers.
+  - `extractImport` (CC 26 → ~12) — extracted `extractPythonMultiImport`,
+    `extractGoImports`, `extractPhpGroupedImport`.
+  - `matchMethodCall` (CC 26 → ~10) — extracted `matchDirectClassMethod`,
+    `matchCapitalizedReceiverMethod`, `matchByMethodNameSearch`.
+- Improved grammar load error messages: `TreeSitterExtractor` now reports
+  whether the WASM file was missing or the grammar failed to load, and the
+  CLI error breakdown surfaces the root cause with a "try `npm rebuild`" hint.
+
+### Fixed
+
+- **Test worker OOM crash** — extraction tests loading 15+ tree-sitter WASM
+  grammars would exhaust V8's Turboshaft compiler Zone memory during
+  background tier-up, crashing the vitest fork after all tests passed. Fixed
+  by passing `--liftoff-only` to vitest fork workers (baseline WASM compiler
+  only, no Turboshaft optimization) and adding `clearParserCache()` teardown.
+
+---
+
 ## [0.7.3] — 2026-05-05
 
 > Forked from upstream `0.7.2` (`1cf5ccf`). All changes below are
