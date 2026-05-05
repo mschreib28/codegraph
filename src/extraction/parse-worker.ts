@@ -6,7 +6,7 @@
  */
 
 import { parentPort } from 'worker_threads';
-import { extractFromSource } from './tree-sitter';
+import { extractFromSource } from './extract-dispatcher';
 import { detectLanguage, loadGrammarsForLanguages, resetParser } from './grammars';
 import type { Language, ExtractionResult } from '../types';
 

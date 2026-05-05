@@ -16,7 +16,8 @@
  */
 
 import * as path from 'path';
-import CodeGraph, { findNearestCodeGraphRoot } from '../index';
+import CodeGraph from '../codegraph';
+import { findNearestCodeGraphRoot } from '../directory';
 import { StdioTransport, JsonRpcRequest, JsonRpcNotification, ErrorCodes } from './transport';
 import { tools, ToolHandler } from './tools';
 

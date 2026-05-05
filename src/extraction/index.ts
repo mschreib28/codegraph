@@ -17,7 +17,7 @@ import {
   CodeGraphConfig,
 } from '../types';
 import { QueryBuilder } from '../db/queries';
-import { extractFromSource } from './tree-sitter';
+import { extractFromSource } from './extract-dispatcher';
 import { detectLanguage, isLanguageSupported, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
@@ -511,6 +511,56 @@ export class ExtractionOrchestrator {
   /**
    * Index all files in the project
    */
+  private makeAbortResult(
+    startTime: number,
+    counters: { filesIndexed: number; filesSkipped: number; filesErrored: number; totalNodes: number; totalEdges: number },
+    errors: ExtractionError[]
+  ): IndexResult {
+    return {
+      success: false,
+      filesIndexed: counters.filesIndexed,
+      filesSkipped: counters.filesSkipped,
+      filesErrored: counters.filesErrored,
+      nodesCreated: counters.totalNodes,
+      edgesCreated: counters.totalEdges,
+      errors: [{ message: 'Aborted', severity: 'error' }, ...errors],
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  private async processFile(
+    filePath: string,
+    content: string,
+    stats: fs.Stats,
+    pool: WorkerPool,
+    errors: ExtractionError[]
+  ): Promise<{ status: 'indexed' | 'skipped' | 'errored'; nodes: number; edges: number }> {
+    let result: ExtractionResult;
+    try {
+      result = await pool.requestParse(filePath, content);
+    } catch (parseErr) {
+      errors.push({
+        message: parseErr instanceof Error ? parseErr.message : String(parseErr),
+        filePath, severity: 'error', code: 'parse_error',
+      });
+      return { status: 'errored', nodes: 0, edges: 0 };
+    }
+    if (result.nodes.length > 0 || result.errors.length === 0) {
+      const language = detectLanguage(filePath, content);
+      this.storeExtractionResult(filePath, content, language, stats, result);
+    }
+    if (result.errors.length > 0) {
+      for (const err of result.errors) { if (!err.filePath) err.filePath = filePath; }
+      errors.push(...result.errors);
+    }
+    if (result.nodes.length > 0) {
+      return { status: 'indexed', nodes: result.nodes.length, edges: result.edges.length };
+    } else if (result.errors.some((e) => e.severity === 'error')) {
+      return { status: 'errored', nodes: 0, edges: 0 };
+    }
+    return { status: 'skipped', nodes: 0, edges: 0 };
+  }
+
   async indexAll(
     onProgress?: (progress: IndexProgress) => void,
     signal?: AbortSignal,
@@ -519,24 +569,14 @@ export class ExtractionOrchestrator {
     await initGrammars();
     const startTime = Date.now();
     const errors: ExtractionError[] = [];
-    let filesIndexed = 0;
-    let filesSkipped = 0;
-    let filesErrored = 0;
-    let totalNodes = 0;
-    let totalEdges = 0;
+    const counters = { filesIndexed: 0, filesSkipped: 0, filesErrored: 0, totalNodes: 0, totalEdges: 0 };
     const log = verbose ? (msg: string) => { console.log(`[worker] ${msg}`); } : (_msg: string) => {};
 
     onProgress?.({ phase: 'scanning', current: 0, total: 0 });
     const files = await scanDirectoryAsync(this.rootDir, this.config, (current, file) => {
       onProgress?.({ phase: 'scanning', current, total: 0, currentFile: file });
     });
-    if (signal?.aborted) {
-      return {
-        success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0,
-        nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Aborted', severity: 'error' }],
-        durationMs: Date.now() - startTime,
-      };
-    }
+    if (signal?.aborted) return this.makeAbortResult(startTime, { filesIndexed: 0, filesSkipped: 0, filesErrored: 0, totalNodes: 0, totalEdges: 0 }, []);
 
     const total = files.length;
     let processed = 0;
@@ -559,15 +599,7 @@ export class ExtractionOrchestrator {
     if (WorkerClass) await pool.ensureWorker();
 
     for (let i = 0; i < files.length; i += FILE_IO_BATCH_SIZE) {
-      if (signal?.aborted) {
-        pool.shutdown();
-        return {
-          success: false, filesIndexed, filesSkipped, filesErrored,
-          nodesCreated: totalNodes, edgesCreated: totalEdges,
-          errors: [{ message: 'Aborted', severity: 'error' }, ...errors],
-          durationMs: Date.now() - startTime,
-        };
-      }
+      if (signal?.aborted) { pool.shutdown(); return this.makeAbortResult(startTime, counters, errors); }
       const batch = files.slice(i, i + FILE_IO_BATCH_SIZE);
       const fileContents = await Promise.all(batch.map(async (fp) => {
         try {
@@ -585,52 +617,27 @@ export class ExtractionOrchestrator {
       }));
 
       for (const { filePath, content, stats, error } of fileContents) {
-        if (signal?.aborted) {
-          pool.shutdown();
-          return {
-            success: false, filesIndexed, filesSkipped, filesErrored,
-            nodesCreated: totalNodes, edgesCreated: totalEdges,
-            errors: [{ message: 'Aborted', severity: 'error' }, ...errors],
-            durationMs: Date.now() - startTime,
-          };
-        }
+        if (signal?.aborted) { pool.shutdown(); return this.makeAbortResult(startTime, counters, errors); }
         onProgress?.({ phase: 'parsing', current: processed, total, currentFile: filePath });
         if (error || content === null || stats === null) {
           processed++;
-          filesErrored++;
+          counters.filesErrored++;
           errors.push({
             message: `Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
             filePath, severity: 'error', code: 'read_error',
           });
           continue;
         }
-        let result: ExtractionResult;
-        try {
-          result = await pool.requestParse(filePath, content);
-        } catch (parseErr) {
-          processed++;
-          filesErrored++;
-          errors.push({
-            message: parseErr instanceof Error ? parseErr.message : String(parseErr),
-            filePath, severity: 'error', code: 'parse_error',
-          });
-          continue;
-        }
+        const fileResult = await this.processFile(filePath, content, stats, pool, errors);
         processed++;
-        if (result.nodes.length > 0 || result.errors.length === 0) {
-          const language = detectLanguage(filePath, content);
-          this.storeExtractionResult(filePath, content, language, stats, result);
-        }
-        if (result.errors.length > 0) {
-          for (const err of result.errors) { if (!err.filePath) err.filePath = filePath; }
-          errors.push(...result.errors);
-        }
-        if (result.nodes.length > 0) {
-          filesIndexed++; totalNodes += result.nodes.length; totalEdges += result.edges.length;
-        } else if (result.errors.some((e) => e.severity === 'error')) {
-          filesErrored++;
+        if (fileResult.status === 'indexed') {
+          counters.filesIndexed++;
+          counters.totalNodes += fileResult.nodes;
+          counters.totalEdges += fileResult.edges;
+        } else if (fileResult.status === 'errored') {
+          counters.filesErrored++;
         } else {
-          filesSkipped++;
+          counters.filesSkipped++;
         }
       }
     }
@@ -648,17 +655,17 @@ export class ExtractionOrchestrator {
         const idx = errors.indexOf(e);
         if (idx >= 0) errors.splice(idx, 1);
       }
-      filesErrored -= errorsFixed.length;
-      filesIndexed += errorsFixed.length;
-      totalNodes += nodesAdded;
-      totalEdges += edgesAdded;
+      counters.filesErrored -= errorsFixed.length;
+      counters.filesIndexed += errorsFixed.length;
+      counters.totalNodes += nodesAdded;
+      counters.totalEdges += edgesAdded;
     }
 
     pool.shutdown();
     return {
-      success: filesIndexed > 0 || errors.filter((e) => e.severity === 'error').length === 0,
-      filesIndexed, filesSkipped, filesErrored,
-      nodesCreated: totalNodes, edgesCreated: totalEdges,
+      success: counters.filesIndexed > 0 || errors.filter((e) => e.severity === 'error').length === 0,
+      filesIndexed: counters.filesIndexed, filesSkipped: counters.filesSkipped, filesErrored: counters.filesErrored,
+      nodesCreated: counters.totalNodes, edgesCreated: counters.totalEdges,
       errors, durationMs: Date.now() - startTime,
     };
   }
@@ -1199,5 +1206,5 @@ export class ExtractionOrchestrator {
 }
 
 // Re-export useful types and functions
-export { extractFromSource } from './tree-sitter';
-export { detectLanguage, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './grammars';
+export { extractFromSource } from './extract-dispatcher';
+export { detectLanguage, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars, getGrammarError } from './grammars';

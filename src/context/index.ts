@@ -402,8 +402,26 @@ export class ContextBuilder {
     isTestQuery: boolean,
     opts: Required<FindRelevantContextOptions>
   ): SearchResult[] {
+    const searchResults = this.deduplicateAndMerge(exactMatches, textResults, isTestQuery);
+    this.boostTermGroupMatches(searchResults, query, exactMatches);
+    if (symbolsFromQuery.length > 0) {
+      const searchIdSet = new Set(searchResults.map(r => r.node.id));
+      this.addCamelCaseDefinitions(searchResults, searchIdSet, symbolsFromQuery, query, isTestQuery, opts);
+      if (symbolsFromQuery.length >= 2) {
+        this.addCompoundTermMatches(searchResults, searchIdSet, symbolsFromQuery, query, isTestQuery, opts);
+      }
+    }
+    searchResults.sort((a, b) => b.score - a.score);
+    return searchResults.slice(0, opts.searchLimit * 3).filter((r) => r.score >= opts.minScore);
+  }
+
+  private deduplicateAndMerge(
+    exactMatches: SearchResult[],
+    textResults: SearchResult[],
+    isTestQuery: boolean
+  ): SearchResult[] {
     const resultById = new Map<string, SearchResult>();
-    let searchResults: SearchResult[] = [];
+    const searchResults: SearchResult[] = [];
     for (const result of exactMatches) {
       const existing = resultById.get(result.node.id);
       if (existing) { existing.score = Math.max(existing.score, result.score); }
@@ -419,112 +437,132 @@ export class ContextBuilder {
         if (isTestFile(result.node.filePath)) result.score *= 0.3;
       }
     }
+    return searchResults;
+  }
+
+  private boostTermGroupMatches(
+    searchResults: SearchResult[],
+    query: string,
+    exactMatches: SearchResult[]
+  ): void {
     const queryTermsForBoost = extractSearchTerms(query);
-    if (queryTermsForBoost.length >= 2) {
-      const termGroups: string[][] = [];
-      const sorted = [...queryTermsForBoost].sort((a, b) => b.length - a.length);
-      const assigned = new Set<string>();
-      for (const term of sorted) {
-        if (assigned.has(term)) continue;
-        const group = [term];
-        assigned.add(term);
-        for (const other of sorted) {
-          if (assigned.has(other)) continue;
-          if (term.includes(other) || other.includes(term)) { group.push(other); assigned.add(other); }
-        }
-        termGroups.push(group);
+    if (queryTermsForBoost.length < 2) return;
+    const termGroups: string[][] = [];
+    const sorted = [...queryTermsForBoost].sort((a, b) => b.length - a.length);
+    const assigned = new Set<string>();
+    for (const term of sorted) {
+      if (assigned.has(term)) continue;
+      const group = [term];
+      assigned.add(term);
+      for (const other of sorted) {
+        if (assigned.has(other)) continue;
+        if (term.includes(other) || other.includes(term)) { group.push(other); assigned.add(other); }
       }
-      const exactMatchIds = new Set(exactMatches.map(r => r.node.id));
-      for (const result of searchResults) {
-        const nameLower = result.node.name.toLowerCase();
-        const dirSegments = path.dirname(result.node.filePath).toLowerCase().split('/');
-        let matchCount = 0;
-        for (const group of termGroups) {
-          if (group.some(term => nameLower.includes(term) || dirSegments.some(seg => seg === term))) matchCount++;
-        }
-        if (matchCount >= 2) { result.score *= 1 + matchCount * 0.5; }
-        else if (!exactMatchIds.has(result.node.id)) { result.score *= 0.6; }
-      }
-      searchResults.sort((a, b) => b.score - a.score);
+      termGroups.push(group);
     }
-    if (symbolsFromQuery.length > 0) {
-      const camelDefinitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'trait', 'protocol', 'enum', 'type_alias'];
-      const camelSearchedTerms = new Set<string>();
-      const searchIdSet = new Set(searchResults.map(r => r.node.id));
-      const camelNodeTerms = new Map<string, { result: SearchResult; termCount: number }>();
-      const maxCamelPerTerm = Math.ceil(opts.searchLimit / 2);
-      for (const sym of symbolsFromQuery) {
-        const titleCased = sym.charAt(0).toUpperCase() + sym.slice(1).toLowerCase();
-        if (titleCased.length < 3) continue;
-        const termKey = titleCased.toLowerCase();
-        if (camelSearchedTerms.has(termKey)) continue;
-        camelSearchedTerms.add(termKey);
-        const likeResults = this.queries.findNodesByNameSubstring(titleCased, {
-          limit: 200, kinds: camelDefinitionKinds, excludePrefix: true,
-        });
-        const termCandidates: SearchResult[] = [];
-        for (const r of likeResults) {
-          const name = r.node.name;
-          const idx = name.indexOf(titleCased);
-          if (idx <= 0) continue;
-          if (!/[a-zA-Z]/.test(name.charAt(idx - 1))) continue;
-          if (searchIdSet.has(r.node.id)) continue;
-          if (isTestFile(r.node.filePath) && !isTestQuery) continue;
-          const pathScore = scorePathRelevance(r.node.filePath, query);
-          const brevityBonus = Math.max(0, 6 - (name.length - titleCased.length) / 4);
-          termCandidates.push({ node: r.node, score: 8 + brevityBonus + pathScore });
-        }
-        termCandidates.sort((a, b) => b.score - a.score);
-        for (const r of termCandidates.slice(0, maxCamelPerTerm * 4)) {
-          const existing = camelNodeTerms.get(r.node.id);
-          if (existing) { existing.termCount++; }
-          else { camelNodeTerms.set(r.node.id, { result: r, termCount: 1 }); }
-        }
+    const exactMatchIds = new Set(exactMatches.map(r => r.node.id));
+    for (const result of searchResults) {
+      const nameLower = result.node.name.toLowerCase();
+      const dirSegments = path.dirname(result.node.filePath).toLowerCase().split('/');
+      let matchCount = 0;
+      for (const group of termGroups) {
+        if (group.some(term => nameLower.includes(term) || dirSegments.some(seg => seg === term))) matchCount++;
       }
-      const camelResults: SearchResult[] = [];
-      for (const [, info] of camelNodeTerms) {
-        info.result.score = info.result.score * (1 + info.termCount) + (info.termCount - 1) * 30;
-        camelResults.push(info.result);
-      }
-      camelResults.sort((a, b) => b.score - a.score);
-      for (const r of camelResults.slice(0, opts.searchLimit)) {
-        searchResults.push(r);
-        searchIdSet.add(r.node.id);
-      }
-      if (symbolsFromQuery.length >= 2) {
-        const compoundTermMap = new Map<string, { node: Node; terms: Set<string> }>();
-        for (const sym of symbolsFromQuery) {
-          const titleCased = sym.charAt(0).toUpperCase() + sym.slice(1).toLowerCase();
-          if (titleCased.length < 3) continue;
-          const likeResults = this.queries.findNodesByNameSubstring(titleCased, {
-            limit: 200, kinds: camelDefinitionKinds, excludePrefix: false,
-          });
-          for (const r of likeResults) {
-            if (searchIdSet.has(r.node.id)) continue;
-            if (isTestFile(r.node.filePath) && !isTestQuery) continue;
-            const entry = compoundTermMap.get(r.node.id);
-            if (entry) { entry.terms.add(titleCased); }
-            else { compoundTermMap.set(r.node.id, { node: r.node, terms: new Set([titleCased]) }); }
-          }
-        }
-        const compoundResults: SearchResult[] = [];
-        for (const [, entry] of compoundTermMap) {
-          if (entry.terms.size >= 2) {
-            const pathScore = scorePathRelevance(entry.node.filePath, query);
-            const brevityBonus = Math.max(0, 6 - entry.node.name.length / 8);
-            compoundResults.push({ node: entry.node, score: 10 + (entry.terms.size - 1) * 20 + pathScore + brevityBonus });
-          }
-        }
-        compoundResults.sort((a, b) => b.score - a.score);
-        for (const r of compoundResults.slice(0, Math.ceil(opts.searchLimit / 2))) {
-          searchResults.push(r);
-          searchIdSet.add(r.node.id);
-        }
-      }
+      if (matchCount >= 2) { result.score *= 1 + matchCount * 0.5; }
+      else if (!exactMatchIds.has(result.node.id)) { result.score *= 0.6; }
     }
     searchResults.sort((a, b) => b.score - a.score);
-    searchResults = searchResults.slice(0, opts.searchLimit * 3);
-    return searchResults.filter((r) => r.score >= opts.minScore);
+  }
+
+  private addCamelCaseDefinitions(
+    searchResults: SearchResult[],
+    searchIdSet: Set<string>,
+    symbolsFromQuery: string[],
+    query: string,
+    isTestQuery: boolean,
+    opts: Required<FindRelevantContextOptions>
+  ): void {
+    const camelDefinitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'trait', 'protocol', 'enum', 'type_alias'];
+    const camelSearchedTerms = new Set<string>();
+    const camelNodeTerms = new Map<string, { result: SearchResult; termCount: number }>();
+    const maxCamelPerTerm = Math.ceil(opts.searchLimit / 2);
+    for (const sym of symbolsFromQuery) {
+      const titleCased = sym.charAt(0).toUpperCase() + sym.slice(1).toLowerCase();
+      if (titleCased.length < 3) continue;
+      const termKey = titleCased.toLowerCase();
+      if (camelSearchedTerms.has(termKey)) continue;
+      camelSearchedTerms.add(termKey);
+      const likeResults = this.queries.findNodesByNameSubstring(titleCased, {
+        limit: 200, kinds: camelDefinitionKinds, excludePrefix: true,
+      });
+      const termCandidates: SearchResult[] = [];
+      for (const r of likeResults) {
+        const name = r.node.name;
+        const idx = name.indexOf(titleCased);
+        if (idx <= 0) continue;
+        if (!/[a-zA-Z]/.test(name.charAt(idx - 1))) continue;
+        if (searchIdSet.has(r.node.id)) continue;
+        if (isTestFile(r.node.filePath) && !isTestQuery) continue;
+        const pathScore = scorePathRelevance(r.node.filePath, query);
+        const brevityBonus = Math.max(0, 6 - (name.length - titleCased.length) / 4);
+        termCandidates.push({ node: r.node, score: 8 + brevityBonus + pathScore });
+      }
+      termCandidates.sort((a, b) => b.score - a.score);
+      for (const r of termCandidates.slice(0, maxCamelPerTerm * 4)) {
+        const existing = camelNodeTerms.get(r.node.id);
+        if (existing) { existing.termCount++; }
+        else { camelNodeTerms.set(r.node.id, { result: r, termCount: 1 }); }
+      }
+    }
+    const camelResults: SearchResult[] = [];
+    for (const [, info] of camelNodeTerms) {
+      info.result.score = info.result.score * (1 + info.termCount) + (info.termCount - 1) * 30;
+      camelResults.push(info.result);
+    }
+    camelResults.sort((a, b) => b.score - a.score);
+    for (const r of camelResults.slice(0, opts.searchLimit)) {
+      searchResults.push(r);
+      searchIdSet.add(r.node.id);
+    }
+  }
+
+  private addCompoundTermMatches(
+    searchResults: SearchResult[],
+    searchIdSet: Set<string>,
+    symbolsFromQuery: string[],
+    query: string,
+    isTestQuery: boolean,
+    opts: Required<FindRelevantContextOptions>
+  ): void {
+    const camelDefinitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'trait', 'protocol', 'enum', 'type_alias'];
+    const compoundTermMap = new Map<string, { node: Node; terms: Set<string> }>();
+    for (const sym of symbolsFromQuery) {
+      const titleCased = sym.charAt(0).toUpperCase() + sym.slice(1).toLowerCase();
+      if (titleCased.length < 3) continue;
+      const likeResults = this.queries.findNodesByNameSubstring(titleCased, {
+        limit: 200, kinds: camelDefinitionKinds, excludePrefix: false,
+      });
+      for (const r of likeResults) {
+        if (searchIdSet.has(r.node.id)) continue;
+        if (isTestFile(r.node.filePath) && !isTestQuery) continue;
+        const entry = compoundTermMap.get(r.node.id);
+        if (entry) { entry.terms.add(titleCased); }
+        else { compoundTermMap.set(r.node.id, { node: r.node, terms: new Set([titleCased]) }); }
+      }
+    }
+    const compoundResults: SearchResult[] = [];
+    for (const [, entry] of compoundTermMap) {
+      if (entry.terms.size >= 2) {
+        const pathScore = scorePathRelevance(entry.node.filePath, query);
+        const brevityBonus = Math.max(0, 6 - entry.node.name.length / 8);
+        compoundResults.push({ node: entry.node, score: 10 + (entry.terms.size - 1) * 20 + pathScore + brevityBonus });
+      }
+    }
+    compoundResults.sort((a, b) => b.score - a.score);
+    for (const r of compoundResults.slice(0, Math.ceil(opts.searchLimit / 2))) {
+      searchResults.push(r);
+      searchIdSet.add(r.node.id);
+    }
   }
 
   private expandTypeHierarchy(
@@ -603,68 +641,100 @@ export class ContextBuilder {
     let finalNodes = nodes;
     let finalEdges = edges;
     if (nodes.size > opts.maxNodes) {
-      const priorityIds = new Set(roots);
-      for (const edge of edges) {
-        if (priorityIds.has(edge.source)) priorityIds.add(edge.target);
-        if (priorityIds.has(edge.target)) priorityIds.add(edge.source);
-      }
-      finalNodes = new Map<string, Node>();
-      for (const id of priorityIds) {
-        const node = nodes.get(id);
-        if (node && finalNodes.size < opts.maxNodes) finalNodes.set(id, node);
-      }
-      for (const [id, node] of nodes) {
-        if (finalNodes.size >= opts.maxNodes) break;
-        if (!finalNodes.has(id)) finalNodes.set(id, node);
-      }
-      finalEdges = edges.filter((e) => finalNodes.has(e.source) && finalNodes.has(e.target));
+      ({ nodes: finalNodes, edges: finalEdges } = this.capTotalNodes(nodes, edges, roots, opts.maxNodes));
     }
-    const maxPerFile = Math.max(5, Math.ceil(opts.maxNodes * 0.2));
+    this.capNodesPerFile(finalNodes, roots, Math.max(5, Math.ceil(opts.maxNodes * 0.2)));
+    if (!isTestQuery) {
+      this.capNonProductionNodes(finalNodes, roots, Math.max(3, Math.ceil(opts.maxNodes * 0.15)));
+    }
+    finalEdges = this.recoverEdgesBetweenNodes(finalNodes, finalEdges);
+    return { nodes: finalNodes, edges: finalEdges, roots };
+  }
+
+  private capTotalNodes(
+    nodes: Map<string, Node>,
+    edges: Edge[],
+    roots: string[],
+    maxNodes: number
+  ): { nodes: Map<string, Node>; edges: Edge[] } {
+    const priorityIds = new Set(roots);
+    for (const edge of edges) {
+      if (priorityIds.has(edge.source)) priorityIds.add(edge.target);
+      if (priorityIds.has(edge.target)) priorityIds.add(edge.source);
+    }
+    const finalNodes = new Map<string, Node>();
+    for (const id of priorityIds) {
+      const node = nodes.get(id);
+      if (node && finalNodes.size < maxNodes) finalNodes.set(id, node);
+    }
+    for (const [id, node] of nodes) {
+      if (finalNodes.size >= maxNodes) break;
+      if (!finalNodes.has(id)) finalNodes.set(id, node);
+    }
+    const finalEdges = edges.filter((e) => finalNodes.has(e.source) && finalNodes.has(e.target));
+    return { nodes: finalNodes, edges: finalEdges };
+  }
+
+  private capNodesPerFile(
+    nodes: Map<string, Node>,
+    roots: string[],
+    maxPerFile: number
+  ): void {
     const fileCounts = new Map<string, string[]>();
-    for (const [id, node] of finalNodes) {
+    for (const [id, node] of nodes) {
       const ids = fileCounts.get(node.filePath) || [];
       ids.push(id);
       fileCounts.set(node.filePath, ids);
     }
     const rootSet = new Set(roots);
+    const kindPriority: Record<string, number> = {
+      class: 3, interface: 3, struct: 3, trait: 3, protocol: 3, enum: 3,
+      method: 1, function: 1, property: 0, field: 0, variable: 0,
+    };
     for (const [, nodeIds] of fileCounts) {
       if (nodeIds.length <= maxPerFile) continue;
-      const kindPriority: Record<string, number> = {
-        class: 3, interface: 3, struct: 3, trait: 3, protocol: 3, enum: 3,
-        method: 1, function: 1, property: 0, field: 0, variable: 0,
-      };
       nodeIds.sort((a, b) => {
         const aRoot = rootSet.has(a) ? 10 : 0;
         const bRoot = rootSet.has(b) ? 10 : 0;
-        const aKind = kindPriority[finalNodes.get(a)!.kind] ?? 0;
-        const bKind = kindPriority[finalNodes.get(b)!.kind] ?? 0;
+        const aKind = kindPriority[nodes.get(a)!.kind] ?? 0;
+        const bKind = kindPriority[nodes.get(b)!.kind] ?? 0;
         return (bRoot + bKind) - (aRoot + aKind);
       });
-      for (const id of nodeIds.slice(maxPerFile)) finalNodes.delete(id);
+      for (const id of nodeIds.slice(maxPerFile)) nodes.delete(id);
     }
-    if (!isTestQuery) {
-      const maxNonProd = Math.max(3, Math.ceil(opts.maxNodes * 0.15));
-      const nonProdIds: string[] = [];
-      for (const [id, node] of finalNodes) {
-        if (isTestFile(node.filePath)) nonProdIds.push(id);
-      }
-      if (nonProdIds.length > maxNonProd) {
-        for (const id of nonProdIds.slice(maxNonProd)) {
-          finalNodes.delete(id);
-          const rootIdx = roots.indexOf(id);
-          if (rootIdx !== -1) roots.splice(rootIdx, 1);
-        }
+  }
+
+  private capNonProductionNodes(
+    nodes: Map<string, Node>,
+    roots: string[],
+    maxNonProd: number
+  ): void {
+    const nonProdIds: string[] = [];
+    for (const [id, node] of nodes) {
+      if (isTestFile(node.filePath)) nonProdIds.push(id);
+    }
+    if (nonProdIds.length > maxNonProd) {
+      for (const id of nonProdIds.slice(maxNonProd)) {
+        nodes.delete(id);
+        const rootIdx = roots.indexOf(id);
+        if (rootIdx !== -1) roots.splice(rootIdx, 1);
       }
     }
-    finalEdges = finalEdges.filter((e) => finalNodes.has(e.source) && finalNodes.has(e.target));
+  }
+
+  private recoverEdgesBetweenNodes(
+    nodes: Map<string, Node>,
+    edges: Edge[]
+  ): Edge[] {
+    const finalEdges = edges.filter((e) => nodes.has(e.source) && nodes.has(e.target));
     const recoveryKinds: EdgeKind[] = ['calls', 'extends', 'implements', 'references', 'overrides'];
-    const recoveredEdges = this.queries.findEdgesBetweenNodes([...finalNodes.keys()], recoveryKinds);
+    const recoveredEdges = this.queries.findEdgesBetweenNodes([...nodes.keys()], recoveryKinds);
     const existingEdgeKeys = new Set(finalEdges.map((e) => `${e.source}:${e.target}:${e.kind}`));
     for (const edge of recoveredEdges) {
       const key = `${edge.source}:${edge.target}:${edge.kind}`;
       if (!existingEdgeKeys.has(key)) { finalEdges.push(edge); existingEdgeKeys.add(key); }
     }
-    return { nodes: finalNodes, edges: finalEdges, roots };
+    return finalEdges;
   }
 
   /**

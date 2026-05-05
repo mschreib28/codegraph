@@ -15,13 +15,10 @@ import {
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported } from './grammars';
+import { getParser, detectLanguage, isLanguageSupported, getGrammarError } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
 import { EXTRACTORS } from './languages';
-import { LiquidExtractor } from './liquid-extractor';
-import { SvelteExtractor } from './svelte-extractor';
-import { DfmExtractor } from './dfm-extractor';
 
 // Re-export for backward compatibility
 export { generateNodeId } from './tree-sitter-helpers';
@@ -234,16 +231,20 @@ export class TreeSitterExtractor {
 
     const parser = getParser(this.language);
     if (!parser) {
+      const grammarErr = getGrammarError(this.language);
+      const reason = grammarErr
+        ? `grammar failed to load: ${grammarErr}`
+        : 'grammar not loaded';
       return {
         nodes: [],
         edges: [],
         unresolvedReferences: [],
         errors: [
           {
-            message: `Failed to get parser for language: ${this.language}`,
+            message: `No parser for ${this.language} — ${reason}`,
             filePath: this.filePath,
             severity: 'error',
-            code: 'parser_error',
+            code: 'grammar_unavailable',
           },
         ],
         durationMs: Date.now() - startTime,
@@ -1200,99 +1201,88 @@ export class TreeSitterExtractor {
       // NOT "use generic fallback" — the hook already declined)
     }
 
-    // Multi-import cases that create multiple nodes (can't be expressed with single-return hook)
+    if (this.extractPythonMultiImport(node, importText)) return;
+    if (this.extractGoImports(node)) return;
+    if (this.extractPhpGroupedImport(node, importText)) return;
 
-    // Python import_statement: import os, sys (creates one import per module)
-    if (this.language === 'python' && node.type === 'import_statement') {
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child?.type === 'dotted_name') {
-          this.createNode('import', getNodeText(child, this.source), node, {
-            signature: importText,
-          });
-        } else if (child?.type === 'aliased_import') {
-          const dottedName = child.namedChildren.find(c => c.type === 'dotted_name');
-          if (dottedName) {
-            this.createNode('import', getNodeText(dottedName, this.source), node, {
-              signature: importText,
-            });
-          }
-        }
-      }
-      return;
-    }
-
-    // Go imports: single or grouped (creates one import per spec)
-    if (this.language === 'go') {
-      const parentId = this.nodeStack.length > 0 ? this.nodeStack[this.nodeStack.length - 1] : null;
-      const extractFromSpec = (spec: SyntaxNode): void => {
-        const stringLiteral = spec.namedChildren.find(c => c.type === 'interpreted_string_literal');
-        if (stringLiteral) {
-          const importPath = getNodeText(stringLiteral, this.source).replace(/['"]/g, '');
-          if (importPath) {
-            this.createNode('import', importPath, spec, {
-              signature: getNodeText(spec, this.source).trim(),
-            });
-            // Create unresolved reference so the resolver can create imports edges
-            if (parentId) {
-              this.unresolvedReferences.push({
-                fromNodeId: parentId,
-                referenceName: importPath,
-                referenceKind: 'imports',
-                line: spec.startPosition.row + 1,
-                column: spec.startPosition.column,
-              });
-            }
-          }
-        }
-      };
-
-      const importSpecList = node.namedChildren.find(c => c.type === 'import_spec_list');
-      if (importSpecList) {
-        for (const spec of importSpecList.namedChildren.filter(c => c.type === 'import_spec')) {
-          extractFromSpec(spec);
-        }
-      } else {
-        const importSpec = node.namedChildren.find(c => c.type === 'import_spec');
-        if (importSpec) {
-          extractFromSpec(importSpec);
-        }
-      }
-      return;
-    }
-
-    // PHP grouped imports: use X\{A, B} (creates one import per item)
-    if (this.language === 'php') {
-      const namespacePrefix = node.namedChildren.find(c => c.type === 'namespace_name');
-      const useGroup = node.namedChildren.find(c => c.type === 'namespace_use_group');
-      if (namespacePrefix && useGroup) {
-        const prefix = getNodeText(namespacePrefix, this.source);
-        const useClauses = useGroup.namedChildren.filter((c: SyntaxNode) =>
-          c.type === 'namespace_use_group_clause' || c.type === 'namespace_use_clause'
-        );
-        for (const clause of useClauses) {
-          const nsName = clause.namedChildren.find((c: SyntaxNode) => c.type === 'namespace_name');
-          const name = nsName
-            ? nsName.namedChildren.find((c: SyntaxNode) => c.type === 'name')
-            : clause.namedChildren.find((c: SyntaxNode) => c.type === 'name');
-          if (name) {
-            const fullPath = `${prefix}\\${getNodeText(name, this.source)}`;
-            this.createNode('import', fullPath, node, {
-              signature: importText,
-            });
-          }
-        }
-        return;
-      }
-    }
-
-    // If a hook exists but returned null, it intentionally declined this node — don't create fallback
     if (this.extractor.extractImport) return;
 
-    // Generic fallback for languages without hooks
     this.createNode('import', importText, node, {
       signature: importText,
     });
+  }
+
+  private extractPythonMultiImport(node: SyntaxNode, importText: string): boolean {
+    if (this.language !== 'python' || node.type !== 'import_statement') return false;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child?.type === 'dotted_name') {
+        this.createNode('import', getNodeText(child, this.source), node, { signature: importText });
+      } else if (child?.type === 'aliased_import') {
+        const dottedName = child.namedChildren.find(c => c.type === 'dotted_name');
+        if (dottedName) {
+          this.createNode('import', getNodeText(dottedName, this.source), node, { signature: importText });
+        }
+      }
+    }
+    return true;
+  }
+
+  private extractGoImports(node: SyntaxNode): boolean {
+    if (this.language !== 'go') return false;
+    const parentId = this.nodeStack.length > 0 ? this.nodeStack[this.nodeStack.length - 1] : null;
+    const extractFromSpec = (spec: SyntaxNode): void => {
+      const stringLiteral = spec.namedChildren.find(c => c.type === 'interpreted_string_literal');
+      if (stringLiteral) {
+        const importPath = getNodeText(stringLiteral, this.source).replace(/['"]/g, '');
+        if (importPath) {
+          this.createNode('import', importPath, spec, {
+            signature: getNodeText(spec, this.source).trim(),
+          });
+          if (parentId) {
+            this.unresolvedReferences.push({
+              fromNodeId: parentId,
+              referenceName: importPath,
+              referenceKind: 'imports',
+              line: spec.startPosition.row + 1,
+              column: spec.startPosition.column,
+            });
+          }
+        }
+      }
+    };
+    const importSpecList = node.namedChildren.find(c => c.type === 'import_spec_list');
+    if (importSpecList) {
+      for (const spec of importSpecList.namedChildren.filter(c => c.type === 'import_spec')) {
+        extractFromSpec(spec);
+      }
+    } else {
+      const importSpec = node.namedChildren.find(c => c.type === 'import_spec');
+      if (importSpec) extractFromSpec(importSpec);
+    }
+    return true;
+  }
+
+  private extractPhpGroupedImport(node: SyntaxNode, importText: string): boolean {
+    if (this.language !== 'php') return false;
+    const namespacePrefix = node.namedChildren.find(c => c.type === 'namespace_name');
+    const useGroup = node.namedChildren.find(c => c.type === 'namespace_use_group');
+    if (!namespacePrefix || !useGroup) return false;
+    const prefix = getNodeText(namespacePrefix, this.source);
+    const useClauses = useGroup.namedChildren.filter((c: SyntaxNode) =>
+      c.type === 'namespace_use_group_clause' || c.type === 'namespace_use_clause'
+    );
+    for (const clause of useClauses) {
+      const nsName = clause.namedChildren.find((c: SyntaxNode) => c.type === 'namespace_name');
+      const name = nsName
+        ? nsName.namedChildren.find((c: SyntaxNode) => c.type === 'name')
+        : clause.namedChildren.find((c: SyntaxNode) => c.type === 'name');
+      if (name) {
+        const fullPath = `${prefix}\\${getNodeText(name, this.source)}`;
+        this.createNode('import', fullPath, node, { signature: importText });
+      }
+    }
+    return true;
   }
 
   /**
@@ -1968,38 +1958,3 @@ export class TreeSitterExtractor {
 }
 
 
-/**
- * Extract nodes and edges from source code
- */
-export function extractFromSource(
-  filePath: string,
-  source: string,
-  language?: Language
-): ExtractionResult {
-  const detectedLanguage = language || detectLanguage(filePath, source);
-  const fileExtension = path.extname(filePath).toLowerCase();
-
-  // Use custom extractor for Svelte
-  if (detectedLanguage === 'svelte') {
-    const extractor = new SvelteExtractor(filePath, source);
-    return extractor.extract();
-  }
-
-  // Use custom extractor for Liquid
-  if (detectedLanguage === 'liquid') {
-    const extractor = new LiquidExtractor(filePath, source);
-    return extractor.extract();
-  }
-
-  // Use custom extractor for DFM/FMX form files
-  if (
-    detectedLanguage === 'pascal' &&
-    (fileExtension === '.dfm' || fileExtension === '.fmx')
-  ) {
-    const extractor = new DfmExtractor(filePath, source);
-    return extractor.extract();
-  }
-
-  const extractor = new TreeSitterExtractor(filePath, source, detectedLanguage);
-  return extractor.extract();
-}

@@ -295,12 +295,24 @@ function printIndexResult(clack: typeof import('@clack/prompts'), result: IndexR
       path_traversal: 'blocked paths',
       unsupported_language: 'unsupported language',
       parser_error: 'parser initialization failures',
+      grammar_unavailable: 'files skipped (grammar unavailable)',
     };
+
+    // For grammar_unavailable errors, extract and show the root cause
+    const grammarErrors = result.errors.filter(e => e.code === 'grammar_unavailable' && e.severity === 'error');
+    let grammarHint = '';
+    if (grammarErrors.length > 0) {
+      const rootCause = grammarErrors[0]!.message;
+      const match = rootCause.match(/grammar failed to load: (.+)/);
+      if (match) {
+        grammarHint = `\n\nRoot cause: ${match[1]}\nTry: npm rebuild tree-sitter-wasms`;
+      }
+    }
 
     const breakdown = Array.from(errorsByCode)
       .map(([code, count]) => `${formatNumber(count)} ${codeLabels[code] || code}`)
       .join('\n');
-    clack.note(breakdown, 'Error breakdown');
+    clack.note(breakdown + grammarHint, 'Error breakdown');
 
     if (projectPath) {
       writeErrorLog(projectPath, result.errors);

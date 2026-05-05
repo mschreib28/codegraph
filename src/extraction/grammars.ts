@@ -7,6 +7,7 @@
  */
 
 import * as path from 'path';
+import * as fs from 'fs';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { Language } from '../types';
 
@@ -125,11 +126,30 @@ export async function loadGrammarsForLanguages(languages: Language[]): Promise<v
       const wasmPath = lang === 'pascal'
         ? path.join(__dirname, 'wasm', wasmFile)
         : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
+
+      if (!fs.existsSync(wasmPath)) {
+        const msg = `WASM file not found at ${wasmPath}`;
+        console.warn(`[CodeGraph] Failed to load ${lang} grammar: ${msg}`);
+        unavailableGrammarErrors.set(lang, msg);
+        continue;
+      }
+
       const language = await WasmLanguage.load(wasmPath);
       languageCache.set(lang, language);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[CodeGraph] Failed to load ${lang} grammar — parsing will be unavailable: ${message}`);
+      let message: string;
+      if (error instanceof Error) {
+        message = error.message || `${error.constructor.name} (no message)`;
+        if (!error.message && error.stack) {
+          message += ` — stack: ${error.stack.split('\n').slice(0, 3).join(' ')}`;
+        }
+      } else {
+        message = String(error) || `Unknown error: ${typeof error}`;
+      }
+      const wasmPath = lang === 'pascal'
+        ? path.join(__dirname, 'wasm', wasmFile)
+        : `tree-sitter-wasms/out/${wasmFile}`;
+      console.warn(`[CodeGraph] Failed to load ${lang} grammar (${wasmPath}): ${message}`);
       unavailableGrammarErrors.set(lang, message);
     }
   }
@@ -247,6 +267,14 @@ export function clearParserCache(): void {
   // Note: languageCache is NOT cleared — WASM languages persist.
   // To fully re-init, set parserInitialized = false and call initGrammars() again.
   unavailableGrammarErrors.clear();
+}
+
+/**
+ * Get the error message for a specific grammar that failed to load.
+ * Returns undefined if the grammar loaded successfully or was never attempted.
+ */
+export function getGrammarError(language: Language): string | undefined {
+  return unavailableGrammarErrors.get(language);
 }
 
 /**

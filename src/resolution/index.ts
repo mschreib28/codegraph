@@ -109,6 +109,54 @@ const PASCAL_BUILT_INS = new Set([
   'IInterface', 'IUnknown',
 ]);
 
+function isJsTsBuiltIn(name: string): boolean {
+  if (JS_BUILT_INS.has(name)) return true;
+  if (name.startsWith('console.') || name.startsWith('Math.') || name.startsWith('JSON.')) return true;
+  if (REACT_HOOKS.has(name)) return true;
+  return false;
+}
+
+function isPythonBuiltIn(name: string, knownNames?: Set<string> | null): boolean {
+  if (PYTHON_BUILT_INS.has(name)) return true;
+  const dotIdx = name.indexOf('.');
+  if (dotIdx > 0) {
+    const receiver = name.substring(0, dotIdx);
+    const method = name.substring(dotIdx + 1);
+    if (PYTHON_BUILT_IN_TYPES.has(receiver)) return true;
+    if (PYTHON_BUILT_IN_METHODS.has(method)) {
+      const capitalized = receiver.charAt(0).toUpperCase() + receiver.slice(1);
+      if (!knownNames?.has(capitalized)) return true;
+    }
+  }
+  if (PYTHON_BUILT_IN_METHODS.has(name)) return true;
+  return false;
+}
+
+function isGoBuiltIn(name: string): boolean {
+  const dotIdx = name.indexOf('.');
+  if (dotIdx > 0 && GO_STDLIB_PACKAGES.has(name.substring(0, dotIdx))) return true;
+  if (GO_BUILT_INS.has(name)) return true;
+  return false;
+}
+
+function isPascalBuiltIn(name: string): boolean {
+  if (PASCAL_UNIT_PREFIXES.some((p) => name.startsWith(p))) return true;
+  if (PASCAL_BUILT_INS.has(name)) return true;
+  return false;
+}
+
+type BuiltInChecker = (name: string, knownNames?: Set<string> | null) => boolean;
+
+const BUILT_IN_CHECKERS = new Map<string, BuiltInChecker>([
+  ['typescript', isJsTsBuiltIn],
+  ['javascript', isJsTsBuiltIn],
+  ['tsx', isJsTsBuiltIn],
+  ['jsx', isJsTsBuiltIn],
+  ['python', isPythonBuiltIn],
+  ['go', isGoBuiltIn],
+  ['pascal', isPascalBuiltIn],
+]);
+
 /**
  * Reference Resolver
  *
@@ -583,80 +631,8 @@ export class ReferenceResolver {
    * Check if reference is to a built-in or external symbol
    */
   private isBuiltInOrExternal(ref: UnresolvedRef): boolean {
-    const name = ref.referenceName;
-    const isJsTs = ref.language === 'typescript' || ref.language === 'javascript'
-      || ref.language === 'tsx' || ref.language === 'jsx';
-
-    // JavaScript/TypeScript built-ins
-    if (isJsTs && JS_BUILT_INS.has(name)) {
-      return true;
-    }
-
-    // Common JS/TS library calls (console.log, Math.floor, JSON.parse)
-    if (isJsTs && (name.startsWith('console.') || name.startsWith('Math.') || name.startsWith('JSON.'))) {
-      return true;
-    }
-
-    // React hooks from React itself
-    if (isJsTs && REACT_HOOKS.has(name)) {
-      return true;
-    }
-
-    // Python built-ins (bare calls only — dotted calls like console.print are method calls)
-    if (ref.language === 'python' && PYTHON_BUILT_INS.has(name)) {
-      return true;
-    }
-
-    // Python built-in method calls (e.g., list.extend, dict.update)
-    if (ref.language === 'python') {
-      const dotIdx = name.indexOf('.');
-      if (dotIdx > 0) {
-        const receiver = name.substring(0, dotIdx);
-        const method = name.substring(dotIdx + 1);
-        // Filter calls on built-in types (list.append, dict.update, etc.)
-        if (PYTHON_BUILT_IN_TYPES.has(receiver)) {
-          return true;
-        }
-        // Filter built-in methods on non-class receivers
-        // (e.g., items.append where items is a local list variable)
-        // But allow if the capitalized receiver matches a known codebase class
-        if (PYTHON_BUILT_IN_METHODS.has(method)) {
-          const capitalized = receiver.charAt(0).toUpperCase() + receiver.slice(1);
-          if (!this.knownNames?.has(capitalized)) {
-            return true;
-          }
-        }
-      }
-      if (PYTHON_BUILT_IN_METHODS.has(name)) {
-        return true;
-      }
-    }
-
-    // Go standard library packages — refs like "fmt.Println", "http.ListenAndServe", etc.
-    if (ref.language === 'go') {
-      const dotIdx = name.indexOf('.');
-      if (dotIdx > 0) {
-        const pkg = name.substring(0, dotIdx);
-        if (GO_STDLIB_PACKAGES.has(pkg)) {
-          return true;
-        }
-      }
-      if (GO_BUILT_INS.has(name)) {
-        return true;
-      }
-    }
-
-    // Pascal/Delphi built-ins and standard library units
-    if (ref.language === 'pascal') {
-      if (PASCAL_UNIT_PREFIXES.some((p) => name.startsWith(p))) {
-        return true;
-      }
-      if (PASCAL_BUILT_INS.has(name)) {
-        return true;
-      }
-    }
-
-    return false;
+    const checker = BUILT_IN_CHECKERS.get(ref.language);
+    return checker ? checker(ref.referenceName, this.knownNames) : false;
   }
 
   /**
