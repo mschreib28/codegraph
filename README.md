@@ -276,6 +276,7 @@ codegraph init [path]             # Initialize in a project (--index to also ind
 codegraph uninit [path]           # Remove CodeGraph from a project (--force to skip prompt)
 codegraph index [path]            # Full index (--force to re-index, --quiet for less output)
 codegraph sync [path]             # Incremental update
+codegraph complexity [path]       # Analyze code complexity (see below)
 codegraph status [path]           # Show statistics
 codegraph query <search>          # Search symbols (--kind, --limit, --json)
 codegraph files [path]            # Show file structure (--format, --filter, --max-depth, --json)
@@ -283,6 +284,38 @@ codegraph context <task>          # Build context for AI (--format, --max-nodes)
 codegraph affected [files...]     # Find test files affected by changes (see below)
 codegraph serve --mcp             # Start MCP server
 ```
+
+### `codegraph complexity`
+
+Measures cyclomatic complexity for every supported language using the tree-sitter ASTs CodeGraph already produces — no external tools required. Optionally augments JS/TS results with [madge](https://github.com/pahen/madge) for dependency metrics (fan-in, fan-out, circular dependencies). Results are stored in the `complexity_metrics` table and are accessible via the MCP tools.
+
+```bash
+codegraph complexity                        # Analyze all languages
+codegraph complexity --language typescript  # Restrict to one language
+codegraph complexity --json                 # Output JSON summary
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --language <lang>` | Restrict to a single language (e.g. `python`, `typescript`, `go`) |
+| `-q, --quiet` | Suppress progress output |
+| `-j, --json` | Output full JSON summary including per-tool results and any warnings |
+
+**Installing optional dependencies**
+
+The native analyzer ships with CodeGraph and works out of the box. To enable JS/TS dependency metrics (fan-in, fan-out, circular imports), install madge:
+
+```bash
+# Global install (recommended — works across all projects)
+npm install -g madge
+
+# Or as a project dev dependency
+npm install --save-dev madge
+```
+
+After installing madge, re-run `codegraph complexity` and the `madge` tool will be detected and run automatically alongside the native analyzer.
+
+---
 
 ### `codegraph affected`
 
