@@ -109,6 +109,7 @@ All tests used Claude Opus 4.6 (1M context) with Claude Code v2.1.91. Each test 
 | **Impact Analysis** | Trace callers, callees, and the full impact radius of any symbol before making changes |
 | **Always Fresh** | File watcher uses native OS events (FSEvents/inotify/ReadDirectoryChangesW) with debounced auto-sync — the graph stays current as you code, zero config |
 | **19+ Languages** | TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Kotlin, Dart, Svelte, Liquid, Pascal/Delphi |
+| **Visual Explorer** | Interactive D3 force-directed graph + cyclomatic complexity treemap — browse your codebase visually at `localhost:7777` |
 | **100% Local** | No data leaves your machine. No API keys. No external services. SQLite database only |
 
 ---
@@ -346,6 +347,35 @@ if [ -n "$AFFECTED" ]; then
   npx vitest run $AFFECTED
 fi
 ```
+
+---
+
+## Visual Explorer
+
+```bash
+codegraph serve --ui
+```
+
+Opens an interactive web UI at `http://localhost:7777` with two views:
+
+![CodeGraph Visual Explorer](docs/assets/codegraph.nodes.complexity.gif)
+
+### Graph View
+
+A D3 force-directed graph of your entire codebase. Nodes represent files and symbols; edges represent calls, imports, and relationships. Node color encodes symbol type (callable, type/container, module, web primitive, etc.) and language. Click any file in the left-hand file tree to expand its symbols in the graph, or click a node directly to inspect it in the **Details** panel on the right. A search bar filters by symbol name across the full graph.
+
+### Complexity View
+
+A treemap of cyclomatic complexity scores for every file in your project, computed from the same tree-sitter ASTs CodeGraph already builds — no external tools required. Block size is proportional to complexity; color encodes severity:
+
+| Color | Severity | CC range |
+|-------|----------|----------|
+| Yellow | Low | < 10 |
+| Orange | Medium | 10–20 |
+| Pink | High | 20–50 |
+| Red | Critical | > 50 |
+
+Filter to any severity level with the **Low / Medium / High / Critical** toggle buttons, restrict to a single language with the language dropdown, or switch to **Table** view for a sortable list. When [madge](https://github.com/pahen/madge) is installed, fan-in, fan-out, and circular dependency metrics are included automatically.
 
 ---
 
