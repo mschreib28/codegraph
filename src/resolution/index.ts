@@ -17,9 +17,11 @@ import {
   ImportMapping,
 } from './types';
 import { matchReference } from './name-matcher';
-import { resolveViaImport, extractImportMappings } from './import-resolver';
+import { resolveViaImport, extractImportMappings, extractReExports } from './import-resolver';
 import { detectFrameworks } from './frameworks';
+import { loadProjectAliases, type AliasMap } from './path-aliases';
 import { logDebug } from '../errors';
+import type { ReExport } from './types';
 
 // Re-export types
 export * from './types';
@@ -170,12 +172,17 @@ export class ReferenceResolver {
   private nodeCache: Map<string, Node[]> = new Map(); // per-file node cache (bounded)
   private fileCache: Map<string, string | null> = new Map(); // per-file content cache (bounded)
   private importMappingCache: Map<string, ImportMapping[]> = new Map();
+  private reExportCache: Map<string, ReExport[]> = new Map();
   private nameCache: Map<string, Node[]> = new Map(); // name → nodes cache
   private lowerNameCache: Map<string, Node[]> = new Map(); // lower(name) → nodes cache
   private qualifiedNameCache: Map<string, Node[]> = new Map(); // qualified_name → nodes cache
   private knownNames: Set<string> | null = null; // all known symbol names for fast pre-filtering
   private knownFiles: Set<string> | null = null;
   private cachesWarmed = false;
+  // tsconfig/jsconfig path-alias map. `undefined` = not yet computed,
+  // `null` = computed and absent. Treated as immutable for the
+  // resolver's lifetime; callers re-create the resolver if config changes.
+  private projectAliases: AliasMap | null | undefined = undefined;
 
   constructor(projectRoot: string, queries: QueryBuilder) {
     this.projectRoot = projectRoot;
@@ -216,6 +223,7 @@ export class ReferenceResolver {
     this.nodeCache.clear();
     this.fileCache.clear();
     this.importMappingCache.clear();
+    this.reExportCache.clear();
     this.nameCache.clear();
     this.lowerNameCache.clear();
     this.qualifiedNameCache.clear();
@@ -319,6 +327,26 @@ export class ReferenceResolver {
         const mappings = extractImportMappings(filePath, content, language);
         this.importMappingCache.set(cacheKey, mappings);
         return mappings;
+      },
+
+      getProjectAliases: () => {
+        if (this.projectAliases === undefined) {
+          this.projectAliases = loadProjectAliases(this.projectRoot);
+        }
+        return this.projectAliases;
+      },
+
+      getReExports: (filePath: string, language) => {
+        const cached = this.reExportCache.get(filePath);
+        if (cached) return cached;
+        const content = this.context.readFile(filePath);
+        if (!content) {
+          this.reExportCache.set(filePath, []);
+          return [];
+        }
+        const reExports = extractReExports(content, language);
+        this.reExportCache.set(filePath, reExports);
+        return reExports;
       },
     };
   }
