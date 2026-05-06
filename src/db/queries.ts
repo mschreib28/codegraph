@@ -19,6 +19,7 @@ import {
 } from '../types';
 import { safeJsonParse } from '../utils';
 import { kindBonus, nameMatchBonus, scorePathRelevance } from '../search/query-utils';
+import { parseQuery, boundedEditDistance } from '../search/query-parser';
 
 /**
  * Database row types (snake_case from SQLite)
@@ -121,6 +122,24 @@ function rowToEdge(row: EdgeRow): Edge {
     column: row.col ?? undefined,
     provenance: row.provenance as Edge['provenance'],
   };
+}
+
+/**
+ * SQLite default `SQLITE_LIMIT_VARIABLE_NUMBER` is 999. Splitting
+ * an `IN (?, ?, ...)` list into chunks of this size keeps the
+ * helpers safe against pathological inputs (large name lists from
+ * graph qualifiers, large id sets from seeded searches) without
+ * having to know each prepared statement's variable budget.
+ */
+const SQLITE_VAR_LIMIT = 900;
+
+function chunkIds<T>(items: ReadonlyArray<T>): T[][] {
+  if (items.length <= SQLITE_VAR_LIMIT) return [items.slice()];
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += SQLITE_VAR_LIMIT) {
+    out.push(items.slice(i, i + SQLITE_VAR_LIMIT));
+  }
+  return out;
 }
 
 /**
@@ -479,14 +498,103 @@ export class QueryBuilder {
    * 3. Score results based on match quality
    */
   searchNodes(query: string, options: SearchOptions = {}): SearchResult[] {
-    const { kinds, languages, limit = 100, offset = 0 } = options;
+    const { limit = 100, offset = 0 } = options;
 
-    // First try FTS5 with prefix matching
-    let results = this.searchNodesFTS(query, { kinds, languages, limit, offset });
+    // Parse field-qualified bits out of the raw query (kind:, lang:,
+    // path:, name:). Anything not recognised stays in `text` and goes
+    // to FTS unchanged. Filters compose with the SearchOptions arg —
+    // both are applied (intersection-style).
+    const parsed = parseQuery(query);
+    const mergedKinds =
+      parsed.kinds.length > 0
+        ? Array.from(new Set([...(options.kinds ?? []), ...parsed.kinds]))
+        : options.kinds;
+    const mergedLanguages =
+      parsed.languages.length > 0
+        ? Array.from(new Set([...(options.languages ?? []), ...parsed.languages]))
+        : options.languages;
+    const pathFilters = parsed.pathFilters;
+    const nameFilters = parsed.nameFilters;
+    const signatureFilters = parsed.signatureFilters;
+    const callersOf = parsed.callersOf;
+    const calleesOf = parsed.calleesOf;
+    // The text portion drives FTS/LIKE; if all the user typed was
+    // filters (`kind:function`), we still need *some* candidate set,
+    // so synthesise an empty-text path that returns everything matching
+    // the filters.
+    const text = parsed.text;
+    const kinds = mergedKinds;
+    const languages = mergedLanguages;
+
+    // First try FTS5 with prefix matching. For filter-only queries
+    // with a graph qualifier (callers-of / callees-of), seed the
+    // candidate set FROM the graph rather than scanning a slice of
+    // arbitrary nodes — a tiny callers set is much more likely to
+    // produce useful results than the first N name-ordered nodes.
+    // Compute the graph-derived sets ONCE up-front so the filter pass
+    // below can reuse them instead of re-querying. Memoised lazily.
+    let cachedCallersSet: Set<string> | null = null;
+    let cachedCalleesSet: Set<string> | null = null;
+    const callersSet = (): Set<string> => {
+      if (cachedCallersSet === null) cachedCallersSet = this.nodesCallingAny(callersOf);
+      return cachedCallersSet;
+    };
+    const calleesSet = (): Set<string> => {
+      if (cachedCalleesSet === null) cachedCalleesSet = this.nodesCalledByAny(calleesOf);
+      return cachedCalleesSet;
+    };
+
+    let results: SearchResult[];
+    if (text) {
+      results = this.searchNodesFTS(text, { kinds, languages, limit, offset });
+    } else if (callersOf.length > 0 || calleesOf.length > 0) {
+      const seedIds = new Set<string>();
+      if (callersOf.length > 0) {
+        for (const id of callersSet()) seedIds.add(id);
+      }
+      if (calleesOf.length > 0) {
+        for (const id of calleesSet()) seedIds.add(id);
+      }
+      // Apply kind / language filters here — the graph-seeded path
+      // skips the SQL WHERE that the FTS/Like paths use, so without
+      // this post-filter `callers-of:foo kind:method` would return
+      // every caller regardless of its declared kind.
+      const seedNodes = this.nodesByIds([...seedIds]);
+      const filtered = seedNodes.filter((n) => {
+        if (kinds && kinds.length > 0 && !kinds.includes(n.kind)) return false;
+        if (languages && languages.length > 0 && !languages.includes(n.language)) return false;
+        return true;
+      });
+      results = filtered.map((node) => ({ node, score: 1 }));
+    } else {
+      // Over-fetch by 5× when running filter-only (no text). The
+      // post-scoring path: + name: filters can be very selective, so
+      // a smaller multiplier risks returning fewer than `limit`
+      // results despite the DB having plenty of matches.
+      // Push sig: filters into SQL with OR semantics so they match
+      // the JS post-filter (which uses `some()`). Pushing all of
+      // them avoids the previous bug where only signatureFilters[0]
+      // went to SQL while the JS post-filter OR'd all of them — the
+      // intersection silently dropped later sig: tokens.
+      results = this.searchAllByFilters({
+        kinds,
+        languages,
+        limit: limit * 5,
+        signatureLike: signatureFilters.length > 0 ? signatureFilters : undefined,
+      });
+    }
 
     // If no FTS results, try LIKE-based substring search
-    if (results.length === 0 && query.length >= 2) {
-      results = this.searchNodesLike(query, { kinds, languages, limit, offset });
+    if (results.length === 0 && text.length >= 2) {
+      results = this.searchNodesLike(text, { kinds, languages, limit, offset });
+    }
+
+    // Final fuzzy fallback: scan all known names and keep those within
+    // a tight Levenshtein distance. Only fires when both FTS and LIKE
+    // returned nothing AND there's a text portion long enough to be
+    // worth fuzzing (1-char queries would match too much).
+    if (results.length === 0 && text.length >= 3) {
+      results = this.searchNodesFuzzy(text, { kinds, languages, limit });
     }
 
     // Supplement: ensure exact name matches are always candidates.
@@ -522,13 +630,14 @@ export class QueryBuilder {
     }
 
     // Apply multi-signal scoring
-    if (results.length > 0 && query) {
+    if (results.length > 0 && (text || query)) {
+      const scoringQuery = text || query;
       results = results.map(r => ({
         ...r,
         score: r.score
           + kindBonus(r.node.kind)
-          + scorePathRelevance(r.node.filePath, query)
-          + nameMatchBonus(r.node.name, query),
+          + scorePathRelevance(r.node.filePath, scoringQuery)
+          + nameMatchBonus(r.node.name, scoringQuery),
       }));
       results.sort((a, b) => b.score - a.score);
       // Trim to requested limit after rescoring
@@ -537,6 +646,214 @@ export class QueryBuilder {
       }
     }
 
+    // Apply path: + name: filters AFTER scoring. Scoring already uses
+    // path/name as a soft signal; the explicit filters here are a hard
+    // gate. Done last so the FTS limit fetched plenty of candidates to
+    // narrow from.
+    if (pathFilters.length > 0) {
+      const lowered = pathFilters.map((p) => p.toLowerCase());
+      results = results.filter((r) => {
+        const fp = r.node.filePath.toLowerCase();
+        return lowered.some((p) => fp.includes(p));
+      });
+    }
+    if (nameFilters.length > 0) {
+      const lowered = nameFilters.map((n) => n.toLowerCase());
+      results = results.filter((r) => {
+        const nm = r.node.name.toLowerCase();
+        return lowered.some((n) => nm.includes(n));
+      });
+    }
+    if (signatureFilters.length > 0) {
+      const lowered = signatureFilters.map((s) => s.toLowerCase());
+      results = results.filter((r) => {
+        const sig = (r.node.signature ?? '').toLowerCase();
+        return lowered.some((s) => sig.includes(s));
+      });
+    }
+
+    // Graph-aware filters: callers-of / callees-of restrict the
+    // candidate set to nodes connected to NAME via a `calls` edge.
+    // Done with a single SQL pass per filter against the edges table
+    // (cheap on indexed columns) and then intersected with the
+    // current `results`.
+    if (callersOf.length > 0) {
+      const allowed = callersSet();
+      results = results.filter((r) => allowed.has(r.node.id));
+    }
+    if (calleesOf.length > 0) {
+      const allowed = calleesSet();
+      results = results.filter((r) => allowed.has(r.node.id));
+    }
+
+    return results;
+  }
+
+  /**
+   * Match-everything path used when the user supplied only field
+   * filters (`kind:function lang:typescript`) with no text. Returns
+   * candidates ordered by name; the caller's filter pass narrows to
+   * what was asked for.
+   */
+  /**
+   * Bulk-fetch nodes by id. Used by graph-qualifier search paths
+   * (callers-of / callees-of) to materialise the seed set without
+   * issuing one SELECT per id. Chunks the IN clause to stay below
+   * SQLite's default `SQLITE_LIMIT_VARIABLE_NUMBER` (999).
+   */
+  private nodesByIds(ids: string[]): Node[] {
+    if (ids.length === 0) return [];
+    const out: Node[] = [];
+    for (const chunk of chunkIds(ids)) {
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(`SELECT * FROM nodes WHERE id IN (${placeholders})`)
+        .all(...chunk) as NodeRow[];
+      for (const row of rows) out.push(rowToNode(row));
+    }
+    return out;
+  }
+
+  /**
+   * Set of node IDs that have at least one outgoing `calls` edge to
+   * a node whose `name` matches any element of `names`. Backs the
+   * `callers-of:NAME` query qualifier. Chunked for the 999-variable
+   * SQLite cap.
+   */
+  private nodesCallingAny(names: string[]): Set<string> {
+    if (names.length === 0) return new Set();
+    const out = new Set<string>();
+    for (const chunk of chunkIds(names)) {
+      const placeholders = chunk.map(() => '?').join(',');
+      const sql = `
+        SELECT DISTINCT e.source AS id
+        FROM edges e
+        JOIN nodes tgt ON e.target = tgt.id
+        WHERE e.kind = 'calls' AND tgt.name IN (${placeholders})
+      `;
+      const rows = this.db.prepare(sql).all(...chunk) as Array<{ id: string }>;
+      for (const r of rows) out.add(r.id);
+    }
+    return out;
+  }
+
+  /**
+   * Set of node IDs that are called BY a node whose `name` matches
+   * any element of `names`. Backs the `callees-of:NAME` query
+   * qualifier. Chunked for the 999-variable SQLite cap.
+   */
+  private nodesCalledByAny(names: string[]): Set<string> {
+    if (names.length === 0) return new Set();
+    const out = new Set<string>();
+    for (const chunk of chunkIds(names)) {
+      const placeholders = chunk.map(() => '?').join(',');
+      const sql = `
+        SELECT DISTINCT e.target AS id
+        FROM edges e
+        JOIN nodes src ON e.source = src.id
+        WHERE e.kind = 'calls' AND src.name IN (${placeholders})
+      `;
+      const rows = this.db.prepare(sql).all(...chunk) as Array<{ id: string }>;
+      for (const r of rows) out.add(r.id);
+    }
+    return out;
+  }
+
+  private searchAllByFilters(options: {
+    kinds?: NodeKind[];
+    languages?: Language[];
+    limit: number;
+    /** SQL pre-filter on the signature column. ALL provided strings
+     *  are OR'd (matches the OR semantics of path:/name: filters in
+     *  the JS post-filter pass), so multi-sig: queries behave
+     *  consistently with multi-path:/multi-name: queries. Necessary
+     *  because the JS post-filter alone has nothing to narrow when
+     *  the candidate set is the first 50 nodes by name. */
+    signatureLike?: string[];
+  }): SearchResult[] {
+    const { kinds, languages, limit, signatureLike } = options;
+    let sql = 'SELECT * FROM nodes WHERE 1=1';
+    const params: (string | number)[] = [];
+    if (kinds && kinds.length > 0) {
+      sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
+      params.push(...kinds);
+    }
+    if (languages && languages.length > 0) {
+      sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
+      params.push(...languages);
+    }
+    if (signatureLike && signatureLike.length > 0) {
+      const ors = signatureLike.map(() => 'signature LIKE ? COLLATE NOCASE').join(' OR ');
+      sql += ` AND (${ors})`;
+      for (const s of signatureLike) params.push(`%${s}%`);
+    }
+    sql += ' ORDER BY name LIMIT ?';
+    params.push(limit);
+    const rows = this.db.prepare(sql).all(...params) as NodeRow[];
+    return rows.map((row) => ({ node: rowToNode(row), score: 1 }));
+  }
+
+  /**
+   * Fuzzy fallback: when zero FTS/LIKE hits, try an edit-distance
+   * sweep over the distinct symbol-name set. Caps `maxDist` at 2 so
+   * `getUssr` finds `getUser` but `process` doesn't match `prosody`.
+   * Bounded edit distance keeps each comparison cheap; the per-query
+   * scan is O(distinct-name-count) which is far smaller than total
+   * node count on any real codebase.
+   */
+  private searchNodesFuzzy(
+    text: string,
+    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number }
+  ): SearchResult[] {
+    const { kinds, languages, limit } = options;
+    const lowered = text.toLowerCase();
+    const maxDist = lowered.length <= 4 ? 1 : 2;
+
+    // Pull the distinct name list once. The set is cached on QueryBuilder
+    // by getAllNodeNames(); even on a 200k-node project the distinct
+    // name set is typically O(10k) because most names repeat. The
+    // candidate-cap below bounds memory regardless.
+    const allNames = this.getAllNodeNames();
+    const candidates: Array<{ name: string; dist: number }> = [];
+    for (const name of allNames) {
+      const dist = boundedEditDistance(name.toLowerCase(), lowered, maxDist);
+      if (dist <= maxDist) candidates.push({ name, dist });
+    }
+    candidates.sort((a, b) => a.dist - b.dist);
+
+    // Cap the per-name follow-up queries. Each survivor triggers a
+    // separate `SELECT * FROM nodes WHERE name = ?`; without this cap
+    // a project with many similar names (`getUser1`, `getUser2`...)
+    // could fan out far beyond `limit` queries before the inner-loop
+    // limit kicks in.
+    const FUZZY_FOLLOWUP_CAP = Math.max(limit * 2, 50);
+    const cappedCandidates = candidates.slice(0, FUZZY_FOLLOWUP_CAP);
+
+    const results: SearchResult[] = [];
+    const seen = new Set<string>();
+    for (const c of cappedCandidates) {
+      if (results.length >= limit) break;
+      let sql = 'SELECT * FROM nodes WHERE name = ?';
+      const params: (string | number)[] = [c.name];
+      if (kinds && kinds.length > 0) {
+        sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
+        params.push(...kinds);
+      }
+      if (languages && languages.length > 0) {
+        sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
+        params.push(...languages);
+      }
+      sql += ' LIMIT 5';
+      const rows = this.db.prepare(sql).all(...params) as NodeRow[];
+      for (const row of rows) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        // Lower the score for each edit step away from the query so
+        // exact-match fallbacks (dist 0) outrank dist-2 typos.
+        results.push({ node: rowToNode(row), score: 1 / (1 + c.dist) });
+        if (results.length >= limit) break;
+      }
+    }
     return results;
   }
 
