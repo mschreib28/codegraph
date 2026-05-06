@@ -381,7 +381,7 @@ Filter to any severity level with the **Low / Medium / High / Critical** toggle 
 
 ## MCP Tools
 
-When running as an MCP server, CodeGraph exposes these tools to Claude Code:
+When running as an MCP server, CodeGraph exposes these tools to any MCP-compatible AI assistant:
 
 | Tool | Purpose |
 |------|---------|
@@ -393,6 +393,110 @@ When running as an MCP server, CodeGraph exposes these tools to Claude Code:
 | `codegraph_node` | Get details about a specific symbol (optionally with source code) |
 | `codegraph_files` | Get indexed file structure (faster than filesystem scanning) |
 | `codegraph_status` | Check index health and statistics |
+
+---
+
+## Using with Other MCP Clients
+
+The MCP server runs over **stdio** and works with any MCP-compatible client — not just Claude Code. The interactive installer is Claude Code-specific (it writes `~/.claude.json`), so for other clients you'll want the manual setup.
+
+**Common steps for every client:**
+
+```bash
+npm install -g @colbymchenry/codegraph     # so `codegraph` is on PATH
+cd your-project
+codegraph init -i                           # initialize + index this project
+```
+
+Then point your MCP client at `codegraph serve --mcp` using whatever config shape it expects:
+
+### opencode
+
+In `opencode.json` (project) or `~/.config/opencode/opencode.json` (global):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "codegraph": {
+      "type": "local",
+      "command": ["codegraph", "serve", "--mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+### Cursor
+
+In `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
+
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "codegraph",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}
+```
+
+### LangChain (`MultiServerMCPClient`)
+
+The CodeGraph server speaks stdio, not SSE — pass `transport: "stdio"`:
+
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+client = MultiServerMCPClient({
+    "codegraph": {
+        "command": "codegraph",
+        "args": ["serve", "--mcp"],
+        "transport": "stdio",
+    }
+})
+tools = await client.get_tools()
+```
+
+### Claude Agent SDK
+
+Pass the server in `mcpServers` (TypeScript) or `mcp_servers` (Python) when calling `query()`:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+options = ClaudeAgentOptions(
+    mcp_servers={
+        "codegraph": {
+            "command": "codegraph",
+            "args": ["serve", "--mcp"],
+        }
+    },
+    allowed_tools=["mcp__codegraph__*"],
+)
+
+async for message in query(prompt="Where is auth handled?", options=options):
+    ...
+```
+
+### Anything else (generic stdio MCP)
+
+Most MCP clients (Continue, Zed, custom integrations, etc.) accept some variation of `command` + `args`. The values are always:
+
+| Field | Value |
+|-------|-------|
+| Command | `codegraph` |
+| Args | `["serve", "--mcp"]` |
+| Transport | `stdio` |
+
+The server reads the project root from the MCP `initialize` request's `rootUri` (set by the client when it connects). If your client doesn't send a `rootUri`, pass the project path explicitly:
+
+```bash
+codegraph serve --mcp --path /absolute/path/to/project
+```
+
+> **Note:** CodeGraph's MCP server does **not** speak SSE/HTTP. If your client only supports `url` + `transport: "sse"`, you'll need to wrap stdio with a bridge like [supergateway](https://github.com/supercorp-ai/supergateway).
 
 ---
 
