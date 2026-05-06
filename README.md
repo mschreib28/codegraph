@@ -467,6 +467,8 @@ The `.codegraph/config.json` file controls indexing:
 | Liquid | `.liquid` | Full support |
 | Pascal / Delphi | `.pas`, `.dpr`, `.dpk`, `.lpr` | Full support (classes, records, interfaces, enums, DFM/FMX form files) |
 
+Want to add another language? See [`docs/ADDING-A-LANGUAGE.md`](docs/ADDING-A-LANGUAGE.md) — it walks through sourcing a tree-sitter grammar, probing the AST, choosing between the OO and self-contained extractor patterns, and the worked examples in the existing extractors.
+
 ## Troubleshooting
 
 **"CodeGraph not initialized"** — Run `codegraph init` in your project directory first.
