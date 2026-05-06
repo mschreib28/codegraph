@@ -465,6 +465,14 @@ export interface CodeGraphConfig {
   /** Whether to track call sites */
   trackCallSites: boolean;
 
+  /**
+   * Whether to recurse into git submodules during indexing and sync.
+   * Default: true. Set to false to skip submodule contents (useful when
+   * a submodule pulls in a large vendor tree you don't want indexed —
+   * adding the path to `exclude` also works).
+   */
+  indexSubmodules?: boolean;
+
   /** Custom symbol patterns to extract */
   customPatterns?: {
     /** Name for this pattern group */
@@ -675,6 +683,7 @@ export const DEFAULT_CONFIG: CodeGraphConfig = {
   maxFileSize: 1024 * 1024, // 1MB
   extractDocstrings: true,
   trackCallSites: true,
+  indexSubmodules: true,
 };
 
 // =============================================================================
