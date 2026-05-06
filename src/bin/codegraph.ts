@@ -834,10 +834,17 @@ program
         } else {
           console.log(chalk.bold(`\nSearch Results for "${search}":\n`));
 
+          // searchNodes returns BM25 + bonuses, which is unbounded.
+          // Render each result's score as a fraction of the top hit so
+          // the user gets a relative confidence (top = 100%) instead of
+          // nonsensical "10449%" raw weights.
+          const topScore = results[0]!.score;
           for (const result of results) {
             const node = result.node;
             const location = `${node.filePath}:${node.startLine}`;
-            const score = chalk.dim(`(${(result.score * 100).toFixed(0)}%)`);
+            const relPct =
+              topScore > 0 ? Math.round((result.score / topScore) * 100) : 0;
+            const score = chalk.dim(`(${relPct}%)`);
 
             console.log(
               chalk.cyan(node.kind.padEnd(12)) +
