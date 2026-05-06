@@ -196,22 +196,32 @@ function getGitChangedFiles(rootDir: string, config: CodeGraphConfig): GitChange
       { cwd: rootDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
     );
 
+    // Two-pass: collect candidate paths first so we can build the
+    // .codegraphignore directory set in one go, then re-walk to bucketize.
+    const candidatePaths: { code: string; filePath: string }[] = [];
+    for (const line of output.split('\n')) {
+      if (line.length < 4) continue; // Minimum: "XY file"
+      const statusCode = line.substring(0, 2);
+      const filePath = normalizePath(line.substring(3));
+      if (!shouldIncludeFile(filePath, config)) continue;
+      candidatePaths.push({ code: statusCode, filePath });
+    }
+
+    const ignoredDirs = findCodegraphIgnoredDirs(
+      rootDir,
+      candidatePaths.map((c) => c.filePath)
+    );
+
     const modified: string[] = [];
     const added: string[] = [];
     const deleted: string[] = [];
 
-    for (const line of output.split('\n')) {
-      if (line.length < 4) continue; // Minimum: "XY file"
+    for (const { code, filePath } of candidatePaths) {
+      if (isUnderCodegraphIgnoredDir(filePath, ignoredDirs)) continue;
 
-      const statusCode = line.substring(0, 2);
-      const filePath = normalizePath(line.substring(3));
-
-      // Skip files that don't match include/exclude config
-      if (!shouldIncludeFile(filePath, config)) continue;
-
-      if (statusCode === '??') {
+      if (code === '??') {
         added.push(filePath);
-      } else if (statusCode.includes('D')) {
+      } else if (code.includes('D')) {
         deleted.push(filePath);
       } else {
         // M, MM, AM, A (staged), etc. — treat as modified
@@ -231,6 +241,52 @@ function getGitChangedFiles(rootDir: string, config: CodeGraphConfig): GitChange
 const CODEGRAPH_IGNORE_MARKER = '.codegraphignore';
 
 /**
+ * Walk every parent directory of the given files (relative to rootDir) and
+ * return the subset that contain a `.codegraphignore` marker. Anything
+ * under one of these directories should be excluded.
+ *
+ * Called by `scanDirectory`, `scanDirectoryAsync`, and `getGitChangedFiles`
+ * so the git-driven paths honor the marker the same way the filesystem
+ * walk fallback does. Without this the marker had inconsistent behavior:
+ * respected on non-git projects, silently ignored on git ones.
+ */
+function findCodegraphIgnoredDirs(rootDir: string, files: Iterable<string>): Set<string> {
+  const dirs = new Set<string>(['.']);
+  for (const file of files) {
+    let dir = path.posix.dirname(normalizePath(file));
+    while (dir && dir !== '.' && dir !== '/') {
+      if (dirs.has(dir)) break;  // already enumerated this branch
+      dirs.add(dir);
+      dir = path.posix.dirname(dir);
+    }
+  }
+
+  const ignored = new Set<string>();
+  for (const dir of dirs) {
+    const marker = dir === '.'
+      ? path.join(rootDir, CODEGRAPH_IGNORE_MARKER)
+      : path.join(rootDir, dir, CODEGRAPH_IGNORE_MARKER);
+    if (fs.existsSync(marker)) ignored.add(dir);
+  }
+  return ignored;
+}
+
+/**
+ * True if `filePath` (relative, forward-slashed) lives under any directory
+ * in `ignoredDirs`. Directory `.` matches the project root.
+ */
+function isUnderCodegraphIgnoredDir(filePath: string, ignoredDirs: Set<string>): boolean {
+  if (ignoredDirs.size === 0) return false;
+  if (ignoredDirs.has('.')) return true;
+  let dir = path.posix.dirname(filePath);
+  while (dir && dir !== '.' && dir !== '/') {
+    if (ignoredDirs.has(dir)) return true;
+    dir = path.posix.dirname(dir);
+  }
+  return false;
+}
+
+/**
  * Recursively scan directory for source files.
  *
  * In git repos, uses `git ls-files` to get the file list (inherently
@@ -245,9 +301,11 @@ export function scanDirectory(
   // Fast path: use git to get all visible files (respects .gitignore everywhere)
   const gitFiles = getGitVisibleFiles(rootDir);
   if (gitFiles) {
+    const ignoredDirs = findCodegraphIgnoredDirs(rootDir, gitFiles);
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
+      if (isUnderCodegraphIgnoredDir(filePath, ignoredDirs)) continue;
       if (shouldIncludeFile(filePath, config)) {
         files.push(filePath);
         count++;
@@ -272,9 +330,11 @@ export async function scanDirectoryAsync(
 ): Promise<string[]> {
   const gitFiles = getGitVisibleFiles(rootDir);
   if (gitFiles) {
+    const ignoredDirs = findCodegraphIgnoredDirs(rootDir, gitFiles);
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
+      if (isUnderCodegraphIgnoredDir(filePath, ignoredDirs)) continue;
       if (shouldIncludeFile(filePath, config)) {
         files.push(filePath);
         count++;
