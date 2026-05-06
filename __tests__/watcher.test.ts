@@ -31,6 +31,19 @@ function waitFor(
   });
 }
 
+/**
+ * fs.watch on macOS (FSEvents) and Linux (inotify) has a small but real
+ * latency between `fs.watch()` returning and the kernel actually
+ * delivering events. Writing a file in that window — particularly under
+ * parallel test load when the host CPU is busy — drops the event and
+ * causes a 5s timeout for "should trigger sync after file change" style
+ * tests. This helper standardizes the settle delay to match the pattern
+ * already used by the filtering tests in this file.
+ */
+async function letWatcherSettle(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 400));
+}
+
 describe('FileWatcher', () => {
   let testDir: string;
 
@@ -101,6 +114,7 @@ describe('FileWatcher', () => {
       const watcher = new FileWatcher(testDir, baseConfig, syncFn, { debounceMs: 200 });
 
       watcher.start();
+      await letWatcherSettle();
 
       // Create a new file
       fs.writeFileSync(path.join(testDir, 'src', 'new.ts'), 'export const y = 2;');
@@ -117,6 +131,7 @@ describe('FileWatcher', () => {
       const watcher = new FileWatcher(testDir, baseConfig, syncFn, { debounceMs: 500 });
 
       watcher.start();
+      await letWatcherSettle();
 
       // Rapid-fire changes
       for (let i = 0; i < 5; i++) {
@@ -145,7 +160,7 @@ describe('FileWatcher', () => {
       watcher.start();
 
       // Let watcher settle — fs.watch may fire residual events from beforeEach
-      await new Promise((r) => setTimeout(r, 400));
+      await letWatcherSettle();
       syncFn.mockClear();
 
       // Create a file that doesn't match include patterns
@@ -165,7 +180,7 @@ describe('FileWatcher', () => {
       watcher.start();
 
       // Let watcher settle — fs.watch may fire residual events from beforeEach
-      await new Promise((r) => setTimeout(r, 400));
+      await letWatcherSettle();
       syncFn.mockClear();
 
       // Simulate a .codegraph directory change
@@ -191,6 +206,7 @@ describe('FileWatcher', () => {
       });
 
       watcher.start();
+      await letWatcherSettle();
 
       fs.writeFileSync(path.join(testDir, 'src', 'test.ts'), 'export const z = 3;');
 
@@ -209,6 +225,7 @@ describe('FileWatcher', () => {
       });
 
       watcher.start();
+      await letWatcherSettle();
 
       fs.writeFileSync(path.join(testDir, 'src', 'test.ts'), 'export const z = 3;');
 
@@ -268,6 +285,7 @@ describe('FileWatcher', () => {
       const initialNodes = initialStats.nodeCount;
 
       cg.watch({ debounceMs: 300 });
+      await letWatcherSettle();
 
       // Add a new file with a function
       fs.writeFileSync(
