@@ -75,6 +75,7 @@ export type Language =
   | 'svelte'
   | 'liquid'
   | 'pascal'
+  | 'scala'
   | 'unknown';
 
 // =============================================================================
@@ -527,6 +528,9 @@ export const DEFAULT_CONFIG: CodeGraphConfig = {
     '**/*.lpr',
     '**/*.dfm',
     '**/*.fmx',
+    // Scala
+    '**/*.scala',
+    '**/*.sc',
   ],
   exclude: [
     // Version control
